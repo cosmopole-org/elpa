@@ -28,14 +28,37 @@ JavaScript ─▶ Elpian AST ─▶ bytecode ─▶ VM (your app logic)
 The VM never links wgpu; the renderer never links the VM. They agree only on the
 `elpa-protocol` command tree.
 
+## The unified instance
+
+Add `elpa` as a dependency, construct one object with a GPU backend + your app
+AST, and drive it — it owns and manages the VM, the renderer, and the backend:
+
+```rust
+let surface = SurfaceInfo::new(width_px, height_px, device_pixel_ratio);
+let mut app = Elpa::new(backend, surface, app_ast_json)?;
+app.start();                 // run the program (init + first frame)
+app.send_event(&event);      // -> app onEvent -> re-render (cheap, partial)
+app.resize(w, h, scale);     // reconfigure + app onResize
+app.animate(dt_ms);          // -> app onFrame for animation
+```
+
+The app (JS → AST) defines `onEvent`, `onResize`, `onFrame`, reads live screen
+metrics via `gpu.surfaceInfo`, and re-renders by re-submitting frames; the cache
+makes unchanged frames free and changed passes re-record in isolation.
+
+See **[`examples/web`](examples/web)** for a full-window, DPI-aware canvas that
+draws Elpa frames in the browser.
+
 ## Workspace
 
 | Crate | Role | Status |
 |-------|------|--------|
 | `elpian-vm` | Ported Elpian AST VM + GPU-focused host-call API | ✅ running |
 | `elpa-protocol` | The wgpu command-tree schema (resources + commands + geometry) | ✅ tested |
-| `elpa-renderer` | Resource cache, partial rendering, `GpuBackend` trait | ✅ logic tested · 🔜 wgpu backend |
-| `elpa-runtime` | Host-call loop: drives the VM, parses `gpu.submit` → `Frame` | ✅ tested |
+| `elpa-renderer` | Resource cache, partial rendering, `GpuBackend` trait, **live wgpu backend** | ✅ tested · ✅ wgpu 29 compiles |
+| `elpa-runtime` | Host-call pump: drives the VM, parses `gpu.submit` → `Frame` | ✅ tested |
+| `elpa` | **Unified instance**: VM + renderer + backend in one object | ✅ tested |
+| `examples/web` | Full-window DPI canvas drawing Elpa frames (wasm) | ✅ compiles (wasm32) |
 
 ## Build & test
 

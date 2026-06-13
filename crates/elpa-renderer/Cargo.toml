@@ -2,19 +2,17 @@
 name = "elpa-renderer"
 version = "0.1.0"
 edition = "2021"
-description = "Elpa drawing-management layer and GPU backend. Owns layout->draw-list lowering, the layer/cache model, dirty-rect partial rendering, and the wgpu command mapping."
+description = "Elpa renderer: resource caching, dirty-rect partial rendering, and the live wgpu backend that maps the JSON command tree onto the wgpu API."
 
 [features]
-# The wgpu backend is gated so the architecture (drawing-management layer,
-# caching, dirty-rect tracking) builds and tests fast without pulling the full
-# graphics stack. Enable once a windowing host is wired (see PLAN.md §Roadmap).
 default = []
-wgpu-backend = []
+# The live wgpu backend. Heavy (pulls the full graphics stack); off by default so
+# the caching/partial-render logic builds and tests fast and GPU-free.
+wgpu-backend = ["dep:wgpu", "dep:base64"]
 
 [dependencies]
 elpa-protocol = { path = "../elpa-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# wgpu/winit are added under the `wgpu-backend` feature during M3 of the roadmap:
-# wgpu = { version = "...", optional = true }
-# winit = { version = "...", optional = true }
+wgpu = { version = "29", optional = true }
+base64 = { version = "0.22", optional = true }

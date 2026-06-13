@@ -24,6 +24,9 @@ pub mod cache;
 pub mod dirty;
 pub mod manager;
 
+#[cfg(feature = "wgpu-backend")]
+pub mod wgpu_backend;
+
 pub use backend::GpuBackend;
 pub use cache::{content_hash, PassCache, ResourceCache};
 pub use dirty::DirtyTracker;

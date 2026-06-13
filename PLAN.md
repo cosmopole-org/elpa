@@ -12,9 +12,12 @@
 > systems — they are the same wgpu commands with different pipelines and shaders.
 >
 > **Status:** the VM is ported and running; the wgpu command-tree protocol and
-> the caching + partial-rendering engine are implemented and tested against a
-> mock backend; the live wgpu backend is the next milestone. `cargo test
-> --workspace` is green.
+> the caching + partial-rendering engine are implemented and tested; the unified
+> [`Elpa`](#8b-the-unified-elpa-instance) instance (VM + renderer + backend in one
+> object) is implemented and tested; the **live wgpu backend compiles** against
+> wgpu 29; and a **web example** draws Elpa frames to a full-window, DPI-aware
+> canvas. `cargo test --workspace` is green (GPU-free); the wgpu backend builds
+> under `--features wgpu-backend`.
 
 ---
 
@@ -146,16 +149,25 @@ re-render.
 ```text
 elpa/
 ├── PLAN.md · README.md · Cargo.toml (workspace)
-└── crates/
-    ├── elpian-vm/        ✅ ported VM (sdk) + renderer-agnostic host-call API
-    │   └── src/{lib.rs, api.rs, sdk/{compiler,executor,vm,context,data}.rs}
-    ├── elpa-protocol/    ✅ the wgpu command tree schema (tested)
-    │   └── src/{resource.rs, command.rs, geometry.rs, hostcall.rs}
-    ├── elpa-renderer/    ✅ caching + partial render (tested) · 🔜 wgpu backend
-    │   └── src/{manager.rs, cache.rs, dirty.rs, backend.rs}
-    └── elpa-runtime/     ✅ host-call loop: VM ⇄ Frame (tested)
-        └── src/lib.rs
+├── crates/
+│   ├── elpian-vm/        ✅ ported VM (sdk) + renderer-agnostic host-call API
+│   │   └── src/{lib.rs, api.rs, sdk/{compiler,executor,vm,context,data}.rs}
+│   ├── elpa-protocol/    ✅ the wgpu command tree schema (tested)
+│   │   └── src/{resource.rs, command.rs, geometry.rs, hostcall.rs}
+│   ├── elpa-renderer/    ✅ caching + partial render (tested) + ✅ live wgpu backend
+│   │   └── src/{manager.rs, cache.rs, dirty.rs, backend.rs, wgpu_backend.rs}
+│   ├── elpa-runtime/     ✅ host-call pump: VM ⇄ Frame (tested)
+│   │   └── src/lib.rs
+│   └── elpa/             ✅ unified instance: VM + renderer + backend (tested)
+│       └── src/{lib.rs, surface.rs, event.rs, headless.rs}
+└── examples/
+    └── web/              ✅ full-window DPI canvas drawing Elpa frames (wasm)
+        └── {src/lib.rs, src/app_ast.rs, index.html, README.md}
 ```
+
+The `elpa-renderer/wgpu_backend.rs` is gated behind the `wgpu-backend` feature
+(off by default) and the `examples/web` crate is excluded from the workspace, so
+the core `cargo test --workspace` stays fast and GPU-free.
 
 `cargo build --workspace` and `cargo test --workspace` pass today (15 tests). An
 end-to-end test compiles an AST that calls `gpu.submit` with a shader+pipeline+
@@ -261,8 +273,69 @@ without a GPU. The trait *is* the mapping spec:
 | `record_encoder_command` | `encoder.copy_*` / `queue.write_buffer` / `write_texture` / `clear_buffer`. |
 | `end_frame(dirty)`       | `queue.submit` + `surface_texture.present`, scissored to `dirty`. |
 
-The wgpu impl lives under the `wgpu-backend` feature (M3) and is the *only* place
-that links wgpu. Everything above it is GPU-API-agnostic.
+The wgpu impl lives under the `wgpu-backend` feature and is the *only* place that
+links wgpu. Everything above it is GPU-API-agnostic. It is implemented against
+**wgpu 29** and compiles today: `create_resource` dispatches on the descriptor
+variant to the matching `device.create_*`, parsing string enum tokens (formats,
+usages, blend factors, vertex formats, …) in one place; `record_render_pass`/
+`record_compute_pass` replay the command lists into a real `wgpu::RenderPass`/
+`ComputePass`; `end_frame` submits and presents.
+
+### 8b. The Unified Elpa Instance
+
+The `elpa` crate ties everything into a single object so an embedding app needs
+only: *add `elpa` as a dependency, construct one instance with a backend + an
+app AST, and drive it.* [`Elpa<B>`](crate-elpa) owns the VM (via the runtime),
+the renderer (resource cache + partial rendering), the GPU backend, and the live
+surface geometry — assembled and managed together.
+
+```rust
+let surface = SurfaceInfo::new(width_px, height_px, device_pixel_ratio);
+let mut app = Elpa::new(backend, surface, app_ast_json)?;
+app.start();                 // run the program: init + first frame
+app.send_event(&event);      // -> app `onEvent` -> re-submits -> partial re-render
+app.resize(w, h, scale);     // reconfigure + app `onResize` re-fit
+app.animate(dt_ms);          // -> app `onFrame` for continuous animation
+```
+
+It exposes a small object-oriented surface — `start`, `send_event`, `animate`,
+`resize`, `surface_info`, `last_stats` — and internally runs the host-call pump,
+routing `gpu.submit` straight into the renderer (where caching + partial
+rendering happen) and answering `gpu.surfaceInfo` from live state. Because the
+backend is a generic `B: GpuBackend`, the *same* instance logic drives the live
+[`WgpuBackend`] in production and the [`HeadlessBackend`] in tests/CI.
+
+**The app contract** (functions the app may define): the top-level program
+(init + first frame), `onEvent(e)`, `onResize(info)`, and `onFrame(dtMs)`. The
+app reads live surface metrics (physical + logical size, scale, aspect) via
+`gpu.surfaceInfo` and `onResize`, so its coordinates and projection adapt to any
+screen — phone, tablet, desktop.
+
+**"Re-render on interaction or state change"** falls out of this: a handler
+mutates app state and calls `gpu.submit`; the renderer makes that cheap. There is
+no separate dirty-tracking the app must manage — re-submitting an identical frame
+is automatically a no-op (cache hit), and changing one pass re-records only that
+pass.
+
+### 8c. Web example (full-window canvas)
+
+`examples/web` is a wasm crate that draws an Elpa app's frames to an HTML canvas
+with **no winit** — it makes a wgpu surface directly from the canvas
+(`wgpu::SurfaceTarget::Canvas`). It:
+
+- creates a `<canvas>` styled to fill the viewport and sizes its backing store to
+  `innerWidth/Height × devicePixelRatio`, so output is crisp and correctly-shaped
+  on mobile, tablet, and desktop;
+- on `resize`, reconfigures the swapchain (`WgpuBackend::resize`) and calls
+  `Elpa::resize`, which updates `SurfaceInfo` and invokes the app's `onResize`;
+- forwards pointer events to `Elpa::send_event` and drives `Elpa::animate` from
+  `requestAnimationFrame`.
+
+The embedded app (built as Elpian AST in `src/app_ast.rs`, standing in for the
+JS front-end's output) draws a triangle over an animated background. The shader
+and pipeline are declared every frame but **created once and cached**; only the
+surface pass re-records — the partial-rendering win, live. Build instructions
+(Trunk / wasm-pack) are in `examples/web/README.md`.
 
 ---
 

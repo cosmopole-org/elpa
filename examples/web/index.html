@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- Full-window, no zoom; viewport-fit handles notches on mobile. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <title>Elpa — wgpu on a canvas</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+      }
+      /* The canvas is created and sized by Rust; this is a safety net. */
+      #elpa-canvas {
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        display: block;
+      }
+    </style>
+    <!-- Trunk: compiles this crate to wasm + generates the JS glue. -->
+    <link data-trunk rel="rust" data-wasm-opt="z" />
+  </head>
+  <body></body>
+</html>
