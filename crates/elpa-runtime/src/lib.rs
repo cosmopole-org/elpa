@@ -13,8 +13,11 @@
 //!      └──────────────── continue_execution ◀─────┘   (until done)
 //! ```
 
-use elpa_protocol::{Frame, HostCall};
+use elpa_protocol::{Definition, Frame, HostCall};
 use elpian_vm::api;
+
+pub mod definitions;
+pub use definitions::{DefinitionStore, ExpandError};
 
 /// How to (re)enter the VM for one pump.
 pub enum Start<'a> {
@@ -44,6 +47,12 @@ impl Runtime {
 
     pub fn machine_id(&self) -> &str {
         &self.machine_id
+    }
+
+    /// Destroy the underlying VM, freeing its slot in the registry. Used for
+    /// transient VMs (e.g. an imported module run once to register definitions).
+    pub fn dispose(&self) {
+        api::destroy_vm(self.machine_id.clone());
     }
 
     /// Step the VM from `start`, servicing each host call via `dispatch` until
@@ -90,6 +99,71 @@ pub fn frame_from_submit(call: &HostCall) -> Option<Frame> {
     serde_json::from_value(frame_value).ok()
 }
 
+/// Unwrap the single argument of an `askHost` payload. The VM wraps call
+/// arguments in a JSON array (`[arg0, …]`); host APIs here take one argument, so
+/// this returns `arg0` (or the payload itself if it isn't an array).
+fn first_arg(payload: &str) -> Option<serde_json::Value> {
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    match v {
+        serde_json::Value::Array(mut items) if !items.is_empty() => Some(items.remove(0)),
+        serde_json::Value::Array(_) => None,
+        other => Some(other),
+    }
+}
+
+/// Parse a `gpu.define` host call's payload into a [`Definition`] to register.
+pub fn definition_from_define(call: &HostCall) -> Option<Definition> {
+    if call.api_name != "gpu.define" {
+        return None;
+    }
+    serde_json::from_value(first_arg(&call.payload)?).ok()
+}
+
+/// Parse the target id of a `gpu.undefine` host call. Accepts either a bare
+/// string id (`["myShape"]`) or an object (`[{"id":"myShape"}]`).
+pub fn undefine_target(call: &HostCall) -> Option<String> {
+    if call.api_name != "gpu.undefine" {
+        return None;
+    }
+    match first_arg(&call.payload)? {
+        serde_json::Value::String(s) => Some(s),
+        serde_json::Value::Object(map) => {
+            map.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())
+        }
+        _ => None,
+    }
+}
+
+/// A request to import an external Elpian module, parsed from a `vm.import` call.
+///
+/// The argument is either a bare source string (`["assets/shapes.json"]`) or an
+/// object that may carry a `source` to resolve, an inline `ast` to run directly,
+/// and an optional `id` for diagnostics: `[{"source":"…","id":"shapes"}]`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ImportRequest {
+    pub id: Option<String>,
+    pub source: Option<String>,
+    pub ast: Option<serde_json::Value>,
+}
+
+/// Parse a `vm.import` host call into an [`ImportRequest`].
+pub fn import_request(call: &HostCall) -> Option<ImportRequest> {
+    if call.api_name != "vm.import" {
+        return None;
+    }
+    match first_arg(&call.payload)? {
+        serde_json::Value::String(s) => {
+            Some(ImportRequest { source: Some(s), ..Default::default() })
+        }
+        serde_json::Value::Object(map) => Some(ImportRequest {
+            id: map.get("id").and_then(|v| v.as_str()).map(String::from),
+            source: map.get("source").and_then(|v| v.as_str()).map(String::from),
+            ast: map.get("ast").cloned(),
+        }),
+        _ => None,
+    }
+}
+
 /// A typed-null reply (the VM accepts bare JSON and types it itself).
 pub fn reply_null() -> String {
     "null".to_string()
@@ -119,5 +193,48 @@ mod tests {
     fn frame_from_submit_ignores_other_apis() {
         let call = HostCall { machine_id: "m".into(), api_name: "log".into(), payload: "[]".into() };
         assert!(frame_from_submit(&call).is_none());
+    }
+
+    #[test]
+    fn definition_from_define_unwraps_arg() {
+        let call = HostCall {
+            machine_id: "m".into(),
+            api_name: "gpu.define".into(),
+            payload: r#"[{"id":"quad","level":"render","commands":[{"cmd":"draw","vertex_count":6}]}]"#
+                .into(),
+        };
+        let def = definition_from_define(&call).unwrap();
+        assert_eq!(def.id, "quad");
+    }
+
+    #[test]
+    fn undefine_target_accepts_string_or_object() {
+        let s = HostCall {
+            machine_id: "m".into(),
+            api_name: "gpu.undefine".into(),
+            payload: r#"["quad"]"#.into(),
+        };
+        assert_eq!(undefine_target(&s).as_deref(), Some("quad"));
+        let o = HostCall { payload: r#"[{"id":"quad"}]"#.into(), ..s };
+        assert_eq!(undefine_target(&o).as_deref(), Some("quad"));
+    }
+
+    #[test]
+    fn import_request_parses_source_and_inline_ast() {
+        let src = HostCall {
+            machine_id: "m".into(),
+            api_name: "vm.import".into(),
+            payload: r#"["assets/shapes.json"]"#.into(),
+        };
+        assert_eq!(import_request(&src).unwrap().source.as_deref(), Some("assets/shapes.json"));
+
+        let inline = HostCall {
+            machine_id: "m".into(),
+            api_name: "vm.import".into(),
+            payload: r#"[{"id":"shapes","ast":{"type":"program","body":[]}}]"#.into(),
+        };
+        let req = import_request(&inline).unwrap();
+        assert_eq!(req.id.as_deref(), Some("shapes"));
+        assert!(req.ast.is_some());
     }
 }

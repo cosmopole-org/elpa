@@ -6,6 +6,7 @@ members = [
     "crates/elpa-renderer",
     "crates/elpa-runtime",
     "crates/elpa",
+    "examples/sdk",
 ]
 
 # The web example pulls in wgpu + web-sys and only targets wasm; keep it out of

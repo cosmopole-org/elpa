@@ -1,0 +1,22 @@
+[package]
+name = "elpa-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "The Elpa engine SDK, delivered as Elpian AST JSON (assets/*.ast.json) that runs directly on the Elpian VM. Importable via vm.import; draws 2D and 3D shapes with all geometry math in WGSL. `build_sdk` is the generator that authors the JSON; `lib` only embeds the JSON as assets for host examples."
+
+[lib]
+name = "elpa_sdk"
+
+# The generator that authors the SDK's JSON AST assets. Not the SDK itself.
+[[bin]]
+name = "build_sdk"
+path = "src/bin/build_sdk.rs"
+
+[dependencies]
+elpa-protocol = { path = "../../crates/elpa-protocol" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# Drive the JSON-AST SDK end to end through a real (headless) Elpa instance + VM.
+elpa = { path = "../../crates/elpa" }

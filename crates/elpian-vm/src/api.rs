@@ -43,6 +43,14 @@ static VMS: Lazy<Mutex<HashMap<String, VM>>> = Lazy::new(|| Mutex::new(HashMap::
 ///   resource without re-submitting the whole tree (queue writes).
 /// * `gpu.readBuffer` — async GPU→CPU readback (resolves on a later continue).
 /// * `gpu.surfaceInfo` — query the current surface size/format/scale factor.
+/// * `gpu.define` / `gpu.undefine` — register / unregister a reusable drawing
+///   definition (a named batch of commands, 2D and/or 3D) in the host's store,
+///   so later `gpu.submit` frames can reference it abstractly by id instead of
+///   re-emitting its command tree. Definitions may reference other definitions,
+///   composing complex drawings from simpler ones and keeping payloads tiny.
+/// * `vm.import` — import an external Elpian module (from a project asset or the
+///   network) and run it so it can register definitions, expanding the engine's
+///   drawing vocabulary at runtime.
 /// * `log` — diagnostics.
 fn all_host_apis() -> Vec<String> {
     // Every native host name the VM may emit must appear here, or a call to it
@@ -54,6 +62,9 @@ fn all_host_apis() -> Vec<String> {
         "gpu.writeTexture",
         "gpu.readBuffer",
         "gpu.surfaceInfo",
+        "gpu.define",
+        "gpu.undefine",
+        "vm.import",
     ]
     .iter()
     .map(|s| s.to_string())

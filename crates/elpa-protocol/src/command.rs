@@ -50,6 +50,11 @@ impl Frame {
 pub enum EncoderCommand {
     RenderPass(RenderPass),
     ComputePass(ComputePass),
+    /// Splice a registered encoder-level [`Definition`](crate::Definition)'s
+    /// commands in place. Resolved by the host's definition store *before*
+    /// rendering — the renderer never sees this variant. Lets one frame
+    /// reference a whole reusable scene (passes/copies) by id.
+    UseDefinition { definition: String },
     CopyBufferToBuffer {
         src: ResourceId,
         src_offset: u64,
@@ -199,6 +204,11 @@ pub enum RenderCommand {
     },
     SetBlendConstant { color: Color },
     SetStencilReference { reference: u32 },
+    /// Splice a registered render-level [`Definition`](crate::Definition)'s draw
+    /// commands in place. Resolved by the host's definition store *before*
+    /// rendering — the renderer never sees this variant. Lets a pass reference a
+    /// reusable shape / complex drawing by id instead of re-emitting its draws.
+    UseDefinition { definition: String },
 }
 
 /// A compute pass and its commands (mirrors `wgpu::ComputePass`).

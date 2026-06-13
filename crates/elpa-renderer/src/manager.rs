@@ -270,12 +270,7 @@ mod tests {
     }
 
     fn buf(id: &str, size: u64) -> ResourceDesc {
-        ResourceDesc::Buffer(BufferDesc {
-            id: id.into(),
-            size,
-            usage: vec!["VERTEX".into()],
-            data_b64: None,
-        })
+        ResourceDesc::Buffer(BufferDesc::new(id, size, vec!["VERTEX".into()]))
     }
 
     fn offscreen_pass(id: &str, vb: &str) -> EncoderCommand {
