@@ -1,27 +1,30 @@
 //! # elpa-renderer
 //!
-//! The rendering half of Elpa. It is split into two concerns:
+//! The renderer is the real-time map from the [`elpa_protocol::Frame`] wgpu
+//! command tree to the wgpu API, plus the two optimizations that make Elpa more
+//! than a thin shim:
 //!
-//! 1. **Drawing-management layer** ([`manager`], [`cache`], [`dirty`]): a
-//!    GPU-agnostic engine that turns a [`elpa_protocol::DrawList`] into a set of
-//!    cached compositing layers, tracks which screen rectangles changed between
-//!    frames, and decides the minimal work to present the next frame.
+//! 1. **Resource caching** ([`cache`]): every [`elpa_protocol::ResourceDesc`] is
+//!    created on the GPU once and reused until its content hash changes. Static
+//!    pipelines/buffers/textures cost nothing after frame 1.
 //!
-//! 2. **GPU backend** ([`backend`]): the [`backend::GpuBackend`] trait that the
-//!    drawing manager drives. The concrete wgpu implementation (under the
-//!    `wgpu-backend` feature) maps cache/composite operations to wgpu render
-//!    passes — the "Elpian-commands → wgpu-commands" mapping.
+//! 2. **Partial rendering** ([`manager`], [`dirty`]): each render/compute pass is
+//!    content-hashed (including the hashes of the resources it references).
+//!    Unchanged offscreen passes are *skipped entirely* — their cached target
+//!    texture is reused — and the surface present is scissored to the changed
+//!    region. A frame with nothing changed submits no work.
 //!
-//! The split keeps the hard, well-tested logic (caching, dirty rects, layer
-//! composition) independent of the GPU API, and keeps the GPU code a thin,
-//! mechanical translation layer. See `PLAN.md` for the full design.
+//! The actual wgpu calls live behind the [`backend::GpuBackend`] trait, so the
+//! cache/partial-render logic is validated with a mock backend and no GPU. The
+//! wgpu implementation (the literal command→API mapping) is the `wgpu-backend`
+//! feature and is the only place that links wgpu.
 
 pub mod backend;
 pub mod cache;
 pub mod dirty;
 pub mod manager;
 
-pub use backend::{Frame, GpuBackend};
-pub use cache::{CacheKey, LayerCache};
+pub use backend::GpuBackend;
+pub use cache::{content_hash, PassCache, ResourceCache};
 pub use dirty::DirtyTracker;
-pub use manager::DrawingManager;
+pub use manager::{FrameStats, Renderer};

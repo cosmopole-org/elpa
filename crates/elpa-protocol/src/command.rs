@@ -1,126 +1,345 @@
-//! The flat, renderer-ready draw-command list.
+//! The **wgpu command tree** — the imperative half of a frame.
 //!
-//! After layout, the UI tree (or a `canvas.*` op stream) is *lowered* into a
-//! [`DrawList`]: a linear sequence of [`DrawCommand`]s, each tagged with the
-//! [`LayerId`] it belongs to and a bounding [`Rect`]. This flat form is what the
-//! drawing-management layer caches, content-hashes, diffs, and replays — and
-//! what the wgpu backend batches into draw calls.
+//! A [`Frame`] is exactly what the VM submits via `gpu.submit`: the resources it
+//! needs plus an ordered list of encoder-level commands (render passes, compute
+//! passes, copies, queue writes). Render/compute passes nest their own command
+//! lists. The renderer walks this tree and issues the corresponding wgpu calls,
+//! one-to-one, in real time.
+//!
+//! This is deliberately a faithful mirror of `wgpu`'s `CommandEncoder` /
+//! `RenderPass` / `ComputePass` surface — *not* a higher-level drawing model. 2D
+//! and 3D are the same commands with different pipelines/shaders.
 
 use serde::{Deserialize, Serialize};
 
-use crate::geometry::{Color, Point, Rect, Transform};
+use crate::geometry::{Color, Extent3d, Origin3d, Rect};
+use crate::resource::{ResourceDesc, ResourceId};
 
-/// Identifies a compositing layer. Layers are the unit of caching: a layer
-/// whose content hash is unchanged is re-used as a cached GPU texture instead of
-/// being re-rasterized. See `PLAN.md` §"Layer & Caching Model".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct LayerId(pub u64);
-
-/// How a shape is painted.
+/// A reference to a render target: either the swapchain surface or a texture
+/// resource the app declared (an offscreen / cacheable layer).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Paint {
-    Solid(Color),
-    /// Indices into the draw list's gradient table (kept out-of-band so the
-    /// command stays small and `Copy`-friendly where possible).
-    LinearGradient(u32),
-    RadialGradient(u32),
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TargetView {
+    /// The window's current swapchain texture.
+    Surface,
+    /// A declared texture resource — these are the offscreen passes the cache
+    /// can reuse when unchanged (the basis of partial rendering).
+    Texture { texture: ResourceId },
 }
 
-/// A single drawing primitive. This is intentionally a small, closed set: the
-/// large `canvas.*` / widget vocabulary is *reduced* to these primitives during
-/// lowering so the GPU backend only implements a handful of pipelines.
+/// One frame's worth of GPU work: declarations + commands.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Frame {
+    /// Resources referenced this frame. Unchanged ones are served from cache.
+    #[serde(default)]
+    pub resources: Vec<ResourceDesc>,
+    /// Encoder-level commands, executed in order.
+    #[serde(default)]
+    pub commands: Vec<EncoderCommand>,
+}
+
+impl Frame {
+    pub fn parse(json: &str) -> Result<Frame, serde_json::Error> {
+        serde_json::from_str(json)
+    }
+}
+
+/// A top-level command recorded on the `CommandEncoder` (or queue).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Primitive {
-    /// Filled (optionally rounded) rectangle.
-    Rect { rect: Rect, radius: f32, paint: Paint },
-    /// Stroked rectangle outline.
-    RectStroke { rect: Rect, radius: f32, width: f32, paint: Paint },
-    /// A run of shaped text. `glyphs` is resolved against the glyph atlas by the
-    /// renderer; `text` is retained for hashing & accessibility.
-    Text { origin: Point, text: String, size: f32, paint: Paint },
-    /// A textured quad (decoded image / sub-rect of an atlas).
-    Image { rect: Rect, image_id: u64, src: Rect },
-    /// A filled polygon / tessellated path (vertices already flattened).
-    Path { points: Vec<Point>, paint: Paint },
-    /// Push a clip rectangle (intersected with the current clip).
-    PushClip { rect: Rect },
-    /// Pop the most recent clip.
-    PopClip,
+#[serde(tag = "op", rename_all = "camelCase")]
+pub enum EncoderCommand {
+    RenderPass(RenderPass),
+    ComputePass(ComputePass),
+    CopyBufferToBuffer {
+        src: ResourceId,
+        src_offset: u64,
+        dst: ResourceId,
+        dst_offset: u64,
+        size: u64,
+    },
+    CopyBufferToTexture {
+        src: ResourceId,
+        dst: ResourceId,
+        #[serde(default)]
+        origin: Origin3d,
+        size: Extent3d,
+    },
+    CopyTextureToBuffer {
+        src: ResourceId,
+        dst: ResourceId,
+        #[serde(default)]
+        origin: Origin3d,
+        size: Extent3d,
+    },
+    CopyTextureToTexture {
+        src: ResourceId,
+        dst: ResourceId,
+        size: Extent3d,
+    },
+    /// `queue.write_buffer` with base64 data.
+    WriteBuffer {
+        buffer: ResourceId,
+        #[serde(default)]
+        offset: u64,
+        data_b64: String,
+    },
+    /// `queue.write_texture` with base64 data.
+    WriteTexture {
+        texture: ResourceId,
+        #[serde(default)]
+        origin: Origin3d,
+        size: Extent3d,
+        data_b64: String,
+    },
+    ClearBuffer {
+        buffer: ResourceId,
+        #[serde(default)]
+        offset: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size: Option<u64>,
+    },
 }
 
-/// One entry in the draw list: a primitive plus the state needed to place,
-/// cache, and partially-replay it.
+/// A render pass: targets, optional depth, and a nested command list.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DrawCommand {
-    /// Compositing layer this command belongs to.
-    pub layer: LayerId,
-    /// World-space bounds (post-transform) used for dirty-rect culling.
-    pub bounds: Rect,
-    /// Affine transform applied to the primitive's local coordinates.
-    pub transform: Transform,
-    /// Global alpha multiplier in `[0, 1]`.
-    pub opacity: f32,
-    /// The primitive to draw.
-    pub prim: Primitive,
+pub struct RenderPass {
+    /// Stable id makes this pass *cacheable*: if its content hash (commands +
+    /// referenced-resource hashes) is unchanged and it targets a texture, the
+    /// renderer reuses the cached texture instead of re-recording. Surface
+    /// passes are always recorded but scissored to the dirty region.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub color_attachments: Vec<ColorAttachment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth_stencil: Option<DepthAttachment>,
+    pub commands: Vec<RenderCommand>,
 }
 
-impl DrawCommand {
-    pub fn new(layer: LayerId, bounds: Rect, prim: Primitive) -> Self {
-        Self { layer, bounds, transform: Transform::IDENTITY, opacity: 1.0, prim }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ColorAttachment {
+    pub view: TargetView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolve_target: Option<ResourceId>,
+    /// `clear` clears to `clear_color`; otherwise the prior contents load.
+    #[serde(default = "load_clear")]
+    pub load: String,
+    #[serde(default = "btrue")]
+    pub store: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clear_color: Option<Color>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DepthAttachment {
+    pub view: ResourceId,
+    #[serde(default = "load_clear")]
+    pub depth_load: String,
+    #[serde(default = "one_f32")]
+    pub depth_clear: f32,
+    #[serde(default = "btrue")]
+    pub depth_store: bool,
+}
+
+/// A command inside a render pass (mirrors `wgpu::RenderPass`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "cmd", rename_all = "camelCase")]
+pub enum RenderCommand {
+    SetPipeline { pipeline: ResourceId },
+    SetBindGroup {
+        index: u32,
+        bind_group: ResourceId,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        dynamic_offsets: Vec<u32>,
+    },
+    SetVertexBuffer {
+        slot: u32,
+        buffer: ResourceId,
+        #[serde(default)]
+        offset: u64,
+    },
+    SetIndexBuffer {
+        buffer: ResourceId,
+        /// `uint16` | `uint32`.
+        format: String,
+        #[serde(default)]
+        offset: u64,
+    },
+    Draw {
+        vertex_count: u32,
+        #[serde(default = "one_u32")]
+        instance_count: u32,
+        #[serde(default)]
+        first_vertex: u32,
+        #[serde(default)]
+        first_instance: u32,
+    },
+    DrawIndexed {
+        index_count: u32,
+        #[serde(default = "one_u32")]
+        instance_count: u32,
+        #[serde(default)]
+        first_index: u32,
+        #[serde(default)]
+        base_vertex: i32,
+        #[serde(default)]
+        first_instance: u32,
+    },
+    DrawIndirect { buffer: ResourceId, offset: u64 },
+    DrawIndexedIndirect { buffer: ResourceId, offset: u64 },
+    SetScissorRect { rect: Rect },
+    SetViewport {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        #[serde(default)]
+        min_depth: f32,
+        #[serde(default = "one_f32")]
+        max_depth: f32,
+    },
+    SetBlendConstant { color: Color },
+    SetStencilReference { reference: u32 },
+}
+
+/// A compute pass and its commands (mirrors `wgpu::ComputePass`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ComputePass {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub commands: Vec<ComputeCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "cmd", rename_all = "camelCase")]
+pub enum ComputeCommand {
+    SetPipeline { pipeline: ResourceId },
+    SetBindGroup {
+        index: u32,
+        bind_group: ResourceId,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        dynamic_offsets: Vec<u32>,
+    },
+    Dispatch { x: u32, y: u32, z: u32 },
+    DispatchIndirect { buffer: ResourceId, offset: u64 },
+}
+
+impl RenderPass {
+    /// Resource ids this pass references (for cache invalidation: if any change,
+    /// the pass's cached output is stale). Includes attachment textures.
+    pub fn referenced_resources(&self) -> Vec<ResourceId> {
+        let mut ids = Vec::new();
+        for a in &self.color_attachments {
+            if let TargetView::Texture { texture } = &a.view {
+                ids.push(texture.clone());
+            }
+            if let Some(rt) = &a.resolve_target {
+                ids.push(rt.clone());
+            }
+        }
+        if let Some(d) = &self.depth_stencil {
+            ids.push(d.view.clone());
+        }
+        for c in &self.commands {
+            match c {
+                RenderCommand::SetPipeline { pipeline } => ids.push(pipeline.clone()),
+                RenderCommand::SetBindGroup { bind_group, .. } => ids.push(bind_group.clone()),
+                RenderCommand::SetVertexBuffer { buffer, .. }
+                | RenderCommand::SetIndexBuffer { buffer, .. }
+                | RenderCommand::DrawIndirect { buffer, .. }
+                | RenderCommand::DrawIndexedIndirect { buffer, .. } => ids.push(buffer.clone()),
+                _ => {}
+            }
+        }
+        ids
+    }
+
+    /// Whether this pass writes to the swapchain surface (so it must run every
+    /// frame, scissored) rather than a cacheable offscreen texture.
+    pub fn targets_surface(&self) -> bool {
+        self.color_attachments.iter().any(|a| matches!(a.view, TargetView::Surface))
     }
 }
 
-/// An ordered list of draw commands for one frame, partitioned implicitly by
-/// each command's [`LayerId`]. The renderer walks it in order, honoring clips.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct DrawList {
-    pub commands: Vec<DrawCommand>,
+impl ComputePass {
+    /// Resource ids this pass references, for cache invalidation.
+    pub fn referenced_resources(&self) -> Vec<ResourceId> {
+        let mut ids = Vec::new();
+        for c in &self.commands {
+            match c {
+                ComputeCommand::SetPipeline { pipeline } => ids.push(pipeline.clone()),
+                ComputeCommand::SetBindGroup { bind_group, .. } => ids.push(bind_group.clone()),
+                ComputeCommand::DispatchIndirect { buffer, .. } => ids.push(buffer.clone()),
+                ComputeCommand::Dispatch { .. } => {}
+            }
+        }
+        ids
+    }
 }
 
-impl DrawList {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn push(&mut self, cmd: DrawCommand) {
-        self.commands.push(cmd);
-    }
-
-    /// Union of the bounds of every command touching `layer` — i.e. that
-    /// layer's content extent, used when allocating its cache texture.
-    pub fn layer_bounds(&self, layer: LayerId) -> Rect {
-        self.commands
-            .iter()
-            .filter(|c| c.layer == layer)
-            .fold(Rect::default(), |acc, c| acc.union(&c.bounds))
-    }
-
-    /// All commands whose bounds intersect `dirty` — the subset that must be
-    /// re-recorded during a partial-rendering pass.
-    pub fn commands_in(&self, dirty: Rect) -> impl Iterator<Item = &DrawCommand> {
-        self.commands.iter().filter(move |c| c.bounds.intersects(&dirty))
-    }
+fn load_clear() -> String {
+    "clear".into()
+}
+fn btrue() -> bool {
+    true
+}
+fn one_u32() -> u32 {
+    1
+}
+fn one_f32() -> f32 {
+    1.0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const FRAME: &str = r#"{
+      "resources": [
+        {"kind":"shader","id":"sh","wgsl":"// wgsl"},
+        {"kind":"buffer","id":"vb","size":48,"usage":["VERTEX"]},
+        {"kind":"renderPipeline","id":"pipe",
+         "vertex":{"module":"sh","entry_point":"vs"},
+         "fragment":{"module":"sh","entry_point":"fs","targets":[{"format":"bgra8unorm"}]}}
+      ],
+      "commands": [
+        {"op":"renderPass","id":"main",
+         "color_attachments":[{"view":{"kind":"surface"},"clear_color":{"r":0,"g":0,"b":0,"a":1}}],
+         "commands":[
+           {"cmd":"setPipeline","pipeline":"pipe"},
+           {"cmd":"setVertexBuffer","slot":0,"buffer":"vb"},
+           {"cmd":"draw","vertex_count":3}
+         ]}
+      ]
+    }"#;
+
     #[test]
-    fn layer_bounds_and_dirty_filter() {
-        let mut dl = DrawList::new();
-        dl.push(DrawCommand::new(
-            LayerId(0),
-            Rect::new(0.0, 0.0, 10.0, 10.0),
-            Primitive::Rect { rect: Rect::new(0.0, 0.0, 10.0, 10.0), radius: 0.0, paint: Paint::Solid(Color::WHITE) },
-        ));
-        dl.push(DrawCommand::new(
-            LayerId(0),
-            Rect::new(100.0, 100.0, 10.0, 10.0),
-            Primitive::PopClip,
-        ));
-        assert_eq!(dl.layer_bounds(LayerId(0)), Rect::new(0.0, 0.0, 110.0, 110.0));
-        let hits: Vec<_> = dl.commands_in(Rect::new(0.0, 0.0, 20.0, 20.0)).collect();
-        assert_eq!(hits.len(), 1);
+    fn parses_a_full_frame_tree() {
+        let f = Frame::parse(FRAME).unwrap();
+        assert_eq!(f.resources.len(), 3);
+        assert_eq!(f.commands.len(), 1);
+        match &f.commands[0] {
+            EncoderCommand::RenderPass(rp) => {
+                assert!(rp.targets_surface());
+                let refs = rp.referenced_resources();
+                assert!(refs.contains(&"pipe".to_string()));
+                assert!(refs.contains(&"vb".to_string()));
+            }
+            _ => panic!("expected render pass"),
+        }
+    }
+
+    #[test]
+    fn compute_and_copy_commands_parse() {
+        let json = r#"{
+          "commands":[
+            {"op":"computePass","commands":[
+              {"cmd":"setPipeline","pipeline":"sim"},
+              {"cmd":"dispatch","x":64,"y":1,"z":1}
+            ]},
+            {"op":"copyBufferToBuffer","src":"a","src_offset":0,"dst":"b","dst_offset":0,"size":256}
+          ]
+        }"#;
+        let f = Frame::parse(json).unwrap();
+        assert_eq!(f.commands.len(), 2);
     }
 }

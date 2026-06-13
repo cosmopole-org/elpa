@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 /// Mirror of the JSON the VM produces in `VmExecResult::host_call_data`:
 /// `{"machineId", "apiName", "payload"}`. `payload` is kept as a raw JSON
-/// string because its shape depends entirely on `api_name` (a UI tree for
-/// `render`, a canvas op for `canvas.*`, a log line for `println`, ...).
+/// string because its shape depends entirely on `api_name` (a [`crate::Frame`]
+/// for `gpu.submit`, a buffer write for `gpu.writeBuffer`, a line for `log`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostCall {
     #[serde(rename = "machineId")]
@@ -33,10 +33,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_render_envelope() {
-        let raw = r#"{"machineId":"m1","apiName":"render","payload":"{\"html\":{}}"}"#;
+    fn parses_submit_envelope() {
+        let raw = r#"{"machineId":"m1","apiName":"gpu.submit","payload":"{\"commands\":[]}"}"#;
         let hc = HostCall::parse(raw).unwrap();
-        assert_eq!(hc.api_name, "render");
+        assert_eq!(hc.api_name, "gpu.submit");
         assert_eq!(hc.machine_id, "m1");
     }
 }

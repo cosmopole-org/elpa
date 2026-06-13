@@ -1,47 +1,44 @@
-//! The GPU backend trait — the seam where the drawing-management layer meets
-//! the actual graphics API.
+//! The GPU backend trait — the seam where the command tree meets wgpu.
 //!
-//! The [`DrawingManager`](crate::DrawingManager) decides *what* to do (which
-//! layers to rasterize, which cached textures to composite, which dirty rects to
-//! scissor). A [`GpuBackend`] decides *how*, by mapping those decisions onto a
-//! concrete API. The shipping implementation is wgpu (feature `wgpu-backend`);
-//! a headless software backend is used for tests.
+//! [`Renderer`](crate::Renderer) decides *what* to do (which resources to
+//! (re)create, which passes to record or skip, what to scissor). A [`GpuBackend`]
+//! decides *how*, mapping each call to wgpu, one-to-one:
+//!
+//! | `GpuBackend` method     | wgpu realization                                   |
+//! |-------------------------|----------------------------------------------------|
+//! | `create_resource`       | `device.create_buffer/texture/sampler/shader_module/bind_group_layout/bind_group/pipeline_layout/render_pipeline/compute_pipeline` (dispatch on `ResourceDesc`). |
+//! | `destroy_resource`      | drop the cached wgpu handle.                       |
+//! | `begin_frame`           | `surface.get_current_texture` + `device.create_command_encoder`. |
+//! | `record_render_pass`    | `encoder.begin_render_pass` + replay each `RenderCommand` (`set_pipeline`, `set_bind_group`, `set_vertex_buffer`, `draw_indexed`, `set_scissor_rect`, …). |
+//! | `record_compute_pass`   | `encoder.begin_compute_pass` + `set_pipeline`/`set_bind_group`/`dispatch_workgroups`. |
+//! | `record_encoder_command`| `encoder.copy_*` / `queue.write_buffer`/`write_texture`/`clear_buffer`. |
+//! | `end_frame`             | `queue.submit` + `frame.present`, honoring the dirty scissor. |
+//!
+//! Crucially, when [`Renderer`] decides a pass is a cache hit it simply does not
+//! call `record_render_pass` — the backend's previously-rendered target texture
+//! stands in. That omission *is* the partial-rendering speedup.
 
-use elpa_protocol::{DrawCommand, LayerId, Rect};
+use elpa_protocol::{ComputePass, EncoderCommand, Rect, RenderPass, ResourceDesc};
 
-/// A handle to one presented frame's worth of GPU work. Acquired at the start of
-/// a frame and submitted at the end.
-pub struct Frame {
-    pub width: u32,
-    pub height: u32,
-}
-
-/// Operations the drawing manager needs from a graphics API. A wgpu
-/// implementation maps these to: render-pass-per-layer for `rasterize_layer`,
-/// a textured-quad pass for `composite_layer`, and `set_scissor`/`present` to
-/// the swapchain.
 pub trait GpuBackend {
-    /// Allocate (or resize) the offscreen texture backing a layer; returns the
-    /// opaque texture id stored in [`crate::cache::CachedLayer`].
-    fn ensure_layer_texture(&mut self, layer: LayerId, bounds: Rect) -> u64;
+    /// Create or replace the GPU object for `desc` (dispatch on its variant).
+    fn create_resource(&mut self, desc: &ResourceDesc);
 
-    /// Rasterize `commands` into the layer's offscreen texture. Only called when
-    /// the layer's content hash changed (cache miss).
-    fn rasterize_layer(&mut self, texture_id: u64, bounds: Rect, commands: &[DrawCommand]);
+    /// Release the GPU object previously created for `id`.
+    fn destroy_resource(&mut self, id: &str);
 
-    /// Constrain subsequent compositing to the union of `dirty` (the scissor /
-    /// clip used for partial presentation). Empty slice means full-frame.
-    fn set_scissor(&mut self, dirty: &[Rect]);
+    /// Acquire the swapchain image and start a command encoder for this frame.
+    fn begin_frame(&mut self);
 
-    /// Blit a cached layer texture into the frame at its bounds.
-    fn composite_layer(&mut self, frame: &mut Frame, texture_id: u64, bounds: Rect, opacity: f32);
+    /// Encode one render pass (cache miss / uncacheable only).
+    fn record_render_pass(&mut self, pass: &RenderPass);
 
-    /// Acquire the next swapchain image.
-    fn begin_frame(&mut self) -> Frame;
+    /// Encode one compute pass (cache miss / uncacheable only).
+    fn record_compute_pass(&mut self, pass: &ComputePass);
 
-    /// Submit and present.
-    fn present(&mut self, frame: Frame);
+    /// Encode a copy or queue-write command.
+    fn record_encoder_command(&mut self, cmd: &EncoderCommand);
 
-    /// Free a texture that the cache evicted.
-    fn drop_texture(&mut self, texture_id: u64);
+    /// Submit the encoder and present, scissored to `dirty` (empty == full).
+    fn end_frame(&mut self, dirty: &[Rect]);
 }

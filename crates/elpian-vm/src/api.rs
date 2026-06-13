@@ -29,80 +29,31 @@ use crate::sdk::vm::VM;
 /// Thread-safe registry of live VMs keyed by `machineId`.
 static VMS: Lazy<Mutex<HashMap<String, VM>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
-/// Host APIs the Elpa runtime is expected to service. The VM itself implements
-/// none of these — it only forwards `askHost` calls. `render` is the central
-/// one for the UI: it carries the full UI-tree JSON down to the renderer.
+/// Host APIs the Elpa runtime services. The VM implements none of these — it
+/// only forwards `askHost` calls. Elpa is a *programmable VM around the wgpu
+/// API*: there is **no** widget/DOM/canvas abstraction. The app's JS emits a
+/// nested JSON tree of wgpu commands and submits it; Elpa maps that tree to the
+/// wgpu API in real time (see `PLAN.md`).
 ///
-/// The `canvas.*` family mirrors the HTML5 Canvas 2D API and is the low-level
-/// immediate-mode drawing surface; `dom.*` is the retained UI-tree mutation
-/// API. Both ultimately resolve to draw commands inside the renderer (see
-/// `PLAN.md` §"Drawing Management Layer").
+/// The surface is intentionally tiny:
+/// * `gpu.submit` — hand the renderer one frame's wgpu command tree
+///   (`elpa_protocol::Frame`: resources + encoder commands). This is the central
+///   call and the only one strictly required.
+/// * `gpu.writeBuffer` / `gpu.writeTexture` — stream data into an existing GPU
+///   resource without re-submitting the whole tree (queue writes).
+/// * `gpu.readBuffer` — async GPU→CPU readback (resolves on a later continue).
+/// * `gpu.surfaceInfo` — query the current surface size/format/scale factor.
+/// * `log` — diagnostics.
 fn all_host_apis() -> Vec<String> {
+    // Every native host name the VM may emit must appear here, or a call to it
+    // is not treated as a native `askHost` target.
     [
-        // Core runtime
-        "println",
-        "stringify",
-        "render",
-        "updateApp",
-        // Retained UI-tree (DOM-like) mutation API
-        "dom.getElementById",
-        "dom.querySelector",
-        "dom.querySelectorAll",
-        "dom.createElement",
-        "dom.removeElement",
-        "dom.setTextContent",
-        "dom.setAttribute",
-        "dom.getAttribute",
-        "dom.setStyle",
-        "dom.setStyleObject",
-        "dom.addClass",
-        "dom.removeClass",
-        "dom.appendChild",
-        "dom.insertBefore",
-        "dom.removeChild",
-        "dom.addEventListener",
-        "dom.removeEventListener",
-        "dom.toJson",
-        // Immediate-mode canvas (Canvas 2D-compatible) drawing API
-        "canvas.addCommand",
-        "canvas.addCommands",
-        "canvas.clear",
-        "canvas.beginPath",
-        "canvas.closePath",
-        "canvas.moveTo",
-        "canvas.lineTo",
-        "canvas.quadraticCurveTo",
-        "canvas.bezierCurveTo",
-        "canvas.arc",
-        "canvas.ellipse",
-        "canvas.rect",
-        "canvas.roundRect",
-        "canvas.circle",
-        "canvas.fillRect",
-        "canvas.strokeRect",
-        "canvas.clearRect",
-        "canvas.fillText",
-        "canvas.strokeText",
-        "canvas.drawImage",
-        "canvas.fill",
-        "canvas.stroke",
-        "canvas.clip",
-        "canvas.save",
-        "canvas.restore",
-        "canvas.translate",
-        "canvas.rotate",
-        "canvas.scale",
-        "canvas.transform",
-        "canvas.setTransform",
-        "canvas.resetTransform",
-        "canvas.setFillStyle",
-        "canvas.setStrokeStyle",
-        "canvas.setLineWidth",
-        "canvas.setFont",
-        "canvas.setGlobalAlpha",
-        "canvas.createLinearGradient",
-        "canvas.createRadialGradient",
-        "canvas.addColorStop",
+        "log",
+        "gpu.submit",
+        "gpu.writeBuffer",
+        "gpu.writeTexture",
+        "gpu.readBuffer",
+        "gpu.surfaceInfo",
     ]
     .iter()
     .map(|s| s.to_string())
