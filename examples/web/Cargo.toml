@@ -10,6 +10,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 elpa = { path = "../../crates/elpa", features = ["wgpu"] }
+# The SDK shipped as Elpian AST JSON; this crate only embeds those assets
+# (`MODULE_AST` / `DEMO_AST`) to load onto the page.
+elpa-sdk = { path = "../sdk" }
 wgpu = { version = "29", features = ["webgl"] }
 serde_json = "1.0"
 

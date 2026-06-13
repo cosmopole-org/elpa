@@ -10,8 +10,6 @@
 //!    drive `elpa.resize` / `elpa.send_event`. The app re-submits frames; Elpa's
 //!    cache + partial rendering keep redraws cheap.
 
-mod app_ast;
-
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -92,11 +90,19 @@ async fn run() {
     let backend = WgpuBackend::new(&instance, surface, w, h).await;
     let format_token = format_token(backend.surface_format());
 
-    // 3. Assemble the Elpa instance over the live backend + the app AST.
-    let ast = app_ast::build(&format_token);
+    // 3. Assemble the Elpa instance over the live backend + the SDK demo app.
+    //
+    // The app is the Elpa **engine SDK example**, which is itself Elpian AST
+    // JSON: `DEMO_AST` imports the SDK module and draws 2D + 3D shapes by id.
+    // Register the importable SDK module as the asset the demo imports — with the
+    // pipelines' color target retargeted to this surface's actual format (the SDK
+    // bakes `bgra8unorm`; the browser surface may be `*-srgb`, and wgpu requires
+    // the pipeline target to match the surface exactly).
+    let module = elpa_sdk::MODULE_AST.replace("\"bgra8unorm\"", &format!("\"{format_token}\""));
     let surface_info = SurfaceInfo::new(w, h, dpr);
-    let mut app = Elpa::new(backend, surface_info, &ast).expect("app AST compiles");
-    app.start(); // run top-level program (init + first frame)
+    let mut app = Elpa::new(backend, surface_info, elpa_sdk::DEMO_AST).expect("app AST compiles");
+    app.register_asset(elpa_sdk::MODULE_SOURCE, module);
+    app.start(); // import the SDK module + first frame
 
     let app = Rc::new(RefCell::new(app));
 

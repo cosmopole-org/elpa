@@ -100,11 +100,14 @@ impl DefinitionStore {
     pub fn expand(&self, frame: &Frame) -> Result<Frame, ExpandError> {
         let mut out = Expander::new(self);
         let commands = out.encoder_commands(&frame.commands, &mut Vec::new())?;
-        // Frame-owned resources take precedence over definition-supplied ones of
-        // the same id (the app can override a definition's resource locally).
-        let mut resources = Vec::with_capacity(frame.resources.len() + out.resources.len());
+        // Definition-supplied resources come **first** so dependencies are
+        // created before dependents: a definition's bind-group *layout* (and
+        // shaders/pipelines) must exist before a frame's bind group that
+        // references it. Within each group, original order is preserved, and
+        // ids are deduplicated keeping the first occurrence.
+        let mut resources = Vec::with_capacity(out.resources.len() + frame.resources.len());
         let mut seen: HashSet<String> = HashSet::new();
-        for r in frame.resources.iter().chain(out.resources.iter()) {
+        for r in out.resources.iter().chain(frame.resources.iter()) {
             if seen.insert(r.id().clone()) {
                 resources.push(r.clone());
             }

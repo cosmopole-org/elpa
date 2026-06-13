@@ -15,17 +15,11 @@ use std::fs;
 use std::path::Path;
 
 use elpa_protocol::resource::{
-    BindGroupDesc, BindGroupEntry, BindGroupLayoutDesc, BindGroupLayoutEntry, BindingResource,
-    BlendComponent, BlendState, BufferDesc, ColorTargetState, DepthStencilState, FragmentState,
-    PipelineLayoutDesc, PrimitiveState, RenderPipelineDesc, ShaderDesc, VertexAttribute,
-    VertexBufferLayout, VertexState,
+    BindGroupLayoutDesc, BindGroupLayoutEntry, BlendComponent, BlendState, ColorTargetState,
+    DepthStencilState, FragmentState, PipelineLayoutDesc, PrimitiveState, RenderPipelineDesc,
+    ShaderDesc, VertexAttribute, VertexBufferLayout, VertexState,
 };
-use elpa_protocol::{
-    ColorAttachment, ComputePass, Definition, DefinitionBody, EncoderCommand, Extent3d, Frame,
-    RenderCommand, RenderPass, ResourceDesc, TargetView,
-};
-use elpa_protocol::command::DepthAttachment;
-use elpa_protocol::resource::TextureDesc;
+use elpa_protocol::{Definition, DefinitionBody, RenderCommand, ResourceDesc};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
@@ -407,37 +401,6 @@ fn shape_definition(shape: &Shape, instance_count: u32) -> Definition {
     }
 }
 
-// --- per-frame resource helpers (also emitted into the demo) -----------------
-
-fn uniform(id: &str, data: Vec<f32>) -> ResourceDesc {
-    ResourceDesc::Buffer(BufferDesc {
-        size: (data.len() * 4) as u64,
-        usage: vec!["UNIFORM".into(), "COPY_DST".into()],
-        data_f32: Some(data),
-        ..BufferDesc::new(id, 0, vec![])
-    })
-}
-
-fn instance_buffer(id: &str, data: Vec<f32>) -> ResourceDesc {
-    ResourceDesc::Buffer(BufferDesc {
-        size: (data.len() * 4) as u64,
-        usage: vec!["VERTEX".into()],
-        data_f32: Some(data),
-        ..BufferDesc::new(id, 0, vec![])
-    })
-}
-
-fn globals_bind(id: &str, layout: &str, buffer: &str) -> ResourceDesc {
-    ResourceDesc::BindGroup(BindGroupDesc {
-        id: id.into(),
-        layout: layout.into(),
-        entries: vec![BindGroupEntry {
-            binding: 0,
-            resource: BindingResource::Buffer { buffer: buffer.into(), offset: 0, size: None },
-        }],
-    })
-}
-
 // --- AST emission ------------------------------------------------------------
 
 /// Convert plain JSON to an Elpian AST literal expression, omitting null fields
@@ -483,6 +446,102 @@ fn program(body: Vec<Value>) -> Value {
     json!({ "type": "program", "body": body })
 }
 
+// --- AST expression helpers (for the demo's computed, animated scene) --------
+
+fn a_s(v: &str) -> Value {
+    json!({ "type": "string", "data": { "value": v } })
+}
+fn a_i(v: i64) -> Value {
+    json!({ "type": "i64", "data": { "value": v } })
+}
+fn a_f(v: f64) -> Value {
+    json!({ "type": "f64", "data": { "value": v } })
+}
+fn a_bool(v: bool) -> Value {
+    json!({ "type": "bool", "data": { "value": v } })
+}
+fn a_id(name: &str) -> Value {
+    json!({ "type": "identifier", "data": { "name": name } })
+}
+fn a_obj(pairs: Vec<(&str, Value)>) -> Value {
+    let mut m = Map::new();
+    for (k, v) in pairs {
+        m.insert(k.to_string(), v);
+    }
+    json!({ "type": "object", "data": { "value": m } })
+}
+fn a_arr(items: Vec<Value>) -> Value {
+    json!({ "type": "array", "data": { "value": items } })
+}
+fn a_mul(a: Value, b: Value) -> Value {
+    json!({ "type": "arithmetic", "data": { "operation": "*", "operand1": a, "operand2": b } })
+}
+fn a_add(a: Value, b: Value) -> Value {
+    json!({ "type": "arithmetic", "data": { "operation": "+", "operand1": a, "operand2": b } })
+}
+fn a_index(target: Value, key: &str) -> Value {
+    json!({ "type": "indexer", "data": { "target": target, "index": a_s(key) } })
+}
+fn a_define(name: &str, value: Value) -> Value {
+    json!({ "type": "definition", "data": { "leftSide": a_id(name), "rightSide": value } })
+}
+fn a_assign(name: &str, value: Value) -> Value {
+    json!({ "type": "assignment", "data": { "leftSide": a_id(name), "rightSide": value } })
+}
+fn a_call(name: &str) -> Value {
+    json!({ "type": "functionCall", "data": { "callee": a_id(name), "args": [] } })
+}
+fn a_func(name: &str, params: Vec<&str>, body: Vec<Value>) -> Value {
+    json!({ "type": "functionDefinition", "data": { "name": name, "params": params, "body": body } })
+}
+
+/// An f32-array GPU buffer whose elements may be computed expressions.
+fn a_buffer(id: &str, usage: &[&str], floats: Vec<Value>) -> Value {
+    a_obj(vec![
+        ("kind", a_s("buffer")),
+        ("id", a_s(id)),
+        ("size", a_i((floats.len() * 4) as i64)),
+        ("usage", a_arr(usage.iter().map(|u| a_s(u)).collect())),
+        ("data_f32", a_arr(floats)),
+    ])
+}
+
+fn a_globals_bind(id: &str, layout: &str, buffer: &str) -> Value {
+    a_obj(vec![
+        ("kind", a_s("bindGroup")),
+        ("id", a_s(id)),
+        ("layout", a_s(layout)),
+        ("entries", a_arr(vec![a_obj(vec![
+            ("binding", a_i(0)),
+            ("resource", a_obj(vec![("type", a_s("buffer")), ("buffer", a_s(buffer))])),
+        ])])),
+    ])
+}
+
+fn a_rgba(r: f64, g: f64, b: f64, a: f64) -> Vec<Value> {
+    vec![a_f(r), a_f(g), a_f(b), a_f(a)]
+}
+
+fn a_use(def: &str) -> Value {
+    a_obj(vec![("cmd", a_s("useDefinition")), ("definition", a_s(def))])
+}
+
+fn a_set_bind(group: &str) -> Value {
+    a_obj(vec![("cmd", a_s("setBindGroup")), ("index", a_i(0)), ("bind_group", a_s(group))])
+}
+
+fn a_surface_clear(r: f64, g: f64, b: f64) -> Value {
+    a_obj(vec![
+        ("view", a_obj(vec![("kind", a_s("surface"))])),
+        ("load", a_s("clear")),
+        ("clear_color", a_obj(vec![("r", a_f(r)), ("g", a_f(g)), ("b", a_f(b)), ("a", a_f(1.0))])),
+    ])
+}
+
+fn a_surface_load() -> Value {
+    a_obj(vec![("view", a_obj(vec![("kind", a_s("surface"))])), ("load", a_s("load"))])
+}
+
 /// The importable SDK module: a `gpu.define` per catalog shape (single-instance
 /// building blocks). An app `vm.import`s this, then references shapes by id.
 fn build_module() -> Value {
@@ -490,107 +549,122 @@ fn build_module() -> Value {
     program(body)
 }
 
-/// A demo program: import the SDK, then draw a 2D scene (rect + triangle +
-/// circle) and a 3D scene (cube + sphere), referencing the imported shapes by id
-/// and supplying only numeric per-instance data.
+/// A complete, runnable demo **app** (Elpian AST). It imports the SDK module,
+/// then on every frame builds one frame with two passes — a depth-tested 3D pass
+/// (a rotating cube and sphere) and a 2D overlay pass (a rotating rect, triangle
+/// and circle) — referencing the SDK shapes by id and supplying only numeric
+/// per-instance data. The scene sizes itself from `gpu.surfaceInfo`, so it fills
+/// any window; rotation is driven by a frame counter (the WGSL builds the
+/// matrices, so no trig is needed in the VM). This is exactly what the web
+/// example loads onto GitHub Pages.
 fn build_demo() -> Value {
-    // 2D frame: viewport globals + one instance per shape, referenced by id.
-    let mut res2d = vec![uniform(GLB2, vec![800.0, 600.0, 0.0, 0.0]), globals_bind(GLB2_BIND, BGL2, GLB2)];
-    // instance layout (2D): center.xy, size.xy | rot, sides, kind, _ | rgba
-    res2d.push(instance_buffer(
-        &shape_instances_id("rect"),
-        vec![200.0, 300.0, 220.0, 120.0, 0.2, 0.0, 0.0, 0.0, 0.2, 0.5, 0.95, 1.0],
-    ));
-    res2d.push(instance_buffer(
-        &shape_instances_id("triangle"),
-        vec![450.0, 300.0, 90.0, 0.0, 0.0, 3.0, 1.0, 0.0, 0.95, 0.85, 0.2, 1.0],
-    ));
-    res2d.push(instance_buffer(
-        &shape_instances_id("circle"),
-        vec![620.0, 300.0, 80.0, 0.0, 0.0, 48.0, 1.0, 0.0, 0.9, 0.2, 0.2, 1.0],
-    ));
-    let frame2d = Frame {
-        resources: res2d,
-        commands: vec![EncoderCommand::RenderPass(RenderPass {
-            id: Some("elpa.sdk.demo.2d".into()),
-            color_attachments: vec![ColorAttachment {
-                view: TargetView::Surface,
-                resolve_target: None,
-                load: "clear".into(),
-                store: true,
-                clear_color: Some(elpa_protocol::Color::rgba(0.06, 0.07, 0.10, 1.0)),
-            }],
-            depth_stencil: None,
-            commands: vec![
-                RenderCommand::SetBindGroup { index: 0, bind_group: GLB2_BIND.into(), dynamic_offsets: vec![] },
-                RenderCommand::UseDefinition { definition: shape_def_id("rect") },
-                RenderCommand::UseDefinition { definition: shape_def_id("triangle") },
-                RenderCommand::UseDefinition { definition: shape_def_id("circle") },
-            ],
-        })],
-    };
+    // Live surface metrics queried each render.
+    let width = a_index(a_id("si"), "width");
+    let height = a_index(a_id("si"), "height");
+    let aspect = a_index(a_id("si"), "aspect");
+    let spin = |k: f64| a_mul(a_id("n"), a_f(k)); // angle = n * k
 
-    // 3D frame: camera globals + depth + one instance per shape.
-    // cam: eye.xyz, fov | target.xyz, aspect | near, far, 0, 0
-    let cam = vec![
-        3.5, 2.5, 4.0, std::f32::consts::FRAC_PI_3,
-        0.0, 0.0, 0.0, 800.0 / 600.0,
-        0.1, 100.0, 0.0, 0.0,
-    ];
-    let mut res3d = vec![uniform(GLB3, cam), globals_bind(GLB3_BIND, BGL3, GLB3)];
-    res3d.push(ResourceDesc::Texture(TextureDesc {
-        id: DEPTH.into(),
-        size: Extent3d { width: 800, height: 600, depth: 1 },
-        format: DEPTH_FORMAT.into(),
-        usage: vec!["RENDER_ATTACHMENT".into()],
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: "2d".into(),
-    }));
-    // instance layout (3D): pos.xyz, scale | rot.xyz, kind | rgba
-    res3d.push(instance_buffer(
-        &shape_instances_id("cube"),
-        vec![-1.1, 0.0, 0.0, 1.0, 0.4, 0.6, 0.0, 0.0, 0.2, 0.5, 0.95, 1.0],
-    ));
-    res3d.push(instance_buffer(
-        &shape_instances_id("sphere"),
-        vec![1.1, 0.0, 0.0, 1.2, 0.0, 0.0, 0.0, 1.0, 0.95, 0.4, 0.3, 1.0],
-    ));
-    let frame3d = Frame {
-        resources: res3d,
-        commands: vec![EncoderCommand::RenderPass(RenderPass {
-            id: Some("elpa.sdk.demo.3d".into()),
-            color_attachments: vec![ColorAttachment {
-                view: TargetView::Surface,
-                resolve_target: None,
-                load: "clear".into(),
-                store: true,
-                clear_color: Some(elpa_protocol::Color::rgba(0.04, 0.05, 0.08, 1.0)),
-            }],
-            depth_stencil: Some(DepthAttachment {
-                view: DEPTH.into(),
-                depth_load: "clear".into(),
-                depth_clear: 1.0,
-                depth_store: true,
-            }),
-            commands: vec![
-                RenderCommand::SetBindGroup { index: 0, bind_group: GLB3_BIND.into(), dynamic_offsets: vec![] },
-                RenderCommand::UseDefinition { definition: shape_def_id("cube") },
-                RenderCommand::UseDefinition { definition: shape_def_id("sphere") },
-            ],
-        })],
-    };
+    // --- 3D pass resources: camera + depth + per-instance data ---------------
+    let camera = a_buffer(
+        GLB3,
+        &["UNIFORM", "COPY_DST"],
+        // eye.xyz, fovY | target.xyz, aspect | near, far, _, _
+        vec![
+            a_f(3.6), a_f(2.6), a_f(4.2), a_f(std::f64::consts::FRAC_PI_3),
+            a_f(0.0), a_f(0.0), a_f(0.0), aspect,
+            a_f(0.1), a_f(100.0), a_f(0.0), a_f(0.0),
+        ],
+    );
+    let depth = a_obj(vec![
+        ("kind", a_s("texture")),
+        ("id", a_s(DEPTH)),
+        ("size", a_obj(vec![("width", width.clone()), ("height", height.clone()), ("depth", a_i(1))])),
+        ("format", a_s(DEPTH_FORMAT)),
+        ("usage", a_arr(vec![a_s("RENDER_ATTACHMENT")])),
+    ]);
+    // 3D instance layout: pos.xyz, scale | rot.xyz, kind | rgba
+    let mut cube_inst = vec![a_f(-1.2), a_f(0.0), a_f(0.0), a_f(1.0), a_f(0.5), spin(0.02), a_f(0.0), a_f(0.0)];
+    cube_inst.extend(a_rgba(0.20, 0.52, 0.96, 1.0));
+    let mut sphere_inst = vec![a_f(1.2), a_f(0.0), a_f(0.0), a_f(1.25), a_f(0.0), spin(0.015), a_f(0.0), a_f(1.0)];
+    sphere_inst.extend(a_rgba(0.96, 0.42, 0.30, 1.0));
+
+    let pass3d = a_obj(vec![
+        ("op", a_s("renderPass")),
+        ("id", a_s("elpa.sdk.demo.3d")),
+        ("color_attachments", a_arr(vec![a_surface_clear(0.05, 0.06, 0.09)])),
+        ("depth_stencil", a_obj(vec![
+            ("view", a_s(DEPTH)),
+            ("depth_load", a_s("clear")),
+            ("depth_clear", a_f(1.0)),
+            ("depth_store", a_bool(true)),
+        ])),
+        ("commands", a_arr(vec![
+            a_set_bind(GLB3_BIND),
+            a_use(&shape_def_id("cube")),
+            a_use(&shape_def_id("sphere")),
+        ])),
+    ]);
+
+    // --- 2D overlay pass resources: viewport + per-instance data -------------
+    let viewport = a_buffer(GLB2, &["UNIFORM", "COPY_DST"], vec![width.clone(), height.clone(), a_f(0.0), a_f(0.0)]);
+    // 2D instance layout: center.xy, size.xy | rot, sides, kind, _ | rgba
+    let cx = |frac: f64| a_mul(width.clone(), a_f(frac));
+    let cy = a_mul(height.clone(), a_f(0.82));
+    let mut rect_inst = vec![cx(0.30), cy.clone(), a_f(150.0), a_f(90.0), spin(0.01), a_f(0.0), a_f(0.0), a_f(0.0)];
+    rect_inst.extend(a_rgba(0.30, 0.80, 0.45, 1.0));
+    let mut tri_inst = vec![cx(0.50), cy.clone(), a_f(60.0), a_f(60.0), spin(0.02), a_f(3.0), a_f(1.0), a_f(0.0)];
+    tri_inst.extend(a_rgba(0.95, 0.85, 0.20, 1.0));
+    let mut circ_inst = vec![cx(0.70), cy, a_f(55.0), a_f(55.0), a_f(0.0), a_f(48.0), a_f(1.0), a_f(0.0)];
+    circ_inst.extend(a_rgba(0.90, 0.35, 0.40, 1.0));
+
+    let pass2d = a_obj(vec![
+        ("op", a_s("renderPass")),
+        ("id", a_s("elpa.sdk.demo.2d")),
+        ("color_attachments", a_arr(vec![a_surface_load()])), // draw over the 3D scene
+        ("commands", a_arr(vec![
+            a_set_bind(GLB2_BIND),
+            a_use(&shape_def_id("rect")),
+            a_use(&shape_def_id("triangle")),
+            a_use(&shape_def_id("circle")),
+        ])),
+    ]);
+
+    let frame = a_obj(vec![
+        ("resources", a_arr(vec![
+            camera,
+            a_globals_bind(GLB3_BIND, BGL3, GLB3),
+            depth,
+            a_buffer(&shape_instances_id("cube"), &["VERTEX"], cube_inst),
+            a_buffer(&shape_instances_id("sphere"), &["VERTEX"], sphere_inst),
+            viewport,
+            a_globals_bind(GLB2_BIND, BGL2, GLB2),
+            a_buffer(&shape_instances_id("rect"), &["VERTEX"], rect_inst),
+            a_buffer(&shape_instances_id("triangle"), &["VERTEX"], tri_inst),
+            a_buffer(&shape_instances_id("circle"), &["VERTEX"], circ_inst),
+        ])),
+        ("commands", a_arr(vec![pass3d, pass2d])),
+    ]);
+
+    // render(): query the surface, then submit the frame.
+    let render = a_func(
+        "render",
+        vec![],
+        vec![a_define("si", host_call("gpu.surfaceInfo", vec![])), host_call("gpu.submit", vec![frame])],
+    );
 
     program(vec![
-        host_call("vm.import", vec![literal(&"assets/elpa-sdk.ast.json")]),
-        host_call("gpu.submit", vec![literal(&frame2d)]),
-        host_call("gpu.submit", vec![literal(&frame3d)]),
+        // Pull the SDK shapes into the definition store.
+        host_call("vm.import", vec![a_s("assets/elpa-sdk.ast.json")]),
+        a_define("n", a_i(0)),
+        render,
+        // Animate: advance the counter and redraw each tick.
+        a_func("onFrame", vec!["dt"], vec![a_assign("n", a_add(a_id("n"), a_i(1))), a_call("render")]),
+        // Redraw on resize so the scene refits to the new surface.
+        a_func("onResize", vec!["info"], vec![a_call("render")]),
+        // First paint.
+        a_call("render"),
     ])
 }
-
-// Silence "never constructed" for the protocol variants the SDK doesn't emit.
-#[allow(dead_code)]
-fn _unused(_c: ComputePass) {}
 
 fn main() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");

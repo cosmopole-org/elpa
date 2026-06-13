@@ -77,3 +77,33 @@ fn referenced_shapes_expand_to_draws_with_no_leftover_references() {
     assert!(frame.resources.iter().any(|r| r.id() == "elpa.sdk.pipe.3d"));
     assert!(frame.resources.iter().any(|r| r.id() == "elpa.sdk.depth.3d"));
 }
+
+#[test]
+fn demo_animates_and_resizes_like_the_web_host() {
+    // Mirrors what the web example does: start, drive animation frames, and
+    // resize. The scene sizes itself from surfaceInfo and rotates via a counter,
+    // so each tick re-renders without error and the resize refits.
+    let mut app = instance();
+    app.start();
+    let _ = app.take_log();
+
+    for _ in 0..3 {
+        app.animate(16.0);
+    }
+    assert!(app.last_stats().presented, "animation keeps presenting");
+    assert!(app.take_log().is_empty(), "no host errors while animating");
+
+    app.resize(1920, 1080, 2.0);
+    assert!(app.take_log().is_empty(), "no host errors on resize");
+    // After resizing, the depth texture refits the new surface (1920x1080).
+    let frame = app.last_frame().unwrap();
+    let depth = frame
+        .resources
+        .iter()
+        .find_map(|r| match r {
+            elpa::protocol::ResourceDesc::Texture(t) if t.id == "elpa.sdk.depth.3d" => Some(t),
+            _ => None,
+        })
+        .expect("depth texture present");
+    assert_eq!((depth.size.width, depth.size.height), (1920, 1080));
+}

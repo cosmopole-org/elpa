@@ -211,11 +211,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "elpa-sdk"
+version = "0.1.0"
+dependencies = [
+ "elpa-protocol",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "elpa-web-example"
 version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
  "elpa",
+ "elpa-sdk",
  "js-sys",
  "serde_json",
  "wasm-bindgen",
