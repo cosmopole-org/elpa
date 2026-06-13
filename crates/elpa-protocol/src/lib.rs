@@ -21,6 +21,7 @@
 //! pipelines and shaders. See `PLAN.md` for the full mapping and coverage.
 
 pub mod command;
+pub mod definition;
 pub mod geometry;
 pub mod hostcall;
 pub mod resource;
@@ -29,6 +30,7 @@ pub use command::{
     ColorAttachment, ComputeCommand, ComputePass, EncoderCommand, Frame, RenderCommand, RenderPass,
     TargetView,
 };
+pub use definition::{Definition, DefinitionBody};
 pub use geometry::{Color, Extent3d, Origin3d, Rect};
 pub use hostcall::HostCall;
 pub use resource::{ResourceDesc, ResourceId};

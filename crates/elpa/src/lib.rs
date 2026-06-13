@@ -43,17 +43,28 @@ pub use headless::HeadlessBackend;
 pub use surface::SurfaceInfo;
 
 // Re-export the core types a host/example needs.
-pub use elpa_protocol::{self as protocol, Frame};
+pub use elpa_protocol::{self as protocol, Definition, DefinitionBody, Frame};
 pub use elpa_renderer::{FrameStats, GpuBackend, Renderer};
+pub use elpa_runtime::DefinitionStore;
 
 #[cfg(feature = "wgpu")]
 pub use elpa_renderer::wgpu_backend::WgpuBackend;
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use elpa_runtime::{frame_from_submit, reply_json, reply_null, Runtime, Start};
+use elpa_runtime::{
+    definition_from_define, frame_from_submit, import_request, reply_json, reply_null,
+    undefine_target, Runtime, Start,
+};
 
 static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static IMPORT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A hook the embedder can install to resolve an external module `source` (that
+/// is not in the bundled asset map) to its Elpian AST JSON — e.g. a synchronous
+/// network fetch. Returns `None` if the source cannot be resolved.
+pub type AssetFetcher = Box<dyn Fn(&str) -> Option<String>>;
 
 /// One running Elpa application: VM + renderer + backend, assembled and managed
 /// together. Generic over the [`GpuBackend`] so the same instance logic drives
@@ -65,6 +76,14 @@ pub struct Elpa<B: GpuBackend> {
     last_frame: Option<Frame>,
     last_stats: FrameStats,
     log: Vec<String>,
+    /// Registered reusable drawing definitions (the `gpu.define` store). Submitted
+    /// frames are expanded against this before they reach the renderer.
+    defs: DefinitionStore,
+    /// Bundled external Elpian modules, keyed by the `source` string `vm.import`
+    /// references (e.g. a project asset path). Populated by the embedder.
+    assets: HashMap<String, String>,
+    /// Optional resolver for `vm.import` sources not found in `assets`.
+    fetcher: Option<AssetFetcher>,
 }
 
 impl<B: GpuBackend> Elpa<B> {
@@ -80,7 +99,61 @@ impl<B: GpuBackend> Elpa<B> {
             last_frame: None,
             last_stats: FrameStats::default(),
             log: Vec::new(),
+            defs: DefinitionStore::new(),
+            assets: HashMap::new(),
+            fetcher: None,
         })
+    }
+
+    /// Bundle an external Elpian module so the app can `vm.import` it by
+    /// `source`. `ast_json` is an Elpian AST program; when imported it is run
+    /// once and may register drawing definitions (via `gpu.define`) that the app
+    /// then references. This is how the engine's drawing vocabulary is expanded
+    /// from project assets without recompiling the app.
+    pub fn register_asset(&mut self, source: impl Into<String>, ast_json: impl Into<String>) {
+        self.assets.insert(source.into(), ast_json.into());
+    }
+
+    /// Install a resolver for `vm.import` sources that are not bundled assets
+    /// (e.g. fetched from the network). Called with the requested `source`.
+    pub fn set_fetcher(&mut self, fetcher: impl Fn(&str) -> Option<String> + 'static) {
+        self.fetcher = Some(Box::new(fetcher));
+    }
+
+    /// Register a drawing definition directly from the Rust host (the same store
+    /// `gpu.define` writes to). Useful for seeding engine primitives at startup.
+    pub fn define(&mut self, def: Definition) {
+        self.defs.register(def);
+    }
+
+    /// Unregister a definition by id. Returns whether one was present.
+    pub fn undefine(&mut self, id: &str) -> bool {
+        self.defs.unregister(id)
+    }
+
+    /// The current definition store (count/lookup of registered drawings).
+    pub fn definitions(&self) -> &DefinitionStore {
+        &self.defs
+    }
+
+    /// Import and run an Elpian AST module directly from the host, registering
+    /// whatever definitions it declares. Equivalent to the app calling
+    /// `vm.import` with an inline `ast`. Returns whether the module compiled.
+    pub fn import_ast(&mut self, ast_json: &str) -> bool {
+        let id = format!("elpa-import-{}", IMPORT_COUNTER.fetch_add(1, Ordering::Relaxed));
+        let Elpa { renderer, surface, last_frame, last_stats, log, defs, assets, fetcher, .. } =
+            self;
+        match Runtime::from_ast(id, ast_json) {
+            Some(mut rt) => {
+                pump_vm(
+                    &mut rt, Start::Main, renderer, surface, last_frame, last_stats, log, defs,
+                    assets, fetcher,
+                );
+                rt.dispose();
+                true
+            }
+            None => false,
+        }
     }
 
     /// Run the app's top-level program (initialization + first frame).
@@ -137,30 +210,143 @@ impl<B: GpuBackend> Elpa<B> {
         &mut self.renderer
     }
 
-    /// Pump the VM for one turn, routing host calls. `gpu.submit` frames are fed
-    /// straight to the renderer (where caching + partial rendering happen);
-    /// `gpu.surfaceInfo` is answered from live state.
+    /// Pump the VM for one turn, routing host calls (see [`handle_call`]).
     fn drive(&mut self, start: Start) {
         // Disjoint borrows of the instance's fields for the dispatch closure.
-        let Elpa { runtime, renderer, surface, last_frame, last_stats, log } = self;
-        runtime.pump(start, |hc| match hc.api_name.as_str() {
-            "gpu.submit" => {
-                if let Some(frame) = frame_from_submit(hc) {
-                    *last_stats = renderer.render(&frame);
-                    *last_frame = Some(frame);
-                }
-                reply_null()
-            }
-            "gpu.surfaceInfo" => reply_json(&surface.to_json()),
-            "log" => {
-                log.push(hc.payload.clone());
-                reply_null()
-            }
-            // gpu.writeBuffer/writeTexture/readBuffer are serviced by the host's
-            // backend adapter in a full integration; acknowledged here.
-            _ => reply_null(),
-        });
+        let Elpa { runtime, renderer, surface, last_frame, last_stats, log, defs, assets, fetcher } =
+            self;
+        pump_vm(
+            runtime, start, renderer, surface, last_frame, last_stats, log, defs, assets, fetcher,
+        );
     }
+}
+
+/// Drive one VM (the app, or an imported module) through a pump turn, routing
+/// every host call through [`handle_call`] with the shared instance state.
+///
+/// Factored as a free function over explicit `&mut` parameters (rather than a
+/// method) so that `vm.import` can run a *nested* VM with the same routing and
+/// the same definition store / renderer, without the borrow conflict a second
+/// `&mut self` reentry would cause.
+#[allow(clippy::too_many_arguments)]
+fn pump_vm<B: GpuBackend>(
+    rt: &mut Runtime,
+    start: Start,
+    renderer: &mut Renderer<B>,
+    surface: &SurfaceInfo,
+    last_frame: &mut Option<Frame>,
+    last_stats: &mut FrameStats,
+    log: &mut Vec<String>,
+    defs: &mut DefinitionStore,
+    assets: &HashMap<String, String>,
+    fetcher: &Option<AssetFetcher>,
+) {
+    rt.pump(start, |hc| {
+        handle_call(hc, renderer, surface, last_frame, last_stats, log, defs, assets, fetcher)
+    });
+}
+
+/// Service one host call against the shared instance state and return the reply.
+///
+/// * `gpu.submit` — **expand** the frame against the definition store (resolving
+///   every `useDefinition` reference into a flat command tree), then render it.
+/// * `gpu.define` / `gpu.undefine` — register / unregister a reusable drawing.
+/// * `vm.import` — resolve an external module (inline `ast`, bundled asset, or
+///   `fetcher`) and run it through a nested pump so its `gpu.define` calls land
+///   in the *same* store the app references.
+/// * `gpu.surfaceInfo` / `log` — answered from live state.
+#[allow(clippy::too_many_arguments)]
+fn handle_call<B: GpuBackend>(
+    hc: &elpa_protocol::HostCall,
+    renderer: &mut Renderer<B>,
+    surface: &SurfaceInfo,
+    last_frame: &mut Option<Frame>,
+    last_stats: &mut FrameStats,
+    log: &mut Vec<String>,
+    defs: &mut DefinitionStore,
+    assets: &HashMap<String, String>,
+    fetcher: &Option<AssetFetcher>,
+) -> String {
+    match hc.api_name.as_str() {
+        "gpu.submit" => {
+            if let Some(frame) = frame_from_submit(hc) {
+                match defs.expand(&frame) {
+                    Ok(flat) => {
+                        *last_stats = renderer.render(&flat);
+                        *last_frame = Some(flat);
+                    }
+                    Err(e) => log.push(format!("gpu.submit: {e}")),
+                }
+            }
+            reply_null()
+        }
+        "gpu.define" => {
+            if let Some(def) = definition_from_define(hc) {
+                defs.register(def);
+            }
+            reply_null()
+        }
+        "gpu.undefine" => {
+            if let Some(id) = undefine_target(hc) {
+                defs.unregister(&id);
+            }
+            reply_null()
+        }
+        "vm.import" => {
+            if let Some(req) = import_request(hc) {
+                match resolve_module(&req, assets, fetcher) {
+                    Some(ast_json) => {
+                        let id =
+                            format!("elpa-import-{}", IMPORT_COUNTER.fetch_add(1, Ordering::Relaxed));
+                        match Runtime::from_ast(id, &ast_json) {
+                            Some(mut rt) => {
+                                pump_vm(
+                                    &mut rt, Start::Main, renderer, surface, last_frame, last_stats,
+                                    log, defs, assets, fetcher,
+                                );
+                                rt.dispose();
+                            }
+                            None => log.push(format!(
+                                "vm.import: module {:?} failed to compile",
+                                req.source.as_deref().or(req.id.as_deref()).unwrap_or("<inline>")
+                            )),
+                        }
+                    }
+                    None => log.push(format!(
+                        "vm.import: could not resolve source {:?}",
+                        req.source.as_deref().unwrap_or("<none>")
+                    )),
+                }
+            }
+            reply_null()
+        }
+        "gpu.surfaceInfo" => reply_json(&surface.to_json()),
+        "log" => {
+            log.push(hc.payload.clone());
+            reply_null()
+        }
+        // gpu.writeBuffer/writeTexture/readBuffer are serviced by the host's
+        // backend adapter in a full integration; acknowledged here.
+        _ => reply_null(),
+    }
+}
+
+/// Resolve an [`ImportRequest`](elpa_runtime::ImportRequest) to module AST JSON:
+/// an inline `ast` wins; else the `source` is looked up in bundled `assets`;
+/// else the optional `fetcher` is consulted.
+fn resolve_module(
+    req: &elpa_runtime::ImportRequest,
+    assets: &HashMap<String, String>,
+    fetcher: &Option<AssetFetcher>,
+) -> Option<String> {
+    if let Some(ast) = &req.ast {
+        return Some(ast.to_string());
+    }
+    let source = req.source.as_deref()?;
+    if let Some(ast) = assets.get(source) {
+        return Some(ast.clone());
+    }
+    fetcher.as_ref().and_then(|f| f(source))
 }
 
 #[cfg(test)]
@@ -245,5 +431,154 @@ mod tests {
         assert_eq!(app.surface_info().scale_factor, 2.0);
         // invalidate() forced a re-record even though the frame content matches.
         assert!(app.renderer().backend().render_passes >= 2);
+    }
+
+    fn host_call(name: &str, args: Vec<serde_json::Value>) -> serde_json::Value {
+        json!({ "type": "host_call", "data": { "name": name, "args": args } })
+    }
+
+    /// A render-level definition literal: a buffer resource + draw commands.
+    fn shape_def(id: &str, vb: &str) -> serde_json::Value {
+        obj(json!({
+            "id": s(id),
+            "level": s("render"),
+            "resources": arr(vec![ obj(json!({
+                "kind": s("buffer"), "id": s(vb), "size": i(48), "usage": arr(vec![ s("VERTEX") ])
+            })) ]),
+            "commands": arr(vec![
+                obj(json!({ "cmd": s("setVertexBuffer"), "slot": i(0), "buffer": s(vb) })),
+                obj(json!({ "cmd": s("draw"), "vertex_count": i(3) })),
+            ])
+        }))
+    }
+
+    /// A frame literal whose single surface pass references a definition by id.
+    fn frame_using(def_id: &str) -> serde_json::Value {
+        obj(json!({
+            "commands": arr(vec![ obj(json!({
+                "op": s("renderPass"), "id": s("main"),
+                "color_attachments": arr(vec![ obj(json!({ "view": obj(json!({ "kind": s("surface") })) })) ]),
+                "commands": arr(vec![ obj(json!({ "cmd": s("useDefinition"), "definition": s(def_id) })) ])
+            })) ])
+        }))
+    }
+
+    #[test]
+    fn define_then_reference_expands_and_renders() {
+        // App: register a shape definition, then submit a frame that references
+        // it abstractly. The host should expand the reference into the shape's
+        // draw commands and create its buffer resource.
+        let program = json!({
+            "type": "program",
+            "body": [
+                host_call("gpu.define", vec![ shape_def("tri", "triVB") ]),
+                host_call("gpu.submit", vec![ frame_using("tri") ]),
+            ]
+        })
+        .to_string();
+
+        let surface = SurfaceInfo::new(800, 600, 1.0);
+        let mut app = Elpa::new(HeadlessBackend::default(), surface, &program).unwrap();
+        app.start();
+
+        assert_eq!(app.definitions().len(), 1, "definition registered");
+        // The definition's buffer was created and the surface pass recorded.
+        assert_eq!(app.renderer().backend().resources_created, 1);
+        assert_eq!(app.renderer().backend().render_passes, 1);
+        assert!(app.last_stats().presented);
+
+        // The realized (expanded) frame has the shape's two draw commands and no
+        // leftover useDefinition reference.
+        let frame = app.last_frame().unwrap();
+        assert_eq!(frame.resources.len(), 1);
+        match &frame.commands[0] {
+            protocol::EncoderCommand::RenderPass(rp) => {
+                assert_eq!(rp.commands.len(), 2);
+                assert!(rp
+                    .commands
+                    .iter()
+                    .all(|c| !matches!(c, protocol::RenderCommand::UseDefinition { .. })));
+            }
+            _ => panic!("expected render pass"),
+        }
+    }
+
+    #[test]
+    fn undefine_removes_from_store() {
+        let program = json!({
+            "type": "program",
+            "body": [
+                host_call("gpu.define", vec![ shape_def("tri", "triVB") ]),
+                host_call("gpu.undefine", vec![ s("tri") ]),
+            ]
+        })
+        .to_string();
+        let mut app = Elpa::new(HeadlessBackend::default(), SurfaceInfo::new(8, 8, 1.0), &program)
+            .unwrap();
+        app.start();
+        assert!(app.definitions().is_empty(), "definition unregistered");
+    }
+
+    #[test]
+    fn import_asset_module_registers_definitions_then_app_uses_them() {
+        // The external module (a separate Elpian program) only registers a shape.
+        let module = json!({
+            "type": "program",
+            "body": [ host_call("gpu.define", vec![ shape_def("imported", "impVB") ]) ]
+        })
+        .to_string();
+
+        // The app imports the module by source, then references its shape.
+        let program = json!({
+            "type": "program",
+            "body": [
+                host_call("vm.import", vec![ s("assets/shapes.json") ]),
+                host_call("gpu.submit", vec![ frame_using("imported") ]),
+            ]
+        })
+        .to_string();
+
+        let mut app = Elpa::new(HeadlessBackend::default(), SurfaceInfo::new(64, 64, 1.0), &program)
+            .unwrap();
+        app.register_asset("assets/shapes.json", module);
+        app.start();
+
+        assert!(app.definitions().contains("imported"), "import populated the store");
+        // The imported shape's buffer was created and its draw recorded.
+        assert_eq!(app.renderer().backend().resources_created, 1);
+        assert_eq!(app.renderer().backend().render_passes, 1);
+        let frame = app.last_frame().unwrap();
+        match &frame.commands[0] {
+            protocol::EncoderCommand::RenderPass(rp) => assert_eq!(rp.commands.len(), 2),
+            _ => panic!("expected render pass"),
+        }
+    }
+
+    #[test]
+    fn import_via_network_fetcher() {
+        let module = json!({
+            "type": "program",
+            "body": [ host_call("gpu.define", vec![ shape_def("net", "netVB") ]) ]
+        })
+        .to_string();
+
+        let program = json!({
+            "type": "program",
+            "body": [ host_call("vm.import", vec![ s("https://cdn.example/shapes.json") ]) ]
+        })
+        .to_string();
+
+        let mut app = Elpa::new(HeadlessBackend::default(), SurfaceInfo::new(8, 8, 1.0), &program)
+            .unwrap();
+        // Stand in for a synchronous network fetch.
+        app.set_fetcher(move |source| {
+            if source.starts_with("https://") {
+                Some(module.clone())
+            } else {
+                None
+            }
+        });
+        app.start();
+        assert!(app.definitions().contains("net"), "fetched module registered its shape");
     }
 }

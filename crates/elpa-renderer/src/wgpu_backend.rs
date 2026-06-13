@@ -168,11 +168,10 @@ impl<'s> GpuBackend for WgpuBackend<'s> {
         match desc {
             ResourceDesc::Buffer(d) => {
                 let usage = parse::buffer_usage(&d.usage);
-                let buffer = match &d.data_b64 {
-                    Some(b64) => {
-                        let bytes = base64::engine::general_purpose::STANDARD
-                            .decode(b64)
-                            .unwrap_or_default();
+                // Initial contents may be base64 or a numeric array (packed
+                // little-endian); `init_bytes` resolves whichever is set.
+                let buffer = match d.init_bytes() {
+                    Some(bytes) => {
                         self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                             label: Some(&d.id),
                             contents: &bytes,
@@ -625,6 +624,9 @@ impl<'s> WgpuBackend<'s> {
                 rp.set_blend_constant(wgpu::Color { r: color.r, g: color.g, b: color.b, a: color.a });
             }
             RenderCommand::SetStencilReference { reference } => rp.set_stencil_reference(*reference),
+            // Definition references are expanded by the host's definition store
+            // before a frame reaches the backend; a leftover one is a no-op.
+            RenderCommand::UseDefinition { .. } => {}
         }
     }
 }

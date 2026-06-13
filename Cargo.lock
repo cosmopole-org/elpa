@@ -201,6 +201,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "elpa-sdk"
+version = "0.1.0"
+dependencies = [
+ "elpa",
+ "elpa-protocol",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "elpian-vm"
 version = "0.1.0"
 dependencies = [

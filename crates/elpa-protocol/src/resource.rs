@@ -51,7 +51,7 @@ impl ResourceDesc {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BufferDesc {
     pub id: ResourceId,
     pub size: u64,
@@ -61,6 +61,70 @@ pub struct BufferDesc {
     /// Optional initial contents, base64-encoded; decoded at the backend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_b64: Option<String>,
+    /// Optional initial contents as a numeric array, packed little-endian at the
+    /// backend. These let a VM program build geometry / instance / uniform data
+    /// from plain number arrays — which the Elpian language expresses natively —
+    /// without producing base64. At most one `data_*` field should be set; they
+    /// are tried in order `data_b64`, `data_f32`, `data_u32`, `data_u16`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_f32: Option<Vec<f32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_u32: Option<Vec<u32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_u16: Option<Vec<u16>>,
+}
+
+impl BufferDesc {
+    /// A buffer with no initial contents.
+    pub fn new(id: impl Into<ResourceId>, size: u64, usage: Vec<String>) -> Self {
+        Self { id: id.into(), size, usage, ..Default::default() }
+    }
+
+    /// The initial contents as little-endian bytes, from whichever `data_*`
+    /// field is set (`None` => create the buffer uninitialized at `size`).
+    pub fn init_bytes(&self) -> Option<Vec<u8>> {
+        if let Some(b64) = &self.data_b64 {
+            return Some(decode_b64(b64));
+        }
+        if let Some(v) = &self.data_f32 {
+            return Some(v.iter().flat_map(|x| x.to_le_bytes()).collect());
+        }
+        if let Some(v) = &self.data_u32 {
+            return Some(v.iter().flat_map(|x| x.to_le_bytes()).collect());
+        }
+        if let Some(v) = &self.data_u16 {
+            return Some(v.iter().flat_map(|x| x.to_le_bytes()).collect());
+        }
+        None
+    }
+}
+
+/// Minimal standard-alphabet base64 decoder (no padding required) so the
+/// protocol crate stays dependency-free; the backend uses [`BufferDesc::init_bytes`].
+fn decode_b64(s: &str) -> Vec<u8> {
+    fn val(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out = Vec::new();
+    let mut buf = 0u32;
+    let mut bits = 0u32;
+    for &c in s.as_bytes() {
+        let Some(v) = val(c) else { continue }; // skip '=' and whitespace
+        buf = (buf << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -92,6 +156,7 @@ pub struct SamplerDesc {
     pub address_mode_v: String,
     pub address_mode_w: String,
     /// `wgpu::CompareFunction` for comparison/shadow samplers, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub compare: Option<String>,
 }
 
@@ -253,6 +318,7 @@ pub struct BlendComponent {
 pub struct PrimitiveState {
     /// `point-list` | `line-list` | `line-strip` | `triangle-list` | `triangle-strip`.
     pub topology: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub strip_index_format: Option<String>,
     /// `ccw` | `cw`.
     pub front_face: String,
@@ -333,6 +399,51 @@ mod tests {
         let back = serde_json::to_string(&d).unwrap();
         let d2: ResourceDesc = serde_json::from_str(&back).unwrap();
         assert_eq!(d, d2);
+    }
+
+    #[test]
+    fn numeric_buffer_data_packs_little_endian() {
+        // A buffer initialized from a float array (the path a VM program uses to
+        // build geometry without base64).
+        let json = r#"{"kind":"buffer","id":"vb","size":8,"usage":["VERTEX"],"data_f32":[1.0,-1.0]}"#;
+        let d: ResourceDesc = serde_json::from_str(json).unwrap();
+        match &d {
+            ResourceDesc::Buffer(b) => {
+                let bytes = b.init_bytes().unwrap();
+                assert_eq!(bytes.len(), 8);
+                assert_eq!(&bytes[0..4], &1.0f32.to_le_bytes());
+                assert_eq!(&bytes[4..8], &(-1.0f32).to_le_bytes());
+            }
+            _ => panic!("expected buffer"),
+        }
+        // Round-trips and omits the unset data fields.
+        let back = serde_json::to_string(&d).unwrap();
+        assert!(!back.contains("data_b64"));
+        assert!(!back.contains("data_u16"));
+        assert_eq!(serde_json::from_str::<ResourceDesc>(&back).unwrap(), d);
+    }
+
+    #[test]
+    fn uint16_buffer_and_base64_round_trip_to_same_bytes() {
+        let u16s = ResourceDesc::Buffer(BufferDesc {
+            data_u16: Some(vec![0x0102, 0x0304]),
+            ..BufferDesc::new("ib", 4, vec!["INDEX".into()])
+        });
+        match &u16s {
+            ResourceDesc::Buffer(b) => {
+                assert_eq!(b.init_bytes().unwrap(), vec![0x02, 0x01, 0x04, 0x03]);
+            }
+            _ => unreachable!(),
+        }
+        // The built-in base64 decoder matches a known encoding ("AQID" -> 1,2,3).
+        let b64 = ResourceDesc::Buffer(BufferDesc {
+            data_b64: Some("AQID".into()),
+            ..BufferDesc::new("b", 3, vec!["VERTEX".into()])
+        });
+        match &b64 {
+            ResourceDesc::Buffer(b) => assert_eq!(b.init_bytes().unwrap(), vec![1, 2, 3]),
+            _ => unreachable!(),
+        }
     }
 
     #[test]

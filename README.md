@@ -59,9 +59,27 @@ for the same triangle running in a winit window on **desktop
 | `elpa-protocol` | The wgpu command-tree schema (resources + commands + geometry) | ✅ tested |
 | `elpa-renderer` | Resource cache, partial rendering, `GpuBackend` trait, **live wgpu backend** | ✅ tested · ✅ wgpu 29 compiles |
 | `elpa-runtime` | Host-call pump: drives the VM, parses `gpu.submit` → `Frame` | ✅ tested |
-| `elpa` | **Unified instance**: VM + renderer + backend in one object | ✅ tested |
+| `elpa` | **Unified instance**: VM + renderer + backend in one object; definition store + `vm.import` | ✅ tested |
 | `examples/web` | Full-window DPI canvas drawing Elpa frames (wasm) | ✅ compiles (wasm32) |
 | `examples/native` | Same triangle in a winit window — desktop + Android | ✅ builds (Linux/Windows/Android) |
+| `examples/sdk` | **Engine SDK as Elpian AST** (`assets/*.ast.json`): importable 2D/3D shape definitions, math in WGSL | ✅ tested |
+
+## Reusable drawing definitions + module import
+
+Beyond the raw command tree, the VM can name and reuse drawing work:
+
+* **`gpu.define` / `gpu.undefine`** register/unregister a [`Definition`] — a batch
+  of commands (render-level draws *or* encoder-level passes, 2D and/or 3D) — in a
+  host-side store. Frames then reference it by id with a `useDefinition` command
+  instead of re-emitting it; definitions may reference other definitions, so
+  complex drawings compose from simpler ones. The host **expands** each submitted
+  frame against the store before rendering, so the VM's wire payload stays tiny.
+* **`vm.import`** loads an external Elpian AST module (a bundled project asset or,
+  via a host `fetcher`, the network) and runs it so its `gpu.define`s populate the
+  *same* store — expanding the engine's drawing vocabulary at runtime.
+
+`examples/sdk` is exactly such a module, shipped as Elpian AST JSON: import it and
+draw `elpa.sdk.{rect,triangle,circle,cube,sphere}` by reference.
 
 ## Build & test
 
