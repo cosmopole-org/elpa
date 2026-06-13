@@ -5,7 +5,13 @@ members = [
     "crates/elpa-protocol",
     "crates/elpa-renderer",
     "crates/elpa-runtime",
+    "crates/elpa",
 ]
+
+# The web example pulls in wgpu + web-sys and only targets wasm; keep it out of
+# the default `cargo build/test --workspace` so the core stays fast and green.
+# Build it explicitly per `examples/web/README.md`.
+exclude = ["examples/web"]
 
 # Shared release profile tuned for the shipped configuration: small, fast
 # binaries on native and a compact wasm module on the web.

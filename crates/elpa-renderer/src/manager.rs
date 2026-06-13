@@ -60,6 +60,19 @@ impl<B: GpuBackend> Renderer<B> {
         &self.backend
     }
 
+    /// Mutable access to the backend (e.g. to reconfigure the surface on resize).
+    pub fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+
+    /// Drop all cached pass recordings so every pass re-records next frame. Used
+    /// after a surface resize / format change, where cached offscreen textures
+    /// and the prior present are no longer valid.
+    pub fn invalidate(&mut self) {
+        self.passes = PassCache::new();
+        self.dirty.mark_full();
+    }
+
     /// Map one submitted [`Frame`] onto the GPU.
     pub fn render(&mut self, frame: &Frame) -> FrameStats {
         let mut stats = FrameStats::default();

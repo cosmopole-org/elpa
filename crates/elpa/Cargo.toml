@@ -1,0 +1,19 @@
+[package]
+name = "elpa"
+version = "0.1.0"
+edition = "2021"
+description = "The unified Elpa instance: an object that owns and assembles the VM, the renderer (resource cache + partial rendering), and the GPU backend. Load an app AST, drive events, and it re-renders efficiently."
+
+[features]
+default = []
+# Pull in and re-export the live wgpu backend (heavy; enabled by hosts/examples).
+wgpu = ["elpa-renderer/wgpu-backend", "dep:wgpu"]
+
+[dependencies]
+elpa-protocol = { path = "../elpa-protocol" }
+elpa-renderer = { path = "../elpa-renderer" }
+elpa-runtime = { path = "../elpa-runtime" }
+elpian-vm = { path = "../elpian-vm" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+wgpu = { version = "23", optional = true }
