@@ -6,3 +6,6 @@ target/
 Cargo.lock.bak
 .DS_Store
 *.swp
+
+# wasm-bindgen output for the web example (build artifact).
+**/pkg/
