@@ -32,6 +32,9 @@ android_logger = "0.13"
 
 [profile.release]
 opt-level = 3
+lto = true
+# Strip symbols so the shipped library (and the packaged APK) stay small.
+strip = true
 
 # --- cargo-apk (APK packaging) -------------------------------------------------
 # `cargo install cargo-apk` then `cargo apk build --release` from this directory

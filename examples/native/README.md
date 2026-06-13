@@ -75,8 +75,20 @@ cargo apk build --lib            # APK metadata lives in Cargo.toml
 cargo apk run --lib              # build, install, and launch on a connected device
 ```
 
-A `--release` APK additionally needs a signing key configured under
-`[package.metadata.android.signing.release]`.
+A `--release` APK must be signed. Point cargo-apk at a keystore via environment
+variables (what CI does — no secrets in the repo):
+
+```bash
+keytool -genkeypair -keystore release.keystore -alias elpa -keyalg RSA \
+  -keysize 2048 -validity 10000 -storepass android -keypass android \
+  -dname "CN=Elpa, O=Cosmopole, C=US"
+export CARGO_APK_RELEASE_KEYSTORE="$PWD/release.keystore"
+export CARGO_APK_RELEASE_KEYSTORE_PASSWORD=android
+cargo apk build --release --lib   # -> ~3 MB signed APK
+```
+
+CI builds this APK on every push and commits it to the repo root as `elpa.apk`
+(see [`.github/workflows/android-apk.yml`](../../.github/workflows/android-apk.yml)).
 
 APK packaging is configured under `[package.metadata.android]` in
 [`Cargo.toml`](Cargo.toml) (package id, min/target SDK, app label).
