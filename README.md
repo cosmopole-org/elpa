@@ -47,7 +47,9 @@ metrics via `gpu.surfaceInfo`, and re-renders by re-submitting frames; the cache
 makes unchanged frames free and changed passes re-record in isolation.
 
 See **[`examples/web`](examples/web)** for a full-window, DPI-aware canvas that
-draws Elpa frames in the browser.
+draws Elpa frames in the browser, and **[`examples/native`](examples/native)**
+for the same triangle running in a winit window on **desktop
+(Windows/macOS/Linux) and Android** from one codebase.
 
 ## Workspace
 
@@ -59,6 +61,7 @@ draws Elpa frames in the browser.
 | `elpa-runtime` | Host-call pump: drives the VM, parses `gpu.submit` → `Frame` | ✅ tested |
 | `elpa` | **Unified instance**: VM + renderer + backend in one object | ✅ tested |
 | `examples/web` | Full-window DPI canvas drawing Elpa frames (wasm) | ✅ compiles (wasm32) |
+| `examples/native` | Same triangle in a winit window — desktop + Android | ✅ builds (Linux/Windows/Android) |
 
 ## Build & test
 

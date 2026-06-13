@@ -2,17 +2,49 @@
 name = "elpa-native-example"
 version = "0.1.0"
 edition = "2021"
-description = "Native Linux example: creates a window with winit and runs an Elpa instance."
+description = "Cross-platform example: a winit window running an Elpa instance. Builds for desktop (Windows/macOS/Linux) and Android from one codebase."
+
+# A library (used by the desktop binary and built as a `cdylib` for Android) plus
+# the desktop binary entry point.
+[lib]
+name = "elpa_native_example"
+crate-type = ["lib", "cdylib"]
+
+[[bin]]
+name = "elpa-native-example"
+path = "src/main.rs"
 
 [dependencies]
 elpa = { path = "../../crates/elpa", features = ["wgpu"] }
 winit = "0.30"
 pollster = "0.3"
 serde_json = "1.0"
+# `wgpu`'s default features bring in the native backends: DX12 (Windows),
+# Vulkan/GLES (Android, Linux), Metal (macOS).
 wgpu = "29"
+log = "0.4"
 env_logger = "0.10"
+
+# Android-only: winit's Android activity glue and a logcat-backed logger.
+[target.'cfg(target_os = "android")'.dependencies]
+winit = { version = "0.30", features = ["android-native-activity"] }
+android_logger = "0.13"
 
 [profile.release]
 opt-level = 3
+
+# --- cargo-apk (APK packaging) -------------------------------------------------
+# `cargo install cargo-apk` then `cargo apk build --release` from this directory
+# (with ANDROID_HOME + ANDROID_NDK_HOME set) produces an installable APK.
+[package.metadata.android]
+package = "org.cosmopole.elpa"
+build_targets = ["aarch64-linux-android"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 24
+target_sdk_version = 30
+
+[package.metadata.android.application]
+label = "Elpa Triangle"
 
 [workspace]
