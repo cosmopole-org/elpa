@@ -58,3 +58,16 @@ python3 -m http.server 8080
 - To see the partial-render/caching effect, note that resizing or animating only
   re-records the surface pass — the shader and render pipeline are never
   recreated after the first frame.
+
+## Build on Linux
+
+This repository includes a small helper script to build the web example on
+Linux using Trunk. From this directory run:
+
+```bash
+cd examples/web
+./build-linux.sh
+```
+
+The script ensures the `wasm32-unknown-unknown` target is installed, builds
+the workspace artifacts in release mode, and runs `trunk build --release`.
