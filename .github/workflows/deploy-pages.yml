@@ -1,0 +1,68 @@
+name: Deploy web example to GitHub Pages
+
+# Builds the wasm web example (examples/web) with Trunk and publishes it to
+# GitHub Pages on every push, so the latest commit is testable live at
+#   https://<owner>.github.io/<repo>/
+#
+# One-time setup in the repo: Settings → Pages → "Build and deployment" →
+# Source = "GitHub Actions". (No branch needs selecting; this workflow deploys.)
+
+on:
+  push:
+    branches:
+      - main
+      - "claude/**"
+  workflow_dispatch:
+
+# Permissions required by the Pages deployment.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one in-flight Pages deployment; newer pushes supersede older runs.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust + wasm target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add wasm32-unknown-unknown
+
+      # Cache the example's wasm build (it is excluded from the workspace, so it
+      # has its own target dir).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: examples/web -> target
+
+      - name: Install Trunk
+        run: cargo install --locked trunk
+
+      # `--public-url /<repo>/` makes asset URLs resolve under the project-page
+      # subpath. Output goes to examples/web/dist.
+      - name: Build web example
+        working-directory: examples/web
+        run: trunk build --release --public-url "/${{ github.event.repository.name }}/"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: examples/web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
