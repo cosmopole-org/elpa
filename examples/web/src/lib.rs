@@ -54,11 +54,41 @@ async fn run() {
     canvas.set_height(h);
 
     // 2. wgpu surface straight from the canvas.
-    let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let surface = instance
-        .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
-        .expect("create surface from canvas");
+    //
+    // Pick the backend with a *real* WebGPU probe. The sync `Instance::new`
+    // can only check that `navigator.gpu` exists, so it commits to a
+    // WebGPU-only context whenever the property is present — even on browsers
+    // that expose it without a working adapter (Chrome on Linux, headless
+    // Chrome). In that case `request_adapter` returns nothing and the WebGL
+    // fallback (enabled via the crate's `webgl` feature) is never reached.
+    // The async helper requests an adapter up front and, when WebGPU can't
+    // provide one, drops `BROWSER_WEBGPU` so wgpu uses the WebGL backend.
+    let instance = wgpu::util::new_instance_with_webgpu_detection(
+        wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+    )
+    .await;
+    // Build the canvas surface with an explicit (empty) web display handle.
+    // The high-level `create_surface(SurfaceTarget::Canvas)` passes *no* display
+    // handle, which the WebGPU context tolerates but the WebGL (wgpu-core)
+    // backend rejects with `MissingDisplayHandle` — so the moment we fall back
+    // to WebGL, canvas surface creation fails. The WebGPU context ignores the
+    // display handle, so supplying `RawDisplayHandle::Web` here is correct for
+    // both backends. The `&canvas` JsValue must stay alive across this call;
+    // it does (the surface copies it internally and `canvas` outlives us here).
+    let surface = {
+        let value: &wasm_bindgen::JsValue = &canvas;
+        let obj = core::ptr::NonNull::from(value).cast();
+        let raw_window_handle = wgpu::rwh::WebCanvasWindowHandle::new(obj).into();
+        let raw_display_handle =
+            wgpu::rwh::RawDisplayHandle::Web(wgpu::rwh::WebDisplayHandle::new());
+        unsafe {
+            instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+                raw_display_handle: Some(raw_display_handle),
+                raw_window_handle,
+            })
+        }
+        .expect("create surface from canvas")
+    };
     let backend = WgpuBackend::new(&instance, surface, w, h).await;
     let format_token = format_token(backend.surface_format());
 
