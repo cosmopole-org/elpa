@@ -1,0 +1,122 @@
+name: Build APK (with web)
+
+# Builds the web example and the Android APK side by side on every push. The
+# `web` and `android` jobs run in parallel; the `android` job then commits the
+# signed release APK to the root of the repository as `elpa.apk`.
+
+on:
+  push:
+    branches:
+      - main
+      - "claude/**"
+    # Don't re-trigger on the bot's own APK commit (it also carries `[skip ci]`).
+    paths-ignore:
+      - "elpa.apk"
+  workflow_dispatch:
+
+permissions:
+  contents: write # the android job pushes the built APK back to the repo
+
+# One in-flight run per ref; newer pushes supersede older ones.
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # --- Web build (runs alongside the Android build) --------------------------
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust + wasm target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add wasm32-unknown-unknown
+
+      # The web example is excluded from the workspace, so it has its own target.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: examples/web -> target
+
+      - name: Install Trunk
+        run: cargo install --locked trunk
+
+      - name: Build web example
+        working-directory: examples/web
+        run: trunk build --release
+
+  # --- Android APK build + upload to repo root -------------------------------
+  android:
+    runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: "26.3.11579264" # NDK r26d
+    steps:
+      # Check out the branch (not a detached SHA) so we can push the APK back.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Install Rust + Android target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: examples/native -> target
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK, platform and build-tools
+        run: sdkmanager "ndk;${NDK_VERSION}" "platform-tools" "platforms;android-30" "build-tools;30.0.3"
+
+      - name: Install cargo-apk
+        run: cargo install --locked cargo-apk
+
+      # A throwaway keystore generated per run. cargo-apk reads the path and
+      # password from these env vars (no secrets committed to the repo).
+      - name: Generate signing keystore
+        run: |
+          keytool -genkeypair -v \
+            -keystore "${{ github.workspace }}/release.keystore" \
+            -alias elpa -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass android -keypass android \
+            -dname "CN=Elpa, OU=Example, O=Cosmopole, C=US"
+
+      - name: Build signed release APK
+        working-directory: examples/native
+        env:
+          CARGO_APK_RELEASE_KEYSTORE: ${{ github.workspace }}/release.keystore
+          CARGO_APK_RELEASE_KEYSTORE_PASSWORD: android
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/${NDK_VERSION}"
+          # `--lib` packages the Android cdylib (this crate also has a desktop bin).
+          cargo apk build --release --lib
+
+      # Also expose it as a normal workflow artifact for direct download.
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: elpa-android-apk
+          path: examples/native/target/release/apk/elpa_native_example.apk
+
+      - name: Commit APK to repository root
+        run: |
+          cp examples/native/target/release/apk/elpa_native_example.apk ./elpa.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add elpa.apk
+          if git diff --cached --quiet; then
+            echo "APK unchanged; nothing to commit."
+          else
+            git commit -m "ci: build Android APK [skip ci]"
+            git push origin HEAD:${{ github.ref_name }}
+          fi

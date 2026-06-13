@@ -2477,6 +2477,124 @@ impl Executor {
             }
         }
     }
+    fn operate_modulo(&self, arg1: Val, arg2: Val) -> Val {
+        match arg1.typ {
+            // Integer dividend: keep an integer remainder for integer divisors,
+            // promote to float when the divisor is a float (matching the rest of
+            // the arithmetic ops, e.g. `operate_subtract`).
+            1 | 2 | 3 => {
+                let val1 = match arg1.typ {
+                    1 => arg1.as_i16() as i64,
+                    2 => arg1.as_i32() as i64,
+                    3 => arg1.as_i64(),
+                    _ => 0,
+                };
+                match arg2.typ {
+                    1 => self.check_int_range(val1 % arg2.as_i16() as i64),
+                    2 => self.check_int_range(val1 % arg2.as_i32() as i64),
+                    3 => self.check_int_range(val1 % arg2.as_i64()),
+                    4 => self.check_float_range(val1 as f64 % arg2.as_f32() as f64),
+                    5 => self.check_float_range(val1 as f64 % arg2.as_f64()),
+                    6 => panic!("elpian error: integer and boolean can not be modulo'd"),
+                    7 => panic!("elpian error: integer and string can not be modulo'd"),
+                    8 => panic!("elpian error: integer and object can not be modulo'd"),
+                    9 => panic!("elpian error: integer and array can not be modulo'd"),
+                    10 => panic!("elpian error: integer and function can not be modulo'd"),
+                    _ => panic!("elpian error: integer and unknown data type can not be modulo'd"),
+                }
+            }
+            4 | 5 => {
+                let val1 = match arg1.typ {
+                    4 => arg1.as_f32() as f64,
+                    5 => arg1.as_f64(),
+                    _ => 0.0,
+                };
+                match arg2.typ {
+                    1 => self.check_float_range(val1 % arg2.as_i16() as f64),
+                    2 => self.check_float_range(val1 % arg2.as_i32() as f64),
+                    3 => self.check_float_range(val1 % arg2.as_i64() as f64),
+                    4 => self.check_float_range(val1 % arg2.as_f32() as f64),
+                    5 => self.check_float_range(val1 % arg2.as_f64()),
+                    6 => panic!("elpian error: float and boolean can not be modulo'd"),
+                    7 => panic!("elpian error: float and string can not be modulo'd"),
+                    8 => panic!("elpian error: float and object can not be modulo'd"),
+                    9 => panic!("elpian error: float and array can not be modulo'd"),
+                    10 => panic!("elpian error: float and function can not be modulo'd"),
+                    _ => panic!("elpian error: float and unknown data type can not be modulo'd"),
+                }
+            }
+            6 => panic!("elpian error: bool can not be modulo'd with other types"),
+            7 => panic!("elpian error: string can not be modulo'd with other types"),
+            8 => panic!("elpian error: object can not be modulo'd with other types"),
+            9 => panic!("elpian error: array can not be modulo'd with other types"),
+            10 => panic!("elpian error: function can not be modulo'd with other types"),
+            _ => panic!("elpian error: unknown type can not be modulo'd with other types"),
+        }
+    }
+    fn operate_power(&self, arg1: Val, arg2: Val) -> Val {
+        match arg1.typ {
+            // Integer base raised to a non-negative integer exponent stays an
+            // integer (falling back to float on overflow); any float operand or
+            // negative exponent yields a float, like the other arithmetic ops.
+            1 | 2 | 3 => {
+                let val1 = match arg1.typ {
+                    1 => arg1.as_i16() as i64,
+                    2 => arg1.as_i32() as i64,
+                    3 => arg1.as_i64(),
+                    _ => 0,
+                };
+                let int_pow = |exp: i64| -> Val {
+                    if (0..=u32::MAX as i64).contains(&exp) {
+                        match val1.checked_pow(exp as u32) {
+                            Some(r) => self.check_int_range(r),
+                            None => self.check_float_range((val1 as f64).powf(exp as f64)),
+                        }
+                    } else {
+                        self.check_float_range((val1 as f64).powf(exp as f64))
+                    }
+                };
+                match arg2.typ {
+                    1 => int_pow(arg2.as_i16() as i64),
+                    2 => int_pow(arg2.as_i32() as i64),
+                    3 => int_pow(arg2.as_i64()),
+                    4 => self.check_float_range((val1 as f64).powf(arg2.as_f32() as f64)),
+                    5 => self.check_float_range((val1 as f64).powf(arg2.as_f64())),
+                    6 => panic!("elpian error: integer and boolean can not be exponentiated"),
+                    7 => panic!("elpian error: integer and string can not be exponentiated"),
+                    8 => panic!("elpian error: integer and object can not be exponentiated"),
+                    9 => panic!("elpian error: integer and array can not be exponentiated"),
+                    10 => panic!("elpian error: integer and function can not be exponentiated"),
+                    _ => panic!("elpian error: integer and unknown data type can not be exponentiated"),
+                }
+            }
+            4 | 5 => {
+                let val1 = match arg1.typ {
+                    4 => arg1.as_f32() as f64,
+                    5 => arg1.as_f64(),
+                    _ => 0.0,
+                };
+                match arg2.typ {
+                    1 => self.check_float_range(val1.powf(arg2.as_i16() as f64)),
+                    2 => self.check_float_range(val1.powf(arg2.as_i32() as f64)),
+                    3 => self.check_float_range(val1.powf(arg2.as_i64() as f64)),
+                    4 => self.check_float_range(val1.powf(arg2.as_f32() as f64)),
+                    5 => self.check_float_range(val1.powf(arg2.as_f64())),
+                    6 => panic!("elpian error: float and boolean can not be exponentiated"),
+                    7 => panic!("elpian error: float and string can not be exponentiated"),
+                    8 => panic!("elpian error: float and object can not be exponentiated"),
+                    9 => panic!("elpian error: float and array can not be exponentiated"),
+                    10 => panic!("elpian error: float and function can not be exponentiated"),
+                    _ => panic!("elpian error: float and unknown data type can not be exponentiated"),
+                }
+            }
+            6 => panic!("elpian error: bool can not be exponentiated with other types"),
+            7 => panic!("elpian error: string can not be exponentiated with other types"),
+            8 => panic!("elpian error: object can not be exponentiated with other types"),
+            9 => panic!("elpian error: array can not be exponentiated with other types"),
+            10 => panic!("elpian error: function can not be exponentiated with other types"),
+            _ => panic!("elpian error: unknown type can not be exponentiated with other types"),
+        }
+    }
     fn is_eq(&self, v: Val, v2: Val) -> bool {
         return match v.typ {
             1 | 2 | 3 => {
@@ -3972,6 +4090,12 @@ impl Executor {
                             }
                             10 => {
                                 main_reg = Some(self.operate_division(arg1, arg2));
+                            }
+                            11 => {
+                                main_reg = Some(self.operate_modulo(arg1, arg2));
+                            }
+                            12 => {
+                                main_reg = Some(self.operate_power(arg1, arg2));
                             }
                             _ => {}
                         }
