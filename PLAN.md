@@ -411,6 +411,30 @@ back-face culling, and a perspective transform. **Compute** (particles, GPGPU,
 skinning, post-processing) is first-class via compute passes. All three are
 already expressible with the ✅ rows above.
 
+### There are no "shape", "texture", or "text" commands — by design
+
+This is the most common misconception, so it is stated explicitly: **wgpu has no
+command to "draw a cube", "draw a rect", "draw an image", or "draw text".** Those
+do not exist in the wgpu API, and therefore not in Elpa's command tree either —
+adding them would re-introduce exactly the widget/canvas abstraction Elpa
+excludes. Every shape, texture, and glyph is **data fed to a generic draw call**:
+
+| Goal | wgpu/Elpa expression (all ✅ commands) |
+|------|----------------------------------------|
+| Triangle | vertex buffer (3 verts) + pipeline → `draw{vertexCount:3}` |
+| Rect / quad | 4 verts + index buffer → `drawIndexed{indexCount:6}` |
+| Cube / arbitrary 3D mesh | vertex+index buffer + depth-tested pipeline → `drawIndexed{indexCount:36}` |
+| Any 2D/3D shape | its vertices in a buffer + a matching pipeline → a `draw`/`drawIndexed` |
+| Textured surface | `texture` + `sampler` + `bindGroup`; fragment shader samples it on a quad |
+| Text | a glyph-atlas `texture` + per-glyph quads in a vertex buffer → `draw`. **wgpu performs no font shaping** — the app or an optional helper produces the glyph geometry/atlas. |
+
+So: the **commands** needed to draw any 2D/3D shape, textures, and text are all
+covered (`setPipeline`, `setVertexBuffer`, `setIndexBuffer`, `setBindGroup`,
+`draw`, `drawIndexed`, `draw*Indirect`, `dispatch`). What Elpa intentionally does
+*not* provide is a built-in shape/text/image vocabulary — that lives in app code
+(JS) or a separate, optional helper crate layered *above* the command tree, never
+inside it. The deferred ⛔ features are not required for any of the above.
+
 ### Conclusion
 
 - **Complete for core 2D + 3D + compute (schema):** yes.
