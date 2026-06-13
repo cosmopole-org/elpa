@@ -1,7 +1,6 @@
-name: Build APK (with web)
+name: Build APK
 
-# Builds the web example and the Android APK side by side on every push. The
-# `web` and `android` jobs run in parallel; the `android` job then commits the
+# Builds the Android APK on every push. The `android` job then commits the
 # signed release APK to the root of the repository as `elpa.apk`.
 
 on:
