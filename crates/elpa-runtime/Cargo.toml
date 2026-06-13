@@ -1,0 +1,12 @@
+[package]
+name = "elpa-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "The Elpa host runtime: drives the Elpian VM's pause/resume host-call loop, routes `render` payloads into the renderer, and feeds input events back into the VM."
+
+[dependencies]
+elpian-vm = { path = "../elpian-vm" }
+elpa-protocol = { path = "../elpa-protocol" }
+elpa-renderer = { path = "../elpa-renderer" }
+serde = { workspace = true }
+serde_json = { workspace = true }

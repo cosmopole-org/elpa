@@ -1,0 +1,9 @@
+[package]
+name = "elpa-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "Shared wire types for Elpa: the UI-tree node format emitted by the VM's `render` host call, the lowered draw-command list, geometry primitives, and the host-call envelope."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
