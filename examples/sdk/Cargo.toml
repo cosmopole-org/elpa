@@ -20,3 +20,7 @@ serde_json = { workspace = true }
 [dev-dependencies]
 # Drive the JSON-AST SDK end to end through a real (headless) Elpa instance + VM.
 elpa = { path = "../../crates/elpa" }
+# Validate the SDK's WGSL the same way wgpu does, so shader errors (reserved
+# keywords, syntax) are caught in `cargo test` without a browser/GPU.
+naga = { version = "29", features = ["wgsl-in"] }
+serde_json = { workspace = true }

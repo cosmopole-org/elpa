@@ -174,12 +174,12 @@ fn vs(@builtin(vertex_index) vi: u32, in: In) -> Out {{
 
     let eye = cam.c0.xyz;
     let fov = cam.c0.w;
-    let target = cam.c1.xyz;
+    let focus = cam.c1.xyz;
     let aspect = cam.c1.w;
-    let near = cam.c2.x;
-    let far = cam.c2.y;
+    let z_near = cam.c2.x;
+    let z_far = cam.c2.y;
 
-    let f = normalize(target - eye);
+    let f = normalize(focus - eye);
     let s = normalize(cross(f, vec3<f32>(0.0, 1.0, 0.0)));
     let u = cross(s, f);
     let view = mat4x4<f32>(
@@ -188,12 +188,12 @@ fn vs(@builtin(vertex_index) vi: u32, in: In) -> Out {{
         vec4<f32>(s.z, u.z, -f.z, 0.0),
         vec4<f32>(-dot(s, eye), -dot(u, eye), dot(f, eye), 1.0));
     let gg = 1.0 / tan(fov * 0.5);
-    let nf = 1.0 / (near - far);
+    let nf = 1.0 / (z_near - z_far);
     let proj = mat4x4<f32>(
         vec4<f32>(gg / aspect, 0.0, 0.0, 0.0),
         vec4<f32>(0.0, gg, 0.0, 0.0),
-        vec4<f32>(0.0, 0.0, far * nf, -1.0),
-        vec4<f32>(0.0, 0.0, far * near * nf, 0.0));
+        vec4<f32>(0.0, 0.0, z_far * nf, -1.0),
+        vec4<f32>(0.0, 0.0, z_far * z_near * nf, 0.0));
 
     var out: Out;
     out.clip = proj * (view * vec4<f32>(world, 1.0));

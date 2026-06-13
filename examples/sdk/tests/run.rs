@@ -6,6 +6,41 @@
 use elpa::{Elpa, HeadlessBackend, SurfaceInfo};
 use elpa::protocol::{EncoderCommand, RenderCommand};
 
+/// Recursively collect every WGSL string literal from an AST JSON value (a
+/// shader's `wgsl` field is a `{"type":"string",...}` node whose value contains
+/// `@vertex`).
+fn collect_wgsl(v: &serde_json::Value, out: &mut Vec<String>) {
+    match v {
+        serde_json::Value::String(s) if s.contains("@vertex") => out.push(s.clone()),
+        serde_json::Value::Array(a) => a.iter().for_each(|x| collect_wgsl(x, out)),
+        serde_json::Value::Object(m) => m.values().for_each(|x| collect_wgsl(x, out)),
+        _ => {}
+    }
+}
+
+#[test]
+fn sdk_shaders_are_valid_wgsl() {
+    // Parse + validate every shader the SDK module carries exactly as wgpu does,
+    // so reserved-keyword / syntax errors fail in `cargo test` (not in a browser).
+    let ast: serde_json::Value = serde_json::from_str(elpa_sdk::MODULE_AST).unwrap();
+    let mut shaders = Vec::new();
+    collect_wgsl(&ast, &mut shaders);
+    shaders.sort();
+    shaders.dedup();
+    assert!(shaders.len() >= 2, "expected 2D and 3D shaders, got {}", shaders.len());
+
+    for src in &shaders {
+        let module = naga::front::wgsl::parse_str(src)
+            .unwrap_or_else(|e| panic!("WGSL parse failed: {}", e.emit_to_string(src)));
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("WGSL validation failed");
+    }
+}
+
 const SHAPES: [&str; 5] =
     ["elpa.sdk.rect", "elpa.sdk.triangle", "elpa.sdk.circle", "elpa.sdk.cube", "elpa.sdk.sphere"];
 
