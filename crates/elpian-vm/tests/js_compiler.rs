@@ -219,3 +219,64 @@ fn compile_js_to_ast_produces_program_node() {
     assert!(ast.contains("\"program\""), "ast was: {ast}");
     assert!(ast.contains("\"definition\""), "ast was: {ast}");
 }
+
+#[test]
+fn arrow_function_value_is_callable() {
+    // A concise-body arrow stored in a variable, then invoked.
+    let js = "let dbl = x => x * 2; function f() { return dbl(21); }";
+    assert_eq!(run_js_and_call("js-arrow", js, "f"), "42");
+
+    // Multi-param arrow with a block body and an explicit return.
+    let js2 = "let add = (a, b) => { return a + b; }; function f() { return add(40, 2); }";
+    assert_eq!(run_js_and_call("js-arrow2", js2, "f"), "42");
+}
+
+#[test]
+fn arrow_passed_as_callback_argument() {
+    // An arrow handed straight to an in-program higher-order function, then
+    // called through the parameter that holds it — exercising the lift into a
+    // synthetic definition plus calling a function value held in a variable.
+    let js = "
+        function apply(fn, v) { return fn(v); }
+        function f() { return apply(n => n + 1, 10); }";
+    assert_eq!(run_js_and_call("js-arrow-arg", js, "f"), "11");
+}
+
+#[test]
+fn arrow_closes_over_local_per_iteration() {
+    // Each loop iteration's `let k` is captured independently by the closure
+    // created that turn — the canonical closure-per-iteration behaviour.
+    let js = "
+        function build() {
+            let fns = [];
+            for (let i = 0; i < 3; i++) {
+                let k = i;
+                push(fns, () => k * 10);
+            }
+            return fns;
+        }
+        function f() {
+            let fns = build();
+            return fns[0]() + fns[1]() + fns[2]();
+        }"; // 0 + 10 + 20
+    assert_eq!(run_js_and_call("js-arrow-closure", js, "f"), "30");
+}
+
+#[test]
+fn arrow_in_object_field_is_invocable() {
+    // A function value stored in an object field and called as `obj.field()` —
+    // the shape the demo's widgets use for tap callbacks.
+    let js = "
+        function f() {
+            let base = 5;
+            let w = { onTap: () => base + 2 };
+            return w.onTap();
+        }";
+    assert_eq!(run_js_and_call("js-arrow-field", js, "f"), "7");
+}
+
+#[test]
+fn anonymous_function_expression_is_callable() {
+    let js = "let sq = function (x) { return x * x; }; function f() { return sq(9); }";
+    assert_eq!(run_js_and_call("js-fnexpr", js, "f"), "81");
+}
