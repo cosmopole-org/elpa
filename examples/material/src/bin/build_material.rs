@@ -645,66 +645,166 @@ fn shadow_for(cx: Value, cy: Value, hw: Value, hh: Value, radius: Value) -> Vec<
 // (not per-frame state), so it is computed once into the cached `txt` buffer and
 // reused every frame (see `buildText` / `onResize`).
 
-/// 7 rows × 5 bits per glyph (bit 4 = leftmost column). Unknown chars → blank.
-fn glyph(c: char) -> [u8; 7] {
+/// A vector **stroke font**: each glyph is a set of line segments in a 4-wide ×
+/// 6-tall box (origin top-left, y down). Drawn as rounded capsules (rotated
+/// rounded rects with fully-rounded ends) they connect at joints into smooth,
+/// continuous letterforms — a clean rounded typeface, not a dot grid. Unknown
+/// chars (incl. space) → no strokes.
+type Seg = ((f64, f64), (f64, f64));
+fn glyph_strokes(c: char) -> Vec<Seg> {
+    let s = |a: (f64, f64), b: (f64, f64)| (a, b);
     match c.to_ascii_uppercase() {
-        'A' => [0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
-        'B' => [0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E],
-        'C' => [0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E],
-        'D' => [0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E],
-        'E' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F],
-        'F' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10],
-        'G' => [0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F],
-        'H' => [0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
-        'I' => [0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E],
-        'J' => [0x07, 0x02, 0x02, 0x02, 0x12, 0x12, 0x0C],
-        'K' => [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
-        'L' => [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F],
-        'M' => [0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11],
-        'N' => [0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11],
-        'O' => [0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
-        'P' => [0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10],
-        'Q' => [0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D],
-        'R' => [0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11],
-        'S' => [0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E],
-        'T' => [0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
-        'U' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
-        'V' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04],
-        'W' => [0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11],
-        'X' => [0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11],
-        'Y' => [0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04],
-        'Z' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F],
-        '-' => [0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00],
-        _ => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // space / unknown
+        'A' => vec![
+            s((0.2, 6.0), (2.0, 0.2)),
+            s((2.0, 0.2), (3.8, 6.0)),
+            s((0.95, 3.8), (3.05, 3.8)),
+        ],
+        'B' => vec![
+            s((0.3, 0.0), (0.3, 6.0)),
+            s((0.3, 0.0), (2.6, 0.0)),
+            s((2.6, 0.0), (3.5, 1.5)),
+            s((3.5, 1.5), (2.6, 3.0)),
+            s((0.3, 3.0), (2.6, 3.0)),
+            s((2.6, 3.0), (3.7, 4.5)),
+            s((3.7, 4.5), (2.6, 6.0)),
+            s((0.3, 6.0), (2.6, 6.0)),
+        ],
+        'C' => vec![
+            s((3.6, 1.3), (2.5, 0.2)),
+            s((2.5, 0.2), (1.2, 0.5)),
+            s((1.2, 0.5), (0.3, 2.0)),
+            s((0.3, 2.0), (0.3, 4.0)),
+            s((0.3, 4.0), (1.2, 5.5)),
+            s((1.2, 5.5), (2.5, 5.8)),
+            s((2.5, 5.8), (3.6, 4.7)),
+        ],
+        'D' => vec![
+            s((0.3, 0.0), (0.3, 6.0)),
+            s((0.3, 0.0), (2.3, 0.0)),
+            s((2.3, 0.0), (3.7, 2.0)),
+            s((3.7, 2.0), (3.7, 4.0)),
+            s((3.7, 4.0), (2.3, 6.0)),
+            s((0.3, 6.0), (2.3, 6.0)),
+        ],
+        'E' => vec![
+            s((0.3, 0.0), (0.3, 6.0)),
+            s((0.3, 0.0), (3.6, 0.0)),
+            s((0.3, 3.0), (2.9, 3.0)),
+            s((0.3, 6.0), (3.6, 6.0)),
+        ],
+        'F' => vec![
+            s((0.3, 0.0), (0.3, 6.0)),
+            s((0.3, 0.0), (3.6, 0.0)),
+            s((0.3, 3.0), (2.9, 3.0)),
+        ],
+        'G' => vec![
+            s((3.6, 1.3), (2.5, 0.2)),
+            s((2.5, 0.2), (1.2, 0.5)),
+            s((1.2, 0.5), (0.3, 2.0)),
+            s((0.3, 2.0), (0.3, 4.0)),
+            s((0.3, 4.0), (1.2, 5.5)),
+            s((1.2, 5.5), (2.5, 5.8)),
+            s((2.5, 5.8), (3.6, 4.8)),
+            s((3.6, 4.8), (3.6, 3.4)),
+            s((2.4, 3.4), (3.6, 3.4)),
+        ],
+        'H' => vec![
+            s((0.3, 0.0), (0.3, 6.0)),
+            s((3.7, 0.0), (3.7, 6.0)),
+            s((0.3, 3.0), (3.7, 3.0)),
+        ],
+        'I' => vec![
+            s((1.0, 0.0), (3.0, 0.0)),
+            s((2.0, 0.0), (2.0, 6.0)),
+            s((1.0, 6.0), (3.0, 6.0)),
+        ],
+        'K' => vec![
+            s((0.3, 0.0), (0.3, 6.0)),
+            s((0.3, 3.4), (3.6, 0.0)),
+            s((1.3, 2.4), (3.8, 6.0)),
+        ],
+        'L' => vec![s((0.3, 0.0), (0.3, 6.0)), s((0.3, 6.0), (3.6, 6.0))],
+        'M' => vec![
+            s((0.2, 6.0), (0.2, 0.0)),
+            s((0.2, 0.0), (2.0, 3.2)),
+            s((2.0, 3.2), (3.8, 0.0)),
+            s((3.8, 0.0), (3.8, 6.0)),
+        ],
+        'N' => vec![
+            s((0.3, 6.0), (0.3, 0.0)),
+            s((0.3, 0.0), (3.7, 6.0)),
+            s((3.7, 6.0), (3.7, 0.0)),
+        ],
+        'O' => vec![
+            s((1.3, 0.3), (2.7, 0.3)),
+            s((2.7, 0.3), (3.7, 1.6)),
+            s((3.7, 1.6), (3.7, 4.4)),
+            s((3.7, 4.4), (2.7, 5.7)),
+            s((2.7, 5.7), (1.3, 5.7)),
+            s((1.3, 5.7), (0.3, 4.4)),
+            s((0.3, 4.4), (0.3, 1.6)),
+            s((0.3, 1.6), (1.3, 0.3)),
+        ],
+        'P' => vec![
+            s((0.3, 0.0), (0.3, 6.0)),
+            s((0.3, 0.0), (2.7, 0.0)),
+            s((2.7, 0.0), (3.6, 1.5)),
+            s((3.6, 1.5), (2.7, 3.0)),
+            s((0.3, 3.0), (2.7, 3.0)),
+        ],
+        'R' => vec![
+            s((0.3, 0.0), (0.3, 6.0)),
+            s((0.3, 0.0), (2.7, 0.0)),
+            s((2.7, 0.0), (3.6, 1.5)),
+            s((3.6, 1.5), (2.7, 3.0)),
+            s((0.3, 3.0), (2.7, 3.0)),
+            s((1.6, 3.0), (3.8, 6.0)),
+        ],
+        'S' => vec![
+            s((3.5, 1.2), (2.4, 0.3)),
+            s((2.4, 0.3), (1.1, 0.6)),
+            s((1.1, 0.6), (0.5, 1.8)),
+            s((0.5, 1.8), (1.7, 2.8)),
+            s((1.7, 2.8), (2.6, 3.3)),
+            s((2.6, 3.3), (3.5, 4.4)),
+            s((3.5, 4.4), (2.8, 5.5)),
+            s((2.8, 5.5), (1.5, 5.8)),
+            s((1.5, 5.8), (0.4, 4.9)),
+        ],
+        'T' => vec![s((0.2, 0.0), (3.8, 0.0)), s((2.0, 0.0), (2.0, 6.0))],
+        'U' => vec![
+            s((0.3, 0.0), (0.3, 4.4)),
+            s((0.3, 4.4), (1.4, 5.7)),
+            s((1.4, 5.7), (2.6, 5.7)),
+            s((2.6, 5.7), (3.7, 4.4)),
+            s((3.7, 4.4), (3.7, 0.0)),
+        ],
+        'V' => vec![s((0.2, 0.0), (2.0, 6.0)), s((2.0, 6.0), (3.8, 0.0))],
+        'W' => vec![
+            s((0.1, 0.0), (1.0, 6.0)),
+            s((1.0, 6.0), (2.0, 2.2)),
+            s((2.0, 2.2), (3.0, 6.0)),
+            s((3.0, 6.0), (3.9, 0.0)),
+        ],
+        'X' => vec![s((0.3, 0.0), (3.7, 6.0)), s((3.7, 0.0), (0.3, 6.0))],
+        'Y' => vec![
+            s((0.3, 0.0), (2.0, 3.0)),
+            s((3.7, 0.0), (2.0, 3.0)),
+            s((2.0, 3.0), (2.0, 6.0)),
+        ],
+        'Z' => vec![
+            s((0.3, 0.0), (3.7, 0.0)),
+            s((3.7, 0.0), (0.3, 6.0)),
+            s((0.3, 6.0), (3.7, 6.0)),
+        ],
+        '-' => vec![s((1.0, 3.0), (3.0, 3.0))],
+        _ => vec![],
     }
 }
 
-/// Horizontal runs of lit pixels per glyph row: `(row, c0, c1)` inclusive. Runs
-/// (instead of single pixels) let each row of a stroke be one rounded bar, so
-/// letterforms read as smooth connected strokes rather than a dot grid.
-fn glyph_runs(c: char) -> Vec<(usize, usize, usize)> {
-    let rows = glyph(c);
-    let mut runs = Vec::new();
-    for (row, bits) in rows.iter().enumerate() {
-        let mut col = 0usize;
-        while col < 5 {
-            if (bits >> (4 - col)) & 1 == 1 {
-                let start = col;
-                while col < 5 && (bits >> (4 - col)) & 1 == 1 {
-                    col += 1;
-                }
-                runs.push((row, start, col - 1));
-            } else {
-                col += 1;
-            }
-        }
-    }
-    runs
-}
-
-/// Number of stroke runs in a string (its instance count).
-fn run_count(text: &str) -> u32 {
-    text.chars().map(|c| glyph_runs(c).len() as u32).sum()
+/// Number of stroke segments in a string (its instance count).
+fn stroke_count(text: &str) -> u32 {
+    text.chars().map(|c| glyph_strokes(c).len() as u32).sum()
 }
 
 /// Text color source.
@@ -752,38 +852,40 @@ fn text_color_updates() -> Vec<Value> {
     ]
 }
 
-/// Emit one rounded-stroke bar per glyph run of `text`. Position and size come
-/// from the label's cached globals `lx{idx}` / `ly{idx}` / `lc{idx}` (set once
-/// per layout in `buildText`), so each bar is just `base + cell*offset`. Bars are
-/// fully rounded and slightly taller than one cell so adjacent rows merge — the
-/// dot grid reads as continuous smooth strokes.
-fn text_dots(idx: usize, text: &str, color: Vec<Value>) -> Vec<Value> {
-    let lx = a_id(&format!("lx{idx}"));
-    let ly = a_id(&format!("ly{idx}"));
+/// Emit one rounded **capsule** per glyph stroke of `text` (a rotated rounded
+/// rect with fully-rounded ends). Position/size come from the label's cached
+/// globals `lx/ly/lc{idx}` (`lc` = per-unit screen size; the glyph box is 4×6
+/// units). Capsule ends overlap at joints, so strokes connect into smooth,
+/// continuous letterforms.
+fn text_strokes(idx: usize, text: &str, color: Vec<Value>) -> Vec<Value> {
+    let lx = || a_id(&format!("lx{idx}"));
+    let ly = || a_id(&format!("ly{idx}"));
     let lc = || a_id(&format!("lc{idx}"));
     let n = text.chars().count() as f64;
-    let total_w = 6.0 * n - 1.0; // cells (5 wide + 1 gap per char, no trailing gap)
+    let adv = 5.0; // advance per glyph: 4-wide box + 1 unit gap
+    let th = 0.92; // stroke thickness (units)
     let mut out = Vec::new();
-    for (ci, ch) in text.chars().enumerate() {
-        for (row, c0, c1) in glyph_runs(ch) {
-            // run center / extent in cell units
-            let cx_cell = (ci as f64) * 6.0 + (c0 as f64 + c1 as f64) / 2.0 + 0.5;
-            let ox = cx_cell - total_w / 2.0;
-            let oy = (row as f64) + 0.5 - 3.5;
-            let run_w = (c1 - c0 + 1) as f64;
-            let half_w = run_w * 0.5; // cells; touches the next run horizontally
-            let half_h = 0.58; // cells; >0.5 so rows overlap vertically
-            let radius = half_w.min(half_h);
-            let px = add(lx.clone(), mul(lc(), a_f(ox)));
-            let py = add(ly.clone(), mul(lc(), a_f(oy)));
+    for (i, ch) in text.chars().enumerate() {
+        let gc = ((i as f64) - (n - 1.0) / 2.0) * adv; // glyph center-x in units
+        for ((x0, y0), (x1, y1)) in glyph_strokes(ch) {
+            // box [0,4]×[0,6] centered on the glyph slot and on the baseline.
+            let ax = gc - 2.0 + x0;
+            let ay = y0 - 3.0;
+            let bx = gc - 2.0 + x1;
+            let by = y1 - 3.0;
+            let cxu = (ax + bx) / 2.0;
+            let cyu = (ay + by) / 2.0;
+            let (dx, dy) = (bx - ax, by - ay);
+            let len = (dx * dx + dy * dy).sqrt();
+            let ang = dy.atan2(dx);
             out.extend(inst(
-                px,
-                py,
-                mul(lc(), a_f(half_w)),
-                mul(lc(), a_f(half_h)),
-                mul(lc(), a_f(radius)),
+                add(lx(), mul(lc(), a_f(cxu))),
+                add(ly(), mul(lc(), a_f(cyu))),
+                mul(lc(), a_f(len / 2.0)),
+                mul(lc(), a_f(th / 2.0)),
+                mul(lc(), a_f(th / 2.0)), // radius = half thickness → capsule
                 a_f(0.0),
-                a_f(0.0),
+                a_f(ang),
                 color.clone(),
                 transparent(),
             ));
@@ -890,14 +992,14 @@ fn labels() -> Vec<Label> {
 
 /// Total caption instance count (the `labels` widget's layer count).
 fn labels_layer_count() -> u32 {
-    labels().iter().map(|l| run_count(l.text)).sum()
+    labels().iter().map(|l| stroke_count(l.text)).sum()
 }
 
 /// All caption instances, concatenated (built only on layout changes).
 fn rb_labels() -> Vec<Value> {
     let mut v = Vec::new();
     for (idx, l) in labels().iter().enumerate() {
-        v.extend(text_dots(idx, l.text, ink(l.color)));
+        v.extend(text_strokes(idx, l.text, ink(l.color)));
     }
     v
 }
