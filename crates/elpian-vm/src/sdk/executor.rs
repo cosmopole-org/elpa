@@ -1,8 +1,12 @@
 // use wasm_bindgen::prelude::wasm_bindgen;
 
 use crate::sdk::{
+    capabilities::CapabilitySet,
     context::Context,
     data::{Array, Function, Object, Val, ValGroup},
+    lifecycle::ExecControl,
+    limits::{Governor, ResourceLimits},
+    stdlib,
 };
 use core::panic;
 use std::{any::Any, cell::RefCell, collections::HashMap, fmt, i16, rc::Rc};
@@ -314,6 +318,16 @@ impl Operation for CallFunction {
                     vec!["apiName".to_string(), "input".to_string()],
                 ))));
                 self.param_count = 2;
+                self.is_native = true;
+            } else if val.as_ref().0.typ == 252 {
+                // Native standard-library builtin. Its arity is the number of
+                // arguments the call site provides; we name the formal params
+                // `arg0..argN` so the generic "params filled" finish check fires.
+                let name = val.as_ref().0.as_string();
+                let provided = val.as_ref().1;
+                let params: Vec<String> = (0..provided).map(|i| format!("arg{i}")).collect();
+                self.func = Some(Rc::new(RefCell::new(Function::new(name, 0, 0, params))));
+                self.param_count = provided as i32;
                 self.is_native = true;
             } else {
                 panic!("elpian error: the specified data is not runnable");
@@ -972,6 +986,18 @@ pub struct Executor {
     exec_globally: bool,
     reserved_host_call: Option<(u8, i64, Val)>,
     pub processing: bool,
+    /// Resource governor (instruction / memory / storage / call-depth budgets).
+    governor: Governor,
+    /// Host-togglable capabilities gating every `askHost` side effect.
+    capabilities: CapabilitySet,
+    /// Host-driven pause / resume / terminate control.
+    control: ExecControl,
+    /// Set when `run_from` suspended this turn because of a host pause request,
+    /// so `single_thread_operation` reports the instance as paused (not done).
+    paused_out: bool,
+    /// A fatal trap (limit overrun or builtin error) that ended the instance.
+    /// Once set, the instance is terminated and reports this reason to the host.
+    trap: Option<String>,
 }
 
 impl Executor {
@@ -998,7 +1024,98 @@ impl Executor {
             exec_globally: false,
             reserved_host_call: None,
             processing: false,
+            governor: Governor::new(ResourceLimits::unlimited()),
+            capabilities: CapabilitySet::allow_all(),
+            control: ExecControl::new(),
+            paused_out: false,
+            trap: None,
         }
+    }
+
+    // ---- Host-facing instance management (limits, capabilities, lifecycle) --
+
+    /// Replace the active resource-limit policy. Usage already accrued is kept.
+    pub fn set_limits(&mut self, limits: ResourceLimits) {
+        self.governor.set_limits(limits);
+    }
+    /// Current resource limits.
+    pub fn limits(&self) -> ResourceLimits {
+        self.governor.limits()
+    }
+    /// Live resource usage tally.
+    pub fn usage(&self) -> crate::sdk::limits::ResourceUsage {
+        self.governor.usage()
+    }
+    /// Mutable access to the capability set (host toggles network / storage / …).
+    pub fn capabilities_mut(&mut self) -> &mut CapabilitySet {
+        &mut self.capabilities
+    }
+    /// Snapshot of the capability set.
+    pub fn capabilities(&self) -> CapabilitySet {
+        self.capabilities.clone()
+    }
+    /// Replace the capability set wholesale.
+    pub fn set_capabilities(&mut self, caps: CapabilitySet) {
+        self.capabilities = caps;
+    }
+    /// Host: request the instance pause at the next step boundary.
+    pub fn request_pause(&mut self) {
+        self.control.request_pause();
+    }
+    /// Host: resume a paused instance.
+    pub fn resume_control(&mut self) {
+        self.control.resume();
+    }
+    /// Host: request the instance terminate. If it is idle (between turns) the
+    /// termination is confirmed immediately; if it is mid-flight (e.g. servicing
+    /// a host call) the request is observed and confirmed at the next step
+    /// boundary by the run loop.
+    pub fn request_terminate(&mut self) {
+        self.control.request_terminate();
+        if !self.processing {
+            self.control.confirm_terminated();
+            self.registers.clear();
+        }
+    }
+    /// Current run state.
+    pub fn run_state(&self) -> crate::sdk::lifecycle::RunState {
+        self.control.state()
+    }
+    /// Whether the instance suspended on a host pause this turn.
+    pub fn was_paused(&self) -> bool {
+        self.paused_out
+    }
+    /// The fatal trap reason, if the instance was stopped by a limit or error.
+    pub fn trap_reason(&self) -> Option<String> {
+        self.trap.clone()
+    }
+    /// Charge the storage governor on behalf of the host filesystem; returns the
+    /// limit error string if the storage cap would be exceeded.
+    pub fn charge_storage(&mut self, delta: i64) -> Result<(), String> {
+        self.governor.charge_storage(delta).map_err(|e| e.to_string())
+    }
+    /// Reconcile the absolute storage figure with the host filesystem total.
+    pub fn set_storage_bytes(&mut self, bytes: u64) -> Result<(), String> {
+        self.governor.set_storage_bytes(bytes).map_err(|e| e.to_string())
+    }
+    /// After `run_from` returns, surface a host-driven stop (trap / terminate /
+    /// pause) as the operation result, short-circuiting the normal
+    /// done/host-call detection. Returns `None` when execution stopped for an
+    /// ordinary reason (completion or a pending host call).
+    fn control_status(&mut self, cb_id: i64) -> Option<(u8, i64, Val)> {
+        if self.trap.is_some() || self.control.is_terminated() {
+            self.processing = false;
+            // Status 0x06 = terminated/trapped; payload is the reason string
+            // (empty for a clean host-ordered terminate).
+            let msg = self.trap.clone().unwrap_or_default();
+            return Some((0x06, cb_id, Val::new(7, Rc::new(RefCell::new(Box::new(msg))))));
+        }
+        if self.paused_out {
+            self.processing = false;
+            // Status 0x05 = paused; the continuation is preserved for `resume`.
+            return Some((0x05, cb_id, Val::new(253, Rc::new(RefCell::new(Box::new(0))))));
+        }
+        None
     }
     pub fn single_thread_operation(
         &mut self,
@@ -1010,6 +1127,13 @@ impl Executor {
             0x01 => {
                 // println!("executor: run_func called");
                 self.run_cb_id = cb_id;
+                self.governor.begin_turn();
+                self.paused_out = false;
+                if self.control.is_terminated() {
+                    return (0x06, cb_id, Val::new(7, Rc::new(RefCell::new(Box::new(
+                        self.trap.clone().unwrap_or_default(),
+                    )))));
+                }
                 if payload.typ != 9 {
                     self.exec_globally = true;
                     self.processing = true;
@@ -1023,6 +1147,9 @@ impl Executor {
                         },
                         false,
                     );
+                    if let Some(status) = self.control_status(cb_id) {
+                        return status;
+                    }
                     if self.reserved_host_call.is_some() {
                         let host_call_data = self.reserved_host_call.clone().unwrap();
                         self.reserved_host_call = None;
@@ -1071,6 +1198,9 @@ impl Executor {
                             },
                             true,
                         );
+                        if let Some(status) = self.control_status(cb_id) {
+                            return status;
+                        }
                         if self.reserved_host_call.is_some() {
                             let host_call_data = self.reserved_host_call.clone().unwrap();
                             self.reserved_host_call = None;
@@ -1116,7 +1246,19 @@ impl Executor {
                     },
                 );
             }
-            0x03 => {
+            0x03 | 0x04 => {
+                // 0x03 resumes after a host call (injecting `payload` as the
+                // call's return value). 0x04 resumes after a host-ordered pause
+                // (no value injected — `payload` is the typ-254 "no value"
+                // marker), continuing exactly where the step loop suspended.
+                self.governor.begin_turn();
+                self.paused_out = false;
+                if self.control.is_terminated() {
+                    return (0x06, cb_id, Val::new(7, Rc::new(RefCell::new(Box::new(
+                        self.trap.clone().unwrap_or_default(),
+                    )))));
+                }
+                self.processing = true;
                 let result = self.run_from(
                     self.pointer,
                     self.end_at,
@@ -1124,6 +1266,9 @@ impl Executor {
                     payload,
                     !self.exec_globally,
                 );
+                if let Some(status) = self.control_status(cb_id) {
+                    return status;
+                }
                 if !self.ctx.memory.is_empty() {
                     if self.exec_globally {
                         if self.reserved_host_call.is_some() {
@@ -1257,12 +1402,11 @@ impl Executor {
         for _i in 0..param_count {
             params.push(self.extract_str());
         }
-        Rc::new(RefCell::new(Function::new(
-            "".to_string(),
-            start,
-            end,
-            params,
-        )))
+        // A function *literal* (e.g. a callback) closes over the locals visible
+        // where it is written; capture them so the value behaves as a closure.
+        let mut func = Function::new("".to_string(), start, end, params);
+        func.captured = self.capture_env();
+        Rc::new(RefCell::new(func))
     }
     fn extract_val(&mut self) -> Val {
         let p = self.program[self.pointer];
@@ -1311,9 +1455,21 @@ impl Executor {
                         typ: 255,
                         data: Rc::new(RefCell::new(Box::new(0))),
                     };
-                } else {
-                    return self.ctx.find_val_globally(id);
                 }
+                let bound = self.ctx.find_val_globally(id.clone());
+                if !bound.is_empty() {
+                    return bound;
+                }
+                // No user/scope binding shadows it: resolve to a native standard
+                // library builtin if one exists (typ 252 carries its name), so
+                // `sqrt(2)`, `len(xs)`, `new(Class)` etc. call native code.
+                if stdlib::is_builtin(&id) {
+                    return Val {
+                        typ: 252,
+                        data: Rc::new(RefCell::new(Box::new(id))),
+                    };
+                }
+                bound
             }
             _ => Val {
                 typ: 0,
@@ -3372,10 +3528,55 @@ impl Executor {
         };
     }
     fn define(&mut self, id_name: String, val: Val) {
+        if let Err(e) = self.governor.charge_memory(val.approx_size()) {
+            self.trap = Some(e.to_string());
+        }
         self.ctx.define_val_globally(id_name, val);
     }
     fn assign(&mut self, id_name: String, val: Val) {
+        if let Err(e) = self.governor.charge_memory(val.approx_size()) {
+            self.trap = Some(e.to_string());
+        }
         self.ctx.update_val_globally(id_name, val);
+    }
+    /// Pop the innermost scope, crediting the governor with the value-memory it
+    /// held. This is the release half of the executor's approximate live-heap
+    /// accounting: values are charged when bound (`define`/`assign`) and freed
+    /// when their owning scope is torn down, so the tally tracks what the guest
+    /// currently holds rather than everything it has ever allocated.
+    fn pop_scope_governed(&mut self) {
+        if let Some(scope) = self.ctx.memory.last() {
+            let (bytes, is_func) = {
+                let s = scope.borrow();
+                let bytes: u64 = s.memory.borrow().data.values().map(|v| v.approx_size()).sum();
+                (bytes, s.tag == "funcBody")
+            };
+            self.governor.release_memory(bytes);
+            if is_func {
+                self.governor.leave_call();
+            }
+        }
+        self.ctx.pop_scope();
+    }
+    /// Snapshot the enclosing (non-global) locals as a closure's captured
+    /// environment. Returns `None` at top level (nothing to close over), so
+    /// plain functions pay no capture cost. Values are shared by `Rc`, so the
+    /// closure keeps exactly its upvalues alive for as long as it lives.
+    fn capture_env(&self) -> Option<Rc<RefCell<ValGroup>>> {
+        if self.ctx.memory.len() <= 1 {
+            return None;
+        }
+        let mut map: HashMap<String, Val> = HashMap::new();
+        for scope in self.ctx.memory[1..].iter() {
+            for (k, v) in scope.borrow().memory.borrow().data.iter() {
+                map.insert(k.clone(), v.clone());
+            }
+        }
+        if map.is_empty() {
+            None
+        } else {
+            Some(Rc::new(RefCell::new(ValGroup::new(map))))
+        }
     }
     pub fn run_from(
         &mut self,
@@ -3411,8 +3612,44 @@ impl Executor {
             }
         }
         loop {
+            // --- Host-driven lifecycle + resource governance (per step) ------
+            // Checked at every step boundary so the host can pause, resume, or
+            // terminate an instance, and so runaway work/memory is trapped long
+            // before it can exhaust the real process.
+            if self.trap.is_some() {
+                self.control.confirm_terminated();
+                self.registers.clear();
+                break;
+            }
+            if self.control.should_suspend() {
+                if self.control.is_terminating() {
+                    self.control.confirm_terminated();
+                    self.registers.clear();
+                    break;
+                } else {
+                    self.control.confirm_paused();
+                    self.paused_out = true;
+                    break;
+                }
+            }
+            if let Err(e) = self.governor.charge_instruction() {
+                self.trap = Some(e.to_string());
+                self.control.confirm_terminated();
+                self.registers.clear();
+                break;
+            }
             if main_reg.is_some() {
                 if !self.registers.is_empty() {
+                    if self.registers.last().unwrap().borrow().get_type() == OperationTypes::Dummy {
+                        // A `DummyOp` is a called-function frame marker. A bare
+                        // expression statement inside that body bubbles its value
+                        // up to here; statement values are discarded (only an
+                        // explicit `return` propagates), so drop it. Without this
+                        // the stale value would be picked up by the next
+                        // operation (e.g. a following `return`).
+                        main_reg = None;
+                        continue;
+                    }
                     if self.registers.last().unwrap().borrow().get_type() == OperationTypes::ArrExpr
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3779,9 +4016,22 @@ impl Executor {
                         let is_native = regs[1].as_bool();
                         if !is_native {
                             let func = regs[0].as_func().clone();
+                            // Guard native-stack exhaustion via the call-depth
+                            // budget before entering the new frame.
+                            if let Err(e) = self.governor.enter_call() {
+                                self.trap = Some(e.to_string());
+                                continue;
+                            }
                             let expected_params = func.borrow().params.clone();
                             let provided_args = regs[3].as_array().borrow().data.clone();
                             let mut args = HashMap::new();
+                            // Seed the frame with the closure's captured upvalues
+                            // first, so explicit parameters override them.
+                            if let Some(captured) = func.borrow().captured.clone() {
+                                for (k, v) in captured.borrow().data.iter() {
+                                    args.insert(k.clone(), v.clone());
+                                }
+                            }
                             for (i, param_name) in expected_params.iter().enumerate() {
                                 let arg = provided_args.get(i).cloned().unwrap_or_else(|| {
                                     Val::new(0, Rc::new(RefCell::new(Box::new(0))))
@@ -3809,14 +4059,38 @@ impl Executor {
                             is_reg_state_final = false;
                             continue;
                         } else {
-                            let mut args = HashMap::new();
+                            // A native call: either a standard-library builtin
+                            // (named function) or the `askHost` seam (unnamed).
+                            let builtin_name = regs[0].as_func().borrow().name.clone();
+                            if !builtin_name.is_empty() && stdlib::is_builtin(&builtin_name) {
+                                let provided = regs[3].as_array().borrow().data.clone();
+                                self.registers.pop();
+                                match stdlib::invoke(&builtin_name, &provided) {
+                                    Ok(result) => {
+                                        let _ = self.governor.charge_memory(result.approx_size());
+                                        main_reg = Some(result);
+                                        is_reg_state_final = false;
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        self.trap = Some(format!("{builtin_name}: {e}"));
+                                        continue;
+                                    }
+                                }
+                            }
                             let arg1 = regs[3].as_array().borrow().data[0].clone();
-                            // if !self.allowed_api.contains_key(&arg1.as_string().clone()) {
-                            //     panic!("elpian error: this api access is locked");
-                            // }
-                            args.insert("apiName".to_string(), arg1.clone());
+                            let api_name = arg1.as_string();
+                            // Capability gate: if the host has switched this
+                            // interface off, the call does not reach the host —
+                            // it short-circuits to a typed null so the guest
+                            // keeps running deterministically.
+                            if !self.capabilities.allows_api(&api_name) {
+                                self.registers.pop();
+                                main_reg = Some(Val::new(0, Rc::new(RefCell::new(Box::new(0)))));
+                                is_reg_state_final = false;
+                                continue;
+                            }
                             let arg2 = regs[3].as_array().borrow().data[1].clone();
-                            args.insert("input".to_string(), arg2.clone());
                             self.cb_counter += 1;
                             let cb_id = self.cb_counter;
                             self.registers.pop();
@@ -3827,14 +4101,14 @@ impl Executor {
                                     typ: 9,
                                     data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
                                         Array::new(vec![
-                                            args["apiName"].clone(),
+                                            arg1,
                                             Val {
                                                 typ: 1,
                                                 data: Rc::new(RefCell::new(Box::new(
                                                     self.executor_id,
                                                 ))),
                                             },
-                                            args["input"].clone(),
+                                            arg2,
                                         ]),
                                     ))))),
                                 },
@@ -4649,7 +4923,7 @@ impl Executor {
                         terminate = true;
                         break;
                     }
-                    self.ctx.pop_scope();
+                    self.pop_scope_governed();
                     if is_partial_exec && (self.ctx.memory.len() == 1) {
                         return self.pending_func_result_value.clone();
                     }
@@ -4669,7 +4943,7 @@ impl Executor {
                                 data: Rc::new(RefCell::new(Box::new(0))),
                             };
                             while self.ctx.memory.last().unwrap().borrow().tag != "funcBody" {
-                                self.ctx.pop_scope();
+                                self.pop_scope_governed();
                             }
                             if !self.registers.is_empty() {
                                 main_reg = Some(returned_val);
@@ -4943,7 +5217,12 @@ impl Executor {
                     }
                     let func_start = self.extract_i64() as usize;
                     let func_end = self.extract_i64() as usize;
-                    let func = Function::new(func_name.clone(), func_start, func_end, param_names);
+                    let mut func =
+                        Function::new(func_name.clone(), func_start, func_end, param_names);
+                    // A function defined inside another function closes over the
+                    // enclosing locals (e.g. a factory returning a counter). At
+                    // top level there is nothing to capture and this is a no-op.
+                    func.captured = self.capture_env();
                     self.define(
                         func_name.clone(),
                         Val {

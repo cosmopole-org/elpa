@@ -65,6 +65,26 @@ fn all_host_apis() -> Vec<String> {
         "gpu.define",
         "gpu.undefine",
         "vm.import",
+        // Capability-gated environmental interfaces. Each family is toggled by
+        // the host via the instance's capability set; a disabled family makes
+        // the corresponding `askHost` short-circuit to null (see executor).
+        "net.fetch",
+        "net.open",
+        "net.send",
+        "net.recv",
+        "net.close",
+        "fs.read",
+        "fs.write",
+        "fs.append",
+        "fs.delete",
+        "fs.list",
+        "fs.exists",
+        "fs.stat",
+        "fs.mkdir",
+        "time.now",
+        "time.monotonic",
+        "random.next",
+        "random.bytes",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -211,4 +231,126 @@ pub fn vm_exists(machine_id: String) -> bool {
 pub fn compile_code_to_info(code: String) -> String {
     let bytecode = compiler::compile_code(code);
     json!({ "bytecodeLength": bytecode.len() }).to_string()
+}
+
+// ----------------------------------------------------------------------------
+// Instance control: resource limits, capabilities, and lifecycle.
+//
+// The host steers a registered VM entirely through these functions, keyed by
+// `machine_id`. They are the embedder-facing contract for the unified governance
+// and lifecycle system: cap an instance's CPU/heap/storage, switch its
+// environmental interfaces on and off, and pause / resume / terminate it.
+// ----------------------------------------------------------------------------
+
+pub use crate::sdk::capabilities::{Capability, CapabilitySet};
+pub use crate::sdk::lifecycle::RunState;
+pub use crate::sdk::limits::{ResourceLimits, ResourceUsage};
+
+/// Apply a resource-limit policy to a registered VM. Returns `false` if unknown.
+pub fn set_limits(machine_id: &str, limits: ResourceLimits) -> bool {
+    let vms = VMS.lock().unwrap();
+    match vms.get(machine_id) {
+        Some(vm) => {
+            vm.set_limits(limits);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Read a VM's live resource usage, if it exists.
+pub fn usage(machine_id: &str) -> Option<ResourceUsage> {
+    VMS.lock().unwrap().get(machine_id).map(|vm| vm.usage())
+}
+
+/// Toggle one capability (network, storage, clock, …) for a VM.
+pub fn set_capability(machine_id: &str, cap: Capability, allowed: bool) -> bool {
+    let vms = VMS.lock().unwrap();
+    match vms.get(machine_id) {
+        Some(vm) => {
+            vm.set_capability(cap, allowed);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Replace a VM's whole capability set (e.g. install a sandbox `deny_all`).
+pub fn set_capabilities(machine_id: &str, caps: CapabilitySet) -> bool {
+    let vms = VMS.lock().unwrap();
+    match vms.get(machine_id) {
+        Some(vm) => {
+            vm.set_capabilities(caps);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Whether a VM currently permits the given host API.
+pub fn capability_allows(machine_id: &str, api_name: &str) -> bool {
+    VMS.lock()
+        .unwrap()
+        .get(machine_id)
+        .map(|vm| vm.capabilities().allows_api(api_name))
+        .unwrap_or(false)
+}
+
+/// Request a pause: the VM suspends at its next interpreter step boundary, with
+/// its full continuation preserved for [`resume_execution`].
+pub fn pause_vm(machine_id: &str) -> bool {
+    let vms = VMS.lock().unwrap();
+    match vms.get(machine_id) {
+        Some(vm) => {
+            vm.request_pause();
+            true
+        }
+        None => false,
+    }
+}
+
+/// Resume a paused VM, continuing exactly where it suspended.
+pub fn resume_execution(machine_id: String) -> VmExecResult {
+    let mut vms = VMS.lock().unwrap();
+    match vms.get_mut(&machine_id) {
+        Some(vm) => {
+            let res = vm.resume();
+            check_host_call(vm, &res.stringify())
+        }
+        None => VmExecResult::done("\"vm_not_found\""),
+    }
+}
+
+/// Request termination: the VM unwinds at its next step boundary and becomes
+/// inert. Further drive calls are no-ops.
+pub fn terminate_vm(machine_id: &str) -> bool {
+    let vms = VMS.lock().unwrap();
+    match vms.get(machine_id) {
+        Some(vm) => {
+            vm.request_terminate();
+            true
+        }
+        None => false,
+    }
+}
+
+/// Current run state of a VM (running / paused / terminated / …).
+pub fn run_state(machine_id: &str) -> Option<RunState> {
+    VMS.lock().unwrap().get(machine_id).map(|vm| vm.run_state())
+}
+
+/// The fatal trap reason if a VM was stopped by a limit overrun or runtime
+/// error, else `None`.
+pub fn trap_reason(machine_id: &str) -> Option<String> {
+    VMS.lock().unwrap().get(machine_id).and_then(|vm| vm.trap_reason())
+}
+
+/// Charge the storage governor on behalf of the host's fabricated filesystem.
+/// Returns the limit-error message if the storage cap would be exceeded.
+pub fn charge_storage(machine_id: &str, delta: i64) -> Result<(), String> {
+    let vms = VMS.lock().unwrap();
+    match vms.get(machine_id) {
+        Some(vm) => vm.charge_storage(delta),
+        None => Err("vm_not_found".to_string()),
+    }
 }

@@ -58,6 +58,85 @@ impl VM {
     pub fn run(&mut self) -> Val {
         self.run_func_with_input("", None, 0)
     }
+
+    // ---- Host-facing instance management ------------------------------------
+    //
+    // These thin wrappers reach through the executor so the embedder can govern,
+    // gate, and steer the instance entirely via the public VM handle.
+
+    fn exec(&self) -> std::cell::RefMut<'_, crate::sdk::executor::Executor> {
+        self.single_thread_executor.as_ref().unwrap().borrow_mut()
+    }
+
+    /// Replace the resource-limit policy (instructions / memory / storage /
+    /// call depth). Usage already accrued is retained.
+    pub fn set_limits(&self, limits: crate::sdk::limits::ResourceLimits) {
+        self.exec().set_limits(limits);
+    }
+    /// Current resource-limit policy.
+    pub fn limits(&self) -> crate::sdk::limits::ResourceLimits {
+        self.exec().limits()
+    }
+    /// Live resource-usage tally.
+    pub fn usage(&self) -> crate::sdk::limits::ResourceUsage {
+        self.exec().usage()
+    }
+    /// A snapshot of the capability toggles.
+    pub fn capabilities(&self) -> crate::sdk::capabilities::CapabilitySet {
+        self.exec().capabilities()
+    }
+    /// Replace the capability set wholesale.
+    pub fn set_capabilities(&self, caps: crate::sdk::capabilities::CapabilitySet) {
+        self.exec().set_capabilities(caps);
+    }
+    /// Toggle a single capability (network, storage, …) on or off.
+    pub fn set_capability(&self, cap: crate::sdk::capabilities::Capability, allowed: bool) {
+        self.exec().capabilities_mut().set(cap, allowed);
+    }
+    /// Host: request a pause at the next interpreter step boundary.
+    pub fn request_pause(&self) {
+        self.exec().request_pause();
+    }
+    /// Host: request termination at the next interpreter step boundary.
+    pub fn request_terminate(&self) {
+        self.exec().request_terminate();
+    }
+    /// Current run state (running / paused / terminated / …).
+    pub fn run_state(&self) -> crate::sdk::lifecycle::RunState {
+        self.exec().run_state()
+    }
+    /// Whether the most recent turn ended because the host paused the instance.
+    pub fn is_paused(&self) -> bool {
+        matches!(self.run_state(), crate::sdk::lifecycle::RunState::Paused)
+    }
+    /// The fatal trap reason, if the instance was stopped by a limit or error.
+    pub fn trap_reason(&self) -> Option<String> {
+        self.exec().trap_reason()
+    }
+    /// Charge the host filesystem's storage delta against the storage budget.
+    pub fn charge_storage(&self, delta: i64) -> Result<(), String> {
+        self.exec().charge_storage(delta)
+    }
+    /// Reconcile the absolute persistent-storage figure with the host total.
+    pub fn set_storage_bytes(&self, bytes: u64) -> Result<(), String> {
+        self.exec().set_storage_bytes(bytes)
+    }
+
+    /// Resume a paused instance, continuing exactly where it suspended. Returns
+    /// the same kind of result a normal step would (a pending host call, a
+    /// further pause, completion, or a trap), routed through
+    /// [`VM::handle_executor_request`]. No value is injected.
+    pub fn resume(&mut self) -> Val {
+        self.single_thread_executor.as_ref().unwrap().borrow_mut().resume_control();
+        // 0x04 = resume-after-pause; the typ-254 payload means "no value".
+        let r = self
+            .single_thread_executor
+            .as_ref()
+            .unwrap()
+            .borrow_mut()
+            .single_thread_operation(0x04, self.pending_host_call_id, Val::new(254, Rc::new(RefCell::new(Box::new(0)))));
+        self.handle_executor_request(r.0, r.1, r.2)
+    }
     pub fn is_exec_processing(&self) -> bool {
         self.single_thread_executor
             .as_ref()
@@ -255,6 +334,11 @@ impl VM {
                 );
                 Val::new(253, Rc::new(RefCell::new(Box::new(0))))
             }
+            // 0x05 = paused (continuation preserved); 0x06 = terminated/trapped
+            // (payload carries the trap reason string, empty for a clean stop).
+            // Neither sets a host call: the embedder inspects `run_state()` /
+            // `trap_reason()` and resumes or disposes accordingly.
+            0x05 | 0x06 => payload,
             _ => Val::new(0, Rc::new(RefCell::new(Box::new(0)))),
         }
     }

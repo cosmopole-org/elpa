@@ -17,7 +17,12 @@ use elpa_protocol::{Definition, Frame, HostCall};
 use elpian_vm::api;
 
 pub mod definitions;
+pub mod host_env;
 pub use definitions::{DefinitionStore, ExpandError};
+pub use host_env::{
+    ClosureNet, DeniedNet, EnvToggles, FileStat, FileStore, HostEnv, MemoryFileStore, NativeFileStore,
+    NetProvider, NetRequest, NetResponse,
+};
 
 /// How to (re)enter the VM for one pump.
 pub enum Start<'a> {
