@@ -61,6 +61,9 @@ use elpa_runtime::{
 // Re-export the instance-governance surface so a host can cap, gate, and steer
 // an app through the `elpa` crate without reaching into `elpian-vm` directly.
 pub use elpian_vm::api::{Capability, CapabilitySet, ResourceLimits, ResourceUsage, RunState};
+// Lower JavaScript source to Elpian AST JSON (tooling aid — e.g. validating an
+// embedded WGSL shader in a JS-authored module without running it).
+pub use elpian_vm::api::compile_js_to_ast;
 pub use elpa_runtime::{
     ClosureNet, EnvToggles, FileStore, MemoryFileStore, NativeFileStore, NetProvider, NetRequest,
     NetResponse,
@@ -104,7 +107,24 @@ impl<B: GpuBackend> Elpa<B> {
     pub fn new(backend: B, surface: SurfaceInfo, ast_json: &str) -> Option<Self> {
         let id = format!("elpa-{}", INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed));
         let runtime = Runtime::from_ast(id, ast_json)?;
-        Some(Self {
+        Some(Self::with_runtime(runtime, backend, surface))
+    }
+
+    /// Assemble an instance from a GPU backend, the initial surface geometry, and
+    /// an app written in **JavaScript**. The JS is lowered to the very same
+    /// Elpian AST by the VM's built-in front-end and compiled through the same
+    /// path as [`Elpa::new`] — so an app authored in JS is a first-class peer of
+    /// one shipped as hand-written AST. Returns `None` if the source is outside
+    /// the supported JS subset (i.e. it fails to parse / compile).
+    pub fn new_from_js(backend: B, surface: SurfaceInfo, js_source: &str) -> Option<Self> {
+        let id = format!("elpa-{}", INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed));
+        let runtime = Runtime::from_js(id, js_source)?;
+        Some(Self::with_runtime(runtime, backend, surface))
+    }
+
+    /// Shared field initialization for the AST and JS constructors.
+    fn with_runtime(runtime: Runtime, backend: B, surface: SurfaceInfo) -> Self {
+        Self {
             runtime,
             renderer: Renderer::new(backend),
             surface,
@@ -115,7 +135,7 @@ impl<B: GpuBackend> Elpa<B> {
             assets: HashMap::new(),
             fetcher: None,
             env: HostEnv::default(),
-        })
+        }
     }
 
     // ---- Instance governance (limits, capabilities, lifecycle) --------------
@@ -214,14 +234,16 @@ impl<B: GpuBackend> Elpa<B> {
         &self.defs
     }
 
-    /// Import and run an Elpian AST module directly from the host, registering
-    /// whatever definitions it declares. Equivalent to the app calling
-    /// `vm.import` with an inline `ast`. Returns whether the module compiled.
+    /// Import and run an Elpian module directly from the host, registering
+    /// whatever definitions it declares. The `source` may be either Elpian AST
+    /// JSON or **JavaScript** source — it is compiled through whichever front-end
+    /// accepts it. Equivalent to the app calling `vm.import` with an inline
+    /// module. Returns whether the module compiled.
     pub fn import_ast(&mut self, ast_json: &str) -> bool {
         let id = format!("elpa-import-{}", IMPORT_COUNTER.fetch_add(1, Ordering::Relaxed));
         let Elpa { renderer, surface, last_frame, last_stats, log, defs, assets, fetcher, env, .. } =
             self;
-        match Runtime::from_ast(id, ast_json) {
+        match runtime_from_source(id, ast_json) {
             Some(mut rt) => {
                 pump_vm(
                     &mut rt, Start::Main, renderer, surface, last_frame, last_stats, log, defs,
@@ -299,6 +321,15 @@ impl<B: GpuBackend> Elpa<B> {
             env,
         );
     }
+}
+
+/// Compile a module `source` that may be **either** Elpian AST JSON or
+/// JavaScript: try the AST front-end first (the source is valid JSON), and on
+/// failure fall back to the JS front-end. JS source is never valid AST JSON, so
+/// the two are unambiguous and the fallback is free. This is what lets both the
+/// app and any `vm.import`ed module be authored in JS.
+fn runtime_from_source(id: String, source: &str) -> Option<Runtime> {
+    Runtime::from_ast(id.clone(), source).or_else(|| Runtime::from_js(id, source))
 }
 
 /// Drive one VM (the app, or an imported module) through a pump turn, routing
@@ -386,7 +417,7 @@ fn handle_call<B: GpuBackend>(
                     Some(ast_json) => {
                         let id =
                             format!("elpa-import-{}", IMPORT_COUNTER.fetch_add(1, Ordering::Relaxed));
-                        match Runtime::from_ast(id, &ast_json) {
+                        match runtime_from_source(id, &ast_json) {
                             Some(mut rt) => {
                                 pump_vm(
                                     &mut rt, Start::Main, renderer, surface, last_frame, last_stats,

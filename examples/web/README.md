@@ -2,19 +2,20 @@
 
 Runs an Elpa app and draws its wgpu frames to a **full-window, DPI-aware HTML
 canvas**. The app is the **Material Design 3 UI-kit example**
-([`examples/material`](../material)), which is itself Elpian AST JSON: it
-`vm.import`s the UI-kit module and lays out an **interactive** M3 surface —
-buttons, a FAB, a switch, checkbox, radio group, slider, chip, linear progress
-and cards — all referenced by id. The shared shader and pipeline are created
-**once** and cached; only the per-frame instance data changes — demonstrating
-Elpa's reusable definitions, resource caching, and partial rendering on real
-wgpu. This is what the repo's GitHub Pages site shows.
+([`examples/material`](../material)), which is itself **JavaScript**: Elpa
+compiles it to its VM (`Elpa::new_from_js`), then it `vm.import`s the UI-kit
+module and lays out an **interactive** M3 surface — buttons, a FAB, a switch,
+checkbox, radio group, slider, chip, linear progress and cards — all referenced
+by id. The shared shader and pipeline are created **once** and cached; only the
+per-frame instance data changes — demonstrating Elpa's reusable definitions,
+resource caching, and partial rendering on real wgpu. This is what the repo's
+GitHub Pages site shows.
 
-`src/lib.rs` registers the UI-kit module (`elpa_material::MODULE_AST`) as the
+`src/lib.rs` registers the UI-kit module (`elpa_material::MODULE_JS`) as the
 asset the demo imports — retargeting the pipeline's color format to the live
-surface — runs `elpa_material::DEMO_AST`, and forwards **pointer, wheel and
+surface — runs `elpa_material::DEMO_JS`, and forwards **pointer, wheel and
 keyboard** events into the app. All layout and interaction logic lives entirely
-in the kit's JSON, not in this crate.
+in the kit's JavaScript, not in this crate.
 
 ### Try it
 

@@ -1,17 +1,18 @@
-# Elpa Material Design 3 UI kit (Elpian AST)
+# Elpa Material Design 3 UI kit (JavaScript)
 
-An **interactive Material Design 3 (expressive) UI-kit SDK** for Elpa programs —
-and, like the engine [`examples/sdk`](../sdk), **the kit itself is Elpian AST**,
-not Rust. It ships as JSON that runs directly on the Elpian VM and that any Elpa
-program can pull in at runtime with `vm.import`.
+An **interactive Material Design 3 (Material You) UI-kit SDK** for Elpa programs —
+and, like the engine [`examples/sdk`](../sdk), **the kit itself is the app code**,
+not Rust. It ships as **JavaScript** that Elpa compiles and runs directly on its
+VM, and that any Elpa program can pull in at runtime with `vm.import`. An Elpa
+instance is built straight from this source: `Elpa::new_from_js(backend, surface,
+DEMO_JS)`.
 
 | File | What it is |
 |------|------------|
-| [`assets/elpa-material.ast.json`](assets/elpa-material.ast.json) | **The UI kit.** An Elpian AST `program` whose body is a `gpu.define` per widget. Importable via `vm.import`. |
-| [`assets/demo.ast.json`](assets/demo.ast.json) | A complete, **interactive** Elpian app: imports the kit, lays widgets out from `gpu.surfaceInfo`, and wires pointer / wheel / keyboard events to widget state. |
-| `src/bin/build_material.rs` | The **generator** that authors the two JSON files. Not the SDK — just tooling. Run `cargo run -p elpa-material --bin build_material` to regenerate. |
-| `src/lib.rs` | Only embeds the JSON (`MODULE_AST`, `DEMO_AST`) so host examples can bundle and register it. |
-| `tests/run.rs` | Runs the JSON assets through a headless `Elpa` instance end to end — including real pointer/wheel/keyboard events — and validates the WGSL with `naga`. |
+| [`assets/elpa-material.js`](assets/elpa-material.js) | **The UI kit.** A JS program whose top-level body registers one `gpu.define` per widget via `askHost`. Importable via `vm.import`. |
+| [`assets/demo.js`](assets/demo.js) | A complete, **interactive** Elpa app in JS: imports the kit, lays widgets out from `gpu.surfaceInfo`, and wires pointer / wheel / keyboard events to widget state. |
+| `src/lib.rs` | Only embeds the JS (`MODULE_JS`, `DEMO_JS`) so host examples can bundle and register it. |
+| `tests/run.rs` | Builds the JS through a headless `Elpa` instance end to end — including real pointer/wheel/keyboard events — and validates the WGSL with `naga`. |
 
 ## Widgets
 
@@ -51,45 +52,50 @@ cycles the whole palette's accent color; `d` (or the filled button) cross-fades
 the entire UI between light and dark. Every change **animates** — thumbs slide,
 check marks scale in, colors ease — via `onFrame`.
 
-## Why it fits inside the Elpian language
+## How it stays inside the supported JavaScript
 
-The Elpian VM has no `sin`/`cos`/`tan`, and its `bool*bool` is unreliable / its
-`ifStmt` untested. So this kit obeys two rules:
+The kit is plain JavaScript, compiled by Elpa's in-VM front-end to the same
+Elpian AST a hand-written program would produce. It obeys one structural rule and
+one stylistic one:
 
 * **All shape & anti-aliasing math lives in WGSL** — one rounded-rect *signed
   distance field* draws crisp pills, circles, cards, bars and (rotated) check
-  marks. The Elpian side ships only resource objects, instanced draw definitions,
-  and per-instance `f32` data.
-* **All interaction is branch-free arithmetic.** Hit-tests are comparisons
-  `cast` to `0.0`/`1.0` and AND-ed by multiplication; a toggle is
-  `s + t - 2*s*t`, a select is `s*(1-h) + v*h`, a clamp is two `cast`-gated
-  subtractions. The handler uses only the VM's well-exercised opcodes
-  (`arithmetic`, `cast`, `functionCall`, `definition`, `assignment`, `indexer`,
-  `host_call`) — no control flow.
+  marks. The JS side ships only resource objects, instanced draws, and
+  per-instance `f32` data; it never does trigonometry on shapes.
+* **Everything else is ordinary JS** — `function`s, `if`/`for`, objects, arrays,
+  arithmetic, member access, and `askHost(api, [args])` host calls. Hit-tests are
+  `if` comparisons, a toggle is `x = 1 - x`, animations ease with
+  `cur + (target - cur) * k`. Boolean operators (`&&`/`||`), arrow functions and
+  ternaries are *not* in the supported subset, so conditions nest plain `if`s.
 
-The whole event model and per-frame layout therefore run as plain Elpian AST.
+The whole event model and per-frame layout run as that JavaScript.
 
 ## How a program uses it
 
 ```text
-program:
-  vm.import("assets/elpa-material.ast.json")   // registers elpa.m3.{card,appBar,...}
-  onEvent(e):  ...arithmetic state updates from e.{type,nx,ny,deltaY,key}...
-  onFrame(dt): ...ease animations toward targets... ; render()
-  render():    gpu.submit(frame)                // frame references widgets by id:
-      renderPass:
-        setBindGroup(0, globals)                // viewport uniform
-        useDefinition("elpa.m3.card")           // host splices each widget's draw
-        useDefinition("elpa.m3.switch")         //   and feeds it this frame's
-        ...                                      //   computed instance buffer
+askHost("vm.import", ["assets/elpa-material.js"]);  // registers elpa.m3.{card,appBar,...}
+function onEvent(e) {  /* state updates from e.{type,nx,ny,deltaY,key} */ render(); }
+function onFrame(dt) { /* ease animations toward targets */ render(); }
+function render() {                                 // frame references widgets by id:
+  askHost("gpu.submit", [{ resources: [...], commands: [{ op: "renderPass",
+    commands: [
+      { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.globalsBind" },
+      { cmd: "useDefinition", definition: "elpa.m3.card" },   // host splices each
+      { cmd: "useDefinition", definition: "elpa.m3.switch" }, //   widget's draw and
+      // ...                                                  //   feeds its buffer
+    ] }] }]);
+}
 ```
 
-## Live / regenerating
+## Live / testing
 
 The [`examples/web`](../web) example loads this demo, so it is testable live on
-GitHub Pages. To rebuild the assets:
+GitHub Pages. To exercise it headlessly:
 
 ```bash
-cargo run -p elpa-material --bin build_material   # rewrites assets/*.ast.json
 cargo test -p elpa-material                       # headless VM run + WGSL validation
 ```
+
+Edit the kit and demo directly in [`assets/elpa-material.js`](assets/elpa-material.js)
+and [`assets/demo.js`](assets/demo.js) — there is no generator step; the JS *is*
+the SDK.

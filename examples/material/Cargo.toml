@@ -2,23 +2,17 @@
 name = "elpa-material"
 version = "0.1.0"
 edition = "2021"
-description = "A Material Design 3 (expressive) UI-kit SDK delivered as Elpian AST JSON (assets/*.ast.json) that runs directly on the Elpian VM. Importable via vm.import; draws interactive M3 widgets (buttons, FAB, switch, checkbox, radios, slider, chips, progress, cards) from a single rounded-rect SDF pipeline, with all interaction wired branch-free in the VM. `build_material` is the generator that authors the JSON; `lib` only embeds it for host examples."
+description = "A Material Design 3 (Material You) UI-kit SDK delivered as JavaScript (assets/*.js) that Elpa compiles and runs directly on its VM. Importable via vm.import; draws interactive M3 widgets (buttons, FAB, switch, checkbox, radios, slider, chips, progress, cards) from a single rounded-rect SDF pipeline. `lib` embeds the JS for host examples; an Elpa instance is built from it with Elpa::new_from_js."
 
 [lib]
 name = "elpa_material"
 
-# The generator that authors the UI kit's JSON AST assets. Not the SDK itself.
-[[bin]]
-name = "build_material"
-path = "src/bin/build_material.rs"
-
 [dependencies]
-elpa-protocol = { path = "../../crates/elpa-protocol" }
-serde = { workspace = true }
-serde_json = { workspace = true }
+# The kit ships as JavaScript source strings only; embedding needs no deps.
 
 [dev-dependencies]
-# Drive the JSON-AST UI kit end to end through a real (headless) Elpa instance + VM.
+# Drive the JS UI kit end to end through a real (headless) Elpa instance + VM,
+# and lower the kit's JS to AST so its embedded WGSL can be validated.
 elpa = { path = "../../crates/elpa" }
 # Validate the kit's WGSL the same way wgpu does, so shader errors (reserved
 # keywords, syntax) are caught in `cargo test` without a browser/GPU.
