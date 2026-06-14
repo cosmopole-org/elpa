@@ -2,48 +2,48 @@
 //
 // This is what the GitHub Pages deployment runs. It uses the Material SDK
 // (linked ahead of this file, like `import 'package:flutter/material.dart'`) as a
-// pure black box: it declares state, composes a widget tree from the SDK's
-// widgets, and hands it to `runApp`. There is no `gpu.submit`, no glyph data, no
-// coordinates, and no event plumbing here — the SDK owns all of that. A tap
-// handler just mutates state and calls `update()` to repaint, exactly like
-// `setState` in Flutter.
+// pure black box: it declares state and composes a widget tree from the SDK's
+// widgets. There is no `gpu.submit`, no glyph data, no coordinates, and no event
+// plumbing here — the SDK owns all of that.
+//
+// Components are plain functions, React-style: a custom widget is just a function
+// that returns a widget tree, taking `update` if it has interactivity. A tap
+// handler mutates state and calls `update()` to repaint (the Flutter `setState`
+// pattern). `runApp` mounts the root component and re-invokes it every render, so
+// these functions re-run and rebuild the tree from current state.
 
 // --- application state --------------------------------------------------------
 let dark = 0.0;   // 0 light, 1 dark
 let accent = 0;   // accent palette index (cycled by the FAB)
 let swOn = 0.0; let ck = 0.0; let chip = 0.0; let radio = 0; let vol = 0.5;
 
-// --- custom widgets, composed from material widgets via createComponent --------
-// A caption stacked above a control. A static custom component (it ignores
-// `update`) — the Flutter pattern of building your own widget from others.
+// --- custom widgets: ordinary functions returning a widget tree ---------------
+// A caption stacked above a control. No interactivity, so no `update`.
 function Tile(label, control) {
-    return createComponent((update) => Column({ gap: 1.3, children: [
+    return Column({ gap: 1.3, children: [
         Text(label, { size: "caption" }),
         control,
-    ] }));
+    ] });
 }
 
-// A row of three radios with captions. A *stateful* custom component: each
-// radio's tap closure captures its own `idx` and calls this component's
-// `update` to repaint.
-function RadioRow() {
-    return createComponent((update) => {
-        let names = ["A", "B", "C"];
-        let kids = [];
-        for (let i = 0; i < 3; i++) {
-            let idx = i;
-            push(kids, Tile(names[idx], Radio({
-                id: concat("r", str(idx)),
-                selected: sel(radio, idx),
-                onTap: () => { radio = idx; update(); },
-            })));
-        }
-        return Row({ gap: 5.0, children: kids });
-    });
+// A row of three radios with captions. Interactive, so it takes `update`; each
+// radio's tap closure captures its own `idx`.
+function RadioRow(update) {
+    let names = ["A", "B", "C"];
+    let kids = [];
+    for (let i = 0; i < 3; i++) {
+        let idx = i;
+        push(kids, Tile(names[idx], Radio({
+            id: concat("r", str(idx)),
+            selected: sel(radio, idx),
+            onTap: () => { radio = idx; update(); },
+        })));
+    }
+    return Row({ gap: 5.0, children: kids });
 }
 
-// --- the app ------------------------------------------------------------------
-let app = createComponent((update) => {
+// --- the root component -------------------------------------------------------
+function App(update) {
     setTheme(dark, accent);   // push app theme into the framework each build
     return Scaffold({
         onKey: (k) => {
@@ -70,11 +70,11 @@ let app = createComponent((update) => {
             Tile("VOLUME", Slider({ value: vol, onChanged: (v) => { vol = v; update(); } })),
             Tile("FILTER", Chip({ id: "filter", label: "FILTER", value: chip,
                 onTap: () => { chip = 1.0 - chip; update(); } })),
-            RadioRow(),
+            RadioRow(update),
             Divider({}),
             Tile("TASKS", Progress({ id: "tasks", value: (swOn + ck + chip) / 3.0 })),
         ] }) }),
     });
-});
+}
 
-runApp(app);
+runApp(App);

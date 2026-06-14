@@ -13,13 +13,16 @@
 // * Widgets are immutable description objects (`{ kind, ...props }`), like
 //   Flutter `Widget`s. Constructors (`FilledButton`, `Switch`, `Column`, ...)
 //   just build them.
-// * `createComponent(builder)` makes a *stateful* widget from a closure
-//   `(update) => subtree`. `update` re-runs the app and re-submits its graphics,
+// * Components are plain functions `(update) => widget`, React-style: you call
+//   them to get a subtree. `update` re-runs the app and re-submits its graphics,
 //   so a tap handler calls `update()` to repaint — the only "setState" you need.
-// * The runtime walks the widget tree each frame: `_build` expands components,
-//   `_measure` computes intrinsic sizes, `_paint` lays children out and emits
-//   rounded-rect instances + hit regions. `_submit` turns the instance list into
-//   one wgpu frame. The app supplies no coordinates and no draw calls.
+//   `runApp(root)` mounts the root component function and re-invokes it every
+//   render, so nested component functions re-run too (no `createComponent`, no
+//   reconciler — the tree the root returns is already concrete).
+// * The runtime walks that tree each frame: `_measure` computes intrinsic sizes,
+//   `_paint` lays children out and emits rounded-rect instances + hit regions.
+//   `_submit` turns the instance list into one wgpu frame. The app supplies no
+//   coordinates and no draw calls.
 //
 // Per-instance data (16 floats): center.xy, halfSize.xy, cornerRadius,
 // borderWidth, rotation, feather, fill rgba, border rgba.
@@ -162,17 +165,15 @@ let _accDark  = [[0.816,0.737,1.000],[0.306,0.847,0.859],[0.616,0.839,0.490],[1.
 // build, like reading ThemeData from MaterialApp).
 function setTheme(darkTarget, accent) { _darkTarget = darkTarget; _accent = accent; }
 
-// Make a stateful widget from a closure `(update) => subtree`. Calling `update`
-// repaints the app (and re-submits its wgpu frame).
-function createComponent(builder) {
-    let comp = { kind: "component" };
-    comp.update = () => { _renderApp(); };
-    comp.build = () => { return builder(comp.update); };
-    return comp;
-}
+// Repaint: re-run the app's component tree and re-submit its wgpu frame. This is
+// the `update` passed to every component, so a handler can request a repaint —
+// the only "setState" you need.
+function _repaint() { _renderApp(); }
 
-// Mount a component as the root and paint the first frame.
-function runApp(app) { _root = app; _renderApp(); }
+// Mount the root component — a plain function `(update) => widget`, React-style —
+// and paint the first frame. Custom widgets are just such functions; call them
+// (passing `update` if they need it) and return their widget tree.
+function runApp(root) { _root = root; _renderApp(); }
 
 function clamp01(v) { if (v < 0.0) { return 0.0; } if (v > 1.0) { return 1.0; } return v; }
 function sel(a, b) { if (a == b) { return 1.0; } return 0.0; }
@@ -453,31 +454,16 @@ function _registerWheel(onChanged, val) {
     _hasWheel = 1.0;
 }
 
-// --------------------------------------------------------------- build --------
-function _build(node) {
-    let k = node.kind;
-    if (k == "component") { return _build(node.build()); }
-    if (k == "column") { node.children = _buildList(node.children); return node; }
-    if (k == "row") { node.children = _buildList(node.children); return node; }
-    if (k == "card") { node.child = _build(node.child); return node; }
-    if (k == "scaffold") {
-        if (has(node, "body")) { node.body = _build(node.body); }
-        if (has(node, "appBar")) { node.appBar = _build(node.appBar); }
-        if (has(node, "fab")) { node.fab = _build(node.fab); }
-        return node;
-    }
-    return node;
-}
-function _buildList(list) { let o = []; for (let i = 0; i < len(list); i++) { push(o, _build(list[i])); } return o; }
-
 // --------------------------------------------------------------- render -------
+// Custom components are plain functions invoked eagerly (React-style), so the
+// tree the root returns is already concrete widget objects — no expansion pass.
 function _bufF32(id, usage, data) { return { kind: "buffer", id: id, size: len(data) * 4, usage: usage, data_f32: data }; }
 function _renderApp() {
     let si = askHost("gpu.surfaceInfo", []);
     _vw = num(si.width); _vh = num(si.height); _u = _vh * 0.01;
     _inst = []; _taps = []; _drags = [];
     _hasKey = 0.0; _hasWheel = 0.0;
-    _paint(_build(_root), _vw * 0.5, _vh * 0.5);
+    _paint(_root(_repaint), _vw * 0.5, _vh * 0.5);
     _submit();
 }
 function _submit() {
