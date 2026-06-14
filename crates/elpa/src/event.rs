@@ -36,9 +36,21 @@ impl InputEvent {
     /// Serialize to the JSON event object passed to `onEvent`. `surface` lets the
     /// app receive normalized coordinates (`nx`/`ny` in `[0,1]`) for resolution-
     /// independent hit-testing.
+    ///
+    /// Every field (`x`, `y`, `nx`, `ny`, `button`, `deltaY`, `key`) is *always*
+    /// present with a sensible default, regardless of the event variant. This lets
+    /// an app read any field unconditionally — e.g. compute `nx * width` on a key
+    /// event without first branching on the event type — which is what makes a
+    /// purely arithmetic (branch-free) event handler in the VM safe.
     pub fn to_json(&self, surface: &SurfaceInfo) -> serde_json::Value {
         let (lw, lh) = (surface.logical_width().max(1.0), surface.logical_height().max(1.0));
-        let mut v = serde_json::json!({ "type": self.kind() });
+        // Start from a fully-populated, defaulted object so no key is ever missing
+        // for the app's handler.
+        let mut v = serde_json::json!({
+            "type": self.kind(),
+            "x": 0.0, "y": 0.0, "nx": 0.0, "ny": 0.0,
+            "button": 0, "deltaY": 0.0, "key": "",
+        });
         let map = v.as_object_mut().unwrap();
         match self {
             InputEvent::PointerDown { x, y, button } | InputEvent::PointerUp { x, y, button } => {
@@ -57,6 +69,8 @@ impl InputEvent {
             InputEvent::Wheel { x, y, delta_y } => {
                 map.insert("x".into(), (*x).into());
                 map.insert("y".into(), (*y).into());
+                map.insert("nx".into(), (x / lw).into());
+                map.insert("ny".into(), (y / lh).into());
                 map.insert("deltaY".into(), (*delta_y).into());
             }
             InputEvent::KeyDown { key } | InputEvent::KeyUp { key } => {

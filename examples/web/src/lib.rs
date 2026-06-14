@@ -90,24 +90,30 @@ async fn run() {
     let backend = WgpuBackend::new(&instance, surface, w, h).await;
     let format_token = format_token(backend.surface_format());
 
-    // 3. Assemble the Elpa instance over the live backend + the SDK demo app.
+    // 3. Assemble the Elpa instance over the live backend + the UI-kit demo app.
     //
-    // The app is the Elpa **engine SDK example**, which is itself Elpian AST
-    // JSON: `DEMO_AST` imports the SDK module and draws 2D + 3D shapes by id.
-    // Register the importable SDK module as the asset the demo imports — with the
-    // pipelines' color target retargeted to this surface's actual format (the SDK
+    // The app is the **Material Design 3 UI-kit example**, which is itself Elpian
+    // AST JSON: `DEMO_AST` imports the kit module and lays out interactive widgets
+    // (buttons, FAB, switch, checkbox, radios, slider, chips, progress, cards),
+    // wiring pointer / wheel / keyboard events to widget state in the VM.
+    // Register the importable kit module as the asset the demo imports — with the
+    // pipeline's color target retargeted to this surface's actual format (the kit
     // bakes `bgra8unorm`; the browser surface may be `*-srgb`, and wgpu requires
     // the pipeline target to match the surface exactly).
-    let module = elpa_sdk::MODULE_AST.replace("\"bgra8unorm\"", &format!("\"{format_token}\""));
+    let module =
+        elpa_material::MODULE_AST.replace("\"bgra8unorm\"", &format!("\"{format_token}\""));
     let surface_info = SurfaceInfo::new(w, h, dpr);
-    let mut app = Elpa::new(backend, surface_info, elpa_sdk::DEMO_AST).expect("app AST compiles");
-    app.register_asset(elpa_sdk::MODULE_SOURCE, module);
-    app.start(); // import the SDK module + first frame
+    let mut app =
+        Elpa::new(backend, surface_info, elpa_material::DEMO_AST).expect("app AST compiles");
+    app.register_asset(elpa_material::MODULE_SOURCE, module);
+    app.start(); // import the kit module + first frame
 
     let app = Rc::new(RefCell::new(app));
 
     install_resize(&window, &canvas, app.clone());
     install_pointer(&canvas, app.clone());
+    install_wheel(&canvas, app.clone());
+    install_keyboard(&window, app.clone());
     start_raf(window, app);
 }
 
@@ -135,7 +141,11 @@ fn format_token(fmt: wgpu::TextureFormat) -> String {
 
 /// Reconfigure the GPU surface and notify the app on every window resize so the
 /// canvas always fills the screen at the right DPI (desktop, tablet, phone).
-fn install_resize(window: &web_sys::Window, canvas: &web_sys::HtmlCanvasElement, app: Rc<RefCell<App>>) {
+fn install_resize(
+    window: &web_sys::Window,
+    canvas: &web_sys::HtmlCanvasElement,
+    app: Rc<RefCell<App>>,
+) {
     let win = window.clone();
     let canvas = canvas.clone();
     let cb = Closure::<dyn FnMut()>::new(move || {
@@ -154,10 +164,14 @@ fn install_resize(window: &web_sys::Window, canvas: &web_sys::HtmlCanvasElement,
 
 /// Forward pointer events as normalized Elpa input events.
 fn install_pointer(canvas: &web_sys::HtmlCanvasElement, app: Rc<RefCell<App>>) {
-    let listen = |name: &str, make: Rc<dyn Fn(&web_sys::PointerEvent) -> InputEvent>, app: Rc<RefCell<App>>, canvas: &web_sys::HtmlCanvasElement| {
-        let cb = Closure::<dyn FnMut(web_sys::PointerEvent)>::new(move |ev: web_sys::PointerEvent| {
-            app.borrow_mut().send_event(&make(&ev));
-        });
+    let listen = |name: &str,
+                  make: Rc<dyn Fn(&web_sys::PointerEvent) -> InputEvent>,
+                  app: Rc<RefCell<App>>,
+                  canvas: &web_sys::HtmlCanvasElement| {
+        let cb =
+            Closure::<dyn FnMut(web_sys::PointerEvent)>::new(move |ev: web_sys::PointerEvent| {
+                app.borrow_mut().send_event(&make(&ev));
+            });
         canvas
             .add_event_listener_with_callback(name, cb.as_ref().unchecked_ref())
             .unwrap();
@@ -166,22 +180,82 @@ fn install_pointer(canvas: &web_sys::HtmlCanvasElement, app: Rc<RefCell<App>>) {
 
     listen(
         "pointerdown",
-        Rc::new(|e| InputEvent::PointerDown { x: e.client_x() as f64, y: e.client_y() as f64, button: e.button() as u8 }),
+        Rc::new(|e| InputEvent::PointerDown {
+            x: e.client_x() as f64,
+            y: e.client_y() as f64,
+            button: e.button() as u8,
+        }),
         app.clone(),
         canvas,
     );
     listen(
         "pointermove",
-        Rc::new(|e| InputEvent::PointerMove { x: e.client_x() as f64, y: e.client_y() as f64 }),
+        Rc::new(|e| InputEvent::PointerMove {
+            x: e.client_x() as f64,
+            y: e.client_y() as f64,
+        }),
         app.clone(),
         canvas,
     );
     listen(
         "pointerup",
-        Rc::new(|e| InputEvent::PointerUp { x: e.client_x() as f64, y: e.client_y() as f64, button: e.button() as u8 }),
+        Rc::new(|e| InputEvent::PointerUp {
+            x: e.client_x() as f64,
+            y: e.client_y() as f64,
+            button: e.button() as u8,
+        }),
         app,
         canvas,
     );
+}
+
+/// Forward mouse-wheel events (the demo uses them to nudge the slider). The
+/// listener is non-passive so it can `preventDefault` and stop the page from
+/// scrolling under the full-window canvas.
+fn install_wheel(canvas: &web_sys::HtmlCanvasElement, app: Rc<RefCell<App>>) {
+    let cb = Closure::<dyn FnMut(web_sys::WheelEvent)>::new(move |e: web_sys::WheelEvent| {
+        e.prevent_default();
+        app.borrow_mut().send_event(&InputEvent::Wheel {
+            x: e.client_x() as f64,
+            y: e.client_y() as f64,
+            delta_y: e.delta_y(),
+        });
+    });
+    let opts = web_sys::AddEventListenerOptions::new();
+    opts.set_passive(false);
+    canvas
+        .add_event_listener_with_callback_and_add_event_listener_options(
+            "wheel",
+            cb.as_ref().unchecked_ref(),
+            &opts,
+        )
+        .unwrap();
+    cb.forget();
+}
+
+/// Forward keyboard events on the window (arrows nudge the slider; `d` toggles
+/// dark mode, space toggles the switch, `r` resets — see the demo's `onEvent`).
+fn install_keyboard(window: &web_sys::Window, app: Rc<RefCell<App>>) {
+    let down_app = app.clone();
+    let down =
+        Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
+            down_app
+                .borrow_mut()
+                .send_event(&InputEvent::KeyDown { key: e.key() });
+        });
+    window
+        .add_event_listener_with_callback("keydown", down.as_ref().unchecked_ref())
+        .unwrap();
+    down.forget();
+
+    let up = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
+        app.borrow_mut()
+            .send_event(&InputEvent::KeyUp { key: e.key() });
+    });
+    window
+        .add_event_listener_with_callback("keyup", up.as_ref().unchecked_ref())
+        .unwrap();
+    up.forget();
 }
 
 /// Drive continuous animation via `requestAnimationFrame`.
