@@ -617,7 +617,7 @@ fn shadow(
         a_f(0.0),
         blur, // large feather → blurred shadow edge
     ];
-    v.extend(c4(0.0, 0.0, 0.0, 0.22)); // soft black
+    v.extend(c4(0.0, 0.0, 0.0, 0.30)); // soft black
     v.extend(transparent());
     debug_assert_eq!(v.len(), 16);
     v
@@ -632,9 +632,9 @@ fn shadow_for(cx: Value, cy: Value, hw: Value, hh: Value, radius: Value) -> Vec<
         hw,
         hh,
         radius,
-        mul(a_id("vh"), a_f(0.004)),
         mul(a_id("vh"), a_f(0.006)),
         mul(a_id("vh"), a_f(0.012)),
+        mul(a_id("vh"), a_f(0.030)),
     )
 }
 
@@ -679,16 +679,32 @@ fn glyph(c: char) -> [u8; 7] {
     }
 }
 
-/// Number of lit pixels in a string (its instance count).
-fn lit_count(text: &str) -> u32 {
-    text.chars()
-        .map(|c| {
-            glyph(c)
-                .iter()
-                .map(|r| (r & 0x1F).count_ones())
-                .sum::<u32>()
-        })
-        .sum()
+/// Horizontal runs of lit pixels per glyph row: `(row, c0, c1)` inclusive. Runs
+/// (instead of single pixels) let each row of a stroke be one rounded bar, so
+/// letterforms read as smooth connected strokes rather than a dot grid.
+fn glyph_runs(c: char) -> Vec<(usize, usize, usize)> {
+    let rows = glyph(c);
+    let mut runs = Vec::new();
+    for (row, bits) in rows.iter().enumerate() {
+        let mut col = 0usize;
+        while col < 5 {
+            if (bits >> (4 - col)) & 1 == 1 {
+                let start = col;
+                while col < 5 && (bits >> (4 - col)) & 1 == 1 {
+                    col += 1;
+                }
+                runs.push((row, start, col - 1));
+            } else {
+                col += 1;
+            }
+        }
+    }
+    runs
+}
+
+/// Number of stroke runs in a string (its instance count).
+fn run_count(text: &str) -> u32 {
+    text.chars().map(|c| glyph_runs(c).len() as u32).sum()
 }
 
 /// Text color source.
@@ -736,9 +752,11 @@ fn text_color_updates() -> Vec<Value> {
     ]
 }
 
-/// Emit one rounded-square instance per lit pixel of `text`. Position and size
-/// come from the label's cached globals `lx{idx}` / `ly{idx}` / `lc{idx}` (set
-/// once per layout in `buildText`), so each pixel is just `base + cell*offset`.
+/// Emit one rounded-stroke bar per glyph run of `text`. Position and size come
+/// from the label's cached globals `lx{idx}` / `ly{idx}` / `lc{idx}` (set once
+/// per layout in `buildText`), so each bar is just `base + cell*offset`. Bars are
+/// fully rounded and slightly taller than one cell so adjacent rows merge — the
+/// dot grid reads as continuous smooth strokes.
 fn text_dots(idx: usize, text: &str, color: Vec<Value>) -> Vec<Value> {
     let lx = a_id(&format!("lx{idx}"));
     let ly = a_id(&format!("ly{idx}"));
@@ -747,29 +765,28 @@ fn text_dots(idx: usize, text: &str, color: Vec<Value>) -> Vec<Value> {
     let total_w = 6.0 * n - 1.0; // cells (5 wide + 1 gap per char, no trailing gap)
     let mut out = Vec::new();
     for (ci, ch) in text.chars().enumerate() {
-        let rows = glyph(ch);
-        for (row, bits) in rows.iter().enumerate() {
-            for col in 0..5 {
-                if (bits >> (4 - col)) & 1 == 1 {
-                    let ox = (ci as f64) * 6.0 + (col as f64) + 0.5 - total_w / 2.0;
-                    let oy = (row as f64) + 0.5 - 3.5;
-                    let px = add(lx.clone(), mul(lc(), a_f(ox)));
-                    let py = add(ly.clone(), mul(lc(), a_f(oy)));
-                    let half = mul(lc(), a_f(0.42));
-                    let rad = mul(lc(), a_f(0.14));
-                    out.extend(inst(
-                        px,
-                        py,
-                        half.clone(),
-                        half,
-                        rad,
-                        a_f(0.0),
-                        a_f(0.0),
-                        color.clone(),
-                        transparent(),
-                    ));
-                }
-            }
+        for (row, c0, c1) in glyph_runs(ch) {
+            // run center / extent in cell units
+            let cx_cell = (ci as f64) * 6.0 + (c0 as f64 + c1 as f64) / 2.0 + 0.5;
+            let ox = cx_cell - total_w / 2.0;
+            let oy = (row as f64) + 0.5 - 3.5;
+            let run_w = (c1 - c0 + 1) as f64;
+            let half_w = run_w * 0.5; // cells; touches the next run horizontally
+            let half_h = 0.58; // cells; >0.5 so rows overlap vertically
+            let radius = half_w.min(half_h);
+            let px = add(lx.clone(), mul(lc(), a_f(ox)));
+            let py = add(ly.clone(), mul(lc(), a_f(oy)));
+            out.extend(inst(
+                px,
+                py,
+                mul(lc(), a_f(half_w)),
+                mul(lc(), a_f(half_h)),
+                mul(lc(), a_f(radius)),
+                a_f(0.0),
+                a_f(0.0),
+                color.clone(),
+                transparent(),
+            ));
         }
     }
     out
@@ -788,9 +805,9 @@ struct Label {
 fn labels() -> Vec<Label> {
     // Glyph cell sizes (a glyph is 5×7 cells). Kept small relative to the
     // viewport so captions sit inside their widgets instead of dominating.
-    let title = || mul(a_id("vh"), a_f(0.0065));
-    let btn = || mul(a_id("vh"), a_f(0.0050));
-    let cap = || mul(a_id("vh"), a_f(0.0042));
+    let title = || mul(a_id("vh"), a_f(0.0056));
+    let btn = || mul(a_id("vh"), a_f(0.0043));
+    let cap = || mul(a_id("vh"), a_f(0.0037));
     let above = |w: &str, f: f64| sub(lf(w, "cy"), mul(a_id("vh"), a_f(f)));
     let mut v = vec![
         // App-bar title (on the accent bar).
@@ -863,8 +880,8 @@ fn labels() -> Vec<Label> {
         v.push(Label {
             text: t,
             cx: ci,
-            cy: add(lf("radioGroup", "cy"), mul(a_id("vh"), a_f(0.035))),
-            cell: mul(a_id("vh"), a_f(0.0045)),
+            cy: add(lf("radioGroup", "cy"), mul(a_id("vh"), a_f(0.032))),
+            cell: mul(a_id("vh"), a_f(0.0040)),
             color: Ink::OnSurface,
         });
     }
@@ -873,7 +890,7 @@ fn labels() -> Vec<Label> {
 
 /// Total caption instance count (the `labels` widget's layer count).
 fn labels_layer_count() -> u32 {
-    labels().iter().map(|l| lit_count(l.text)).sum()
+    labels().iter().map(|l| run_count(l.text)).sum()
 }
 
 /// All caption instances, concatenated (built only on layout changes).
