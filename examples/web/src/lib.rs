@@ -96,22 +96,20 @@ async fn run() {
 
     // 3. Assemble the Elpa instance over the live backend + the UI-kit demo app.
     //
-    // The app is the **Material Design 3 UI-kit example**, which is itself
-    // **JavaScript**: `DEMO_JS` imports the kit module and lays out interactive
-    // widgets (buttons, FAB, switch, checkbox, radios, slider, chips, progress,
-    // cards), wiring pointer / wheel / keyboard events to widget state. Elpa
-    // compiles the JS to its VM with `new_from_js` — no off-VM toolchain.
-    // Register the importable kit module (also JS) as the asset the demo imports —
-    // with the pipeline's color target retargeted to this surface's actual format
-    // (the kit names `bgra8unorm`; the browser surface may be `*-srgb`, and wgpu
-    // requires the pipeline target to match the surface exactly).
-    let module =
-        elpa_material::MODULE_JS.replace("\"bgra8unorm\"", &format!("\"{format_token}\""));
+    // The app is the **Material Design 3 example**, written in **JavaScript**: a
+    // Flutter-style widget SDK (`MODULE_JS`) linked ahead of an app (`DEMO_JS`)
+    // that composes a widget tree and calls `runApp` — see `elpa_material::program`.
+    // Elpa compiles the whole thing to its VM with `new_from_js`; the SDK's
+    // component runtime owns layout, animation, and `gpu.submit`. The pipeline's
+    // color target is retargeted to this surface's actual format (the SDK names
+    // `bgra8unorm`; the browser surface may be `*-srgb`, and wgpu requires the
+    // pipeline target to match the surface exactly).
+    let program =
+        elpa_material::program().replace("\"bgra8unorm\"", &format!("\"{format_token}\""));
     let surface_info = SurfaceInfo::new(w, h, dpr);
     let mut app =
-        Elpa::new_from_js(backend, surface_info, elpa_material::DEMO_JS).expect("app JS compiles");
-    app.register_asset(elpa_material::MODULE_SOURCE, module);
-    app.start(); // import the kit module + first frame
+        Elpa::new_from_js(backend, surface_info, &program).expect("app JS compiles");
+    app.start(); // run the SDK + app, paint the first frame
 
     let app = Rc::new(RefCell::new(app));
 

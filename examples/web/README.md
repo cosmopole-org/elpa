@@ -1,21 +1,22 @@
 # Elpa web example
 
 Runs an Elpa app and draws its wgpu frames to a **full-window, DPI-aware HTML
-canvas**. The app is the **Material Design 3 UI-kit example**
-([`examples/material`](../material)), which is itself **JavaScript**: Elpa
-compiles it to its VM (`Elpa::new_from_js`), then it `vm.import`s the UI-kit
-module and lays out an **interactive** M3 surface — buttons, a FAB, a switch,
-checkbox, radio group, slider, chip, linear progress and cards — all referenced
-by id. The shared shader and pipeline are created **once** and cached; only the
-per-frame instance data changes — demonstrating Elpa's reusable definitions,
-resource caching, and partial rendering on real wgpu. This is what the repo's
-GitHub Pages site shows.
+canvas**. The app is the **Material Design 3 example**
+([`examples/material`](../material)), a Flutter-style widget framework written in
+**JavaScript**: a widget SDK linked ahead of an app that composes a widget tree
+and calls `runApp`. Elpa compiles the whole thing to its VM
+(`Elpa::new_from_js`); the SDK's component runtime lays out an **interactive** M3
+surface — buttons, a FAB, a switch, checkbox, radio group, slider, chip, linear
+progress and cards — and packs every frame into one instanced rounded-rect draw.
+The shared shader and pipeline are created **once** and cached; only the instance
+data changes — demonstrating Elpa's resource caching and partial rendering on
+real wgpu. This is what the repo's GitHub Pages site shows.
 
-`src/lib.rs` registers the UI-kit module (`elpa_material::MODULE_JS`) as the
-asset the demo imports — retargeting the pipeline's color format to the live
-surface — runs `elpa_material::DEMO_JS`, and forwards **pointer, wheel and
-keyboard** events into the app. All layout and interaction logic lives entirely
-in the kit's JavaScript, not in this crate.
+`src/lib.rs` builds the linked program with `elpa_material::program()` —
+retargeting the pipeline's color format to the live surface — runs it with
+`Elpa::new_from_js`, and forwards **pointer, wheel and keyboard** events into the
+app. All layout and interaction logic lives entirely in the framework's
+JavaScript, not in this crate.
 
 ### Try it
 
