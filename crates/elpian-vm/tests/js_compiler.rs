@@ -50,30 +50,66 @@ fn let_and_assignment() {
 
 #[test]
 fn if_else_if_else_chain() {
-    // Exercises the full `ifStmt` / `elseifStmt` / `elseStmt` lowering. The
-    // branch sets a result variable that is returned afterwards (the executor
-    // resumes the function body after a conditional block, so the value is read
-    // back at the end rather than returned from inside a branch).
-    let js = "function classify() {
-        let n = 7;
-        let r = 0;
-        if (n > 10) { r = 1; }
-        else if (n > 5) { r = 2; }
-        else { r = 3; }
-        return r;
+    // Exercises the full `ifStmt` / `elseifStmt` / `elseStmt` lowering with a
+    // `return` inside each branch (early return out of the function).
+    let js = "function classify(n) {
+        if (n > 10) { return 1; }
+        else if (n > 5) { return 2; }
+        else { return 3; }
     }";
-    assert_eq!(run_js_and_call("js-if", js, "classify"), "2");
+    let id = "js-if";
+    assert!(api::create_vm_from_js(id.to_string(), js.to_string()));
+    let _ = api::execute_vm(id.to_string());
+    let call = |n: i64| {
+        api::execute_vm_func_with_input(id.to_string(), "classify".into(), n.to_string(), 1)
+            .result_value
+    };
+    assert_eq!(call(7), "2");
+    assert_eq!(call(20), "1");
+    assert_eq!(call(1), "3");
+}
 
-    // The `else` arm is taken when no condition matches.
-    let js2 = "function classify() {
-        let n = 1;
-        let r = 0;
-        if (n > 10) { r = 1; }
-        else if (n > 5) { r = 2; }
-        else { r = 3; }
-        return r;
+#[test]
+fn early_return_skips_rest_of_body() {
+    // The statement after the taken branch's return must not run.
+    let js = "function f(n) {
+        if (n > 0) { return 1; }
+        return 2;
     }";
-    assert_eq!(run_js_and_call("js-if-else", js2, "classify"), "3");
+    let id = "js-early-return";
+    assert!(api::create_vm_from_js(id.to_string(), js.to_string()));
+    let _ = api::execute_vm(id.to_string());
+    let call = |n: i64| {
+        api::execute_vm_func_with_input(id.to_string(), "f".into(), n.to_string(), 1).result_value
+    };
+    assert_eq!(call(5), "1");
+    assert_eq!(call(-5), "2");
+}
+
+#[test]
+fn return_from_inside_loop() {
+    // Return out of a while loop: find the first i whose square reaches 10.
+    let js = "function firstBig() {
+        let i = 0;
+        while (i < 100) {
+            if (i * i >= 10) { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }";
+    assert_eq!(run_js_and_call("js-ret-loop", js, "firstBig"), "4");
+}
+
+#[test]
+fn guard_clause_in_called_function() {
+    // An in-program call whose result comes from a guard-clause return nested in
+    // an `if`, consumed by the caller's own expression.
+    let js = "function pick(n) {
+        if (n > 0) { return 100; }
+        return 200;
+    }
+    function f() { return pick(5) + pick(-5); }";
+    assert_eq!(run_js_and_call("js-guard", js, "f"), "300");
 }
 
 #[test]
@@ -113,6 +149,55 @@ fn top_level_state_and_function() {
 fn unary_minus_and_not() {
     let js = "function f() { return -3 + 5; }";
     assert_eq!(run_js_and_call("js-neg", js, "f"), "2");
+}
+
+#[test]
+fn recursion_with_guard_clause() {
+    // Recursive factorial: a base-case `return` nested in an `if`, plus a
+    // recursive in-program call inside an arithmetic expression. Exercises the
+    // return-unwinding across many stacked call frames.
+    let js = "function fact(n) {
+        if (n <= 1) { return 1; }
+        return n * fact(n - 1);
+    }
+    function f() { return fact(5); }";
+    assert_eq!(run_js_and_call("js-fact", js, "f"), "120");
+}
+
+#[test]
+fn switch_with_returns() {
+    // Return out of a switch case; execution after the switch is reached only
+    // when no case matched.
+    let js = "function classify(n) {
+        switch (n) {
+            case 1: return 10;
+            case 2: return 20;
+        }
+        return 0;
+    }";
+    let id = "js-switch";
+    assert!(api::create_vm_from_js(id.to_string(), js.to_string()));
+    let _ = api::execute_vm(id.to_string());
+    let call = |n: i64| {
+        api::execute_vm_func_with_input(id.to_string(), "classify".into(), n.to_string(), 1)
+            .result_value
+    };
+    assert_eq!(call(1), "10");
+    assert_eq!(call(2), "20");
+    assert_eq!(call(3), "0");
+}
+
+#[test]
+fn function_without_return_does_not_leak_previous_result() {
+    // A function with an explicit return followed by one without a return: the
+    // second must not inherit the first's value (no stale pending result).
+    let js = "function getfive() { return 5; } function noret() { let x = 1; }";
+    let id = "js-noleak";
+    assert!(api::create_vm_from_js(id.to_string(), js.to_string()));
+    let _ = api::execute_vm(id.to_string());
+    assert_eq!(api::execute_vm_func(id.to_string(), "getfive".into(), 1).result_value, "5");
+    let noret = api::execute_vm_func(id.to_string(), "noret".into(), 2).result_value;
+    assert_ne!(noret, "5", "no-return function leaked the previous result");
 }
 
 #[test]

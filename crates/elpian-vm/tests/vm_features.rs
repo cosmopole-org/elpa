@@ -177,6 +177,58 @@ fn oop_class_extend_new_and_field() {
     assert_eq!(api::execute_vm_func(id.to_string(), "isA".into(), 2).result_value, "true");
 }
 
+// ---- Control flow: return propagation & switch dispatch ---------------------
+
+#[test]
+fn return_inside_conditional_exits_the_function() {
+    // A `return` inside an if-body must exit the whole function, and the
+    // statement following the if must not run when a branch returns.
+    let body = vec![
+        json!({ "type": "ifStmt", "data": {
+            "condition": arith(">", ident("n"), i64v(0)),
+            "body": [ ret(strv("pos")) ],
+            "elseStmt": { "data": { "body": [ ret(strv("nonpos")) ] } }
+        }}),
+        ret(strv("fell-through")),
+    ];
+    let ast = program(vec![func_def("sign", vec!["n"], body)]);
+    let id = "feat-return-if";
+    assert!(api::create_vm_from_ast(id.to_string(), ast));
+    let _ = api::execute_vm(id.to_string());
+    assert_eq!(
+        api::execute_vm_func_with_input(id.to_string(), "sign".into(), "5".into(), 1).result_value,
+        "\"pos\""
+    );
+    assert_eq!(
+        api::execute_vm_func_with_input(id.to_string(), "sign".into(), "-5".into(), 2).result_value,
+        "\"nonpos\""
+    );
+}
+
+#[test]
+fn switch_dispatches_to_the_matching_case() {
+    let case = |v: Value, body: Vec<Value>| json!({ "value": v, "body": { "body": body } });
+    let body = vec![
+        json!({ "type": "switchStmt", "data": {
+            "value": ident("n"),
+            "cases": [
+                case(i64v(1), vec![ ret(strv("one")) ]),
+                case(i64v(2), vec![ ret(strv("two")) ]),
+            ]
+        }}),
+        ret(strv("other")),
+    ];
+    let ast = program(vec![func_def("name", vec!["n"], body)]);
+    let id = "feat-switch";
+    assert!(api::create_vm_from_ast(id.to_string(), ast));
+    let _ = api::execute_vm(id.to_string());
+    let call =
+        |n: &str, cb| api::execute_vm_func_with_input(id.to_string(), "name".into(), n.into(), cb).result_value;
+    assert_eq!(call("1", 1), "\"one\"");
+    assert_eq!(call("2", 2), "\"two\"");
+    assert_eq!(call("3", 3), "\"other\"");
+}
+
 // ---- Resource limits --------------------------------------------------------
 
 #[test]
