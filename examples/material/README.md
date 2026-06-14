@@ -17,10 +17,20 @@ program can pull in at runtime with `vm.import`.
 
 `card`, `appBar`, `filledButton`, `outlinedButton`, `fab` (floating action
 button), `switch`, `checkbox`, `radioGroup` (3 radios), `slider`, `chip`,
-`progress` (linear) and `divider` — every one drawn by **a single shared
-rounded-rectangle SDF pipeline** (M3 shapes are rounded rects, pills and
+`progress` (linear), `divider` and `labels` — every one drawn by **a single
+shared rounded-rectangle SDF pipeline** (M3 shapes are rounded rects, pills and
 circles). A widget definition is just an instanced draw of its rounded-rect
 "layers" from a per-widget instance buffer the app fills each frame.
+
+Two extras keep it looking like M3:
+
+* **Elevation shadows.** The SDF carries a per-instance *feather* (edge
+  softness); cards, the filled button and the FAB draw a soft, offset dark
+  rounded rect behind them for a real drop shadow.
+* **Captions.** There is no glyph engine, so text (`THEME`, `RESET`, `WI-FI`,
+  `VOLUME`, the radio `A/B/C`, …) is drawn with the same primitive as a 5×7
+  dot-matrix font. Because glyph geometry depends only on layout, it is computed
+  once into a cached buffer (rebuilt on resize), so per-frame cost stays tiny.
 
 ## Interaction (all event kinds, all wired in the VM)
 

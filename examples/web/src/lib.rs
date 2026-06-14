@@ -41,13 +41,17 @@ async fn run() {
     let style = canvas.style();
     style.set_property("position", "fixed").unwrap();
     style.set_property("inset", "0").unwrap();
-    style.set_property("width", "100vw").unwrap();
-    style.set_property("height", "100vh").unwrap();
     style.set_property("display", "block").unwrap();
     style.set_property("touch-action", "none").unwrap();
     document.body().unwrap().append_child(&canvas).unwrap();
 
     let (w, h, dpr) = viewport(&window);
+    // Size the canvas CSS box to the *exact logical* viewport (in px), not
+    // `100vw/100vh`. On mobile the dynamic URL bar makes `100vh` differ from
+    // `innerHeight`, which would stretch the backing store relative to the CSS box
+    // and misalign pointer hit-testing (clientY/innerHeight) from rendered widget
+    // positions. Matching CSS box == logical size keeps taps and drawing aligned.
+    set_css_size(&canvas, w, h, dpr);
     canvas.set_width(w);
     canvas.set_height(h);
 
@@ -117,6 +121,18 @@ async fn run() {
     start_raf(window, app);
 }
 
+/// Set the canvas CSS box to the logical size (physical / dpr) in explicit
+/// pixels, so the drawn backing store and pointer coordinates stay 1:1.
+fn set_css_size(canvas: &web_sys::HtmlCanvasElement, w: u32, h: u32, dpr: f64) {
+    let style = canvas.style();
+    style
+        .set_property("width", &format!("{}px", (w as f64 / dpr)))
+        .unwrap();
+    style
+        .set_property("height", &format!("{}px", (h as f64 / dpr)))
+        .unwrap();
+}
+
 /// Current viewport in (physical_w, physical_h, scale_factor).
 fn viewport(window: &web_sys::Window) -> (u32, u32, f64) {
     let dpr = window.device_pixel_ratio().max(1.0);
@@ -150,6 +166,7 @@ fn install_resize(
     let canvas = canvas.clone();
     let cb = Closure::<dyn FnMut()>::new(move || {
         let (w, h, dpr) = viewport(&win);
+        set_css_size(&canvas, w, h, dpr);
         canvas.set_width(w);
         canvas.set_height(h);
         let mut app = app.borrow_mut();
