@@ -1,22 +1,18 @@
 name: Build APK
 
-# Builds the Android APK on every push. The `android` job then commits the
-# signed release APK to the root of the repository as `elpa.apk`.
+# Builds the Android APK on demand only (manual run). The `android` job then
+# commits the signed release APK to the root of the repository as `elpa.apk`.
+#
+# Run it from the GitHub UI (Actions → "Build APK" → "Run workflow") or via the
+# API/CLI (`gh workflow run "Build APK" --ref <branch>`).
 
 on:
-  push:
-    branches:
-      - main
-      - "claude/**"
-    # Don't re-trigger on the bot's own APK commit (it also carries `[skip ci]`).
-    paths-ignore:
-      - "elpa.apk"
   workflow_dispatch:
 
 permissions:
   contents: write # the android job pushes the built APK back to the repo
 
-# One in-flight run per ref; newer pushes supersede older ones.
+# One in-flight run per ref; a newer manual run supersedes an older one.
 concurrency:
   group: build-apk-${{ github.ref }}
   cancel-in-progress: true
