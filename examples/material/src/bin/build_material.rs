@@ -262,6 +262,11 @@ fn catalog() -> Vec<Widget> {
             name: "divider",
             layers: 1,
         },
+        // One instance per lit pixel of every caption (5×7 dot-matrix text).
+        Widget {
+            name: "labels",
+            layers: labels_layer_count(),
+        },
     ]
 }
 
@@ -697,9 +702,9 @@ fn glyph_runs(c: char) -> Vec<(usize, usize, usize)> {
     runs
 }
 
-/// Number of drawable glyphs in a string (its quad/instance count).
-fn glyph_count(text: &str) -> u32 {
-    text.chars().filter(|c| atlas_index(*c).is_some()).count() as u32
+/// Number of stroke runs in a string (its instance count).
+fn run_count(text: &str) -> u32 {
+    text.chars().map(|c| glyph_runs(c).len() as u32).sum()
 }
 
 /// Text color source.
@@ -752,426 +757,39 @@ fn text_color_updates() -> Vec<Value> {
 /// per layout in `buildText`), so each bar is just `base + cell*offset`. Bars are
 /// fully rounded and slightly taller than one cell so adjacent rows merge — the
 /// dot grid reads as continuous smooth strokes.
-// --- glyph atlas (signed-distance field) -------------------------------------
-//
-// Captions are real font-style glyphs: the 5×7 runs are baked once into an R8
-// **SDF atlas** (smooth signed distance, 0.5 = edge), uploaded to a texture, and
-// each glyph is drawn as a single textured quad. The fragment shader samples the
-// atlas and `smoothstep`s the distance, so text is crisp and anti-aliased at any
-// size — one draw, ~one quad per character.
-
-const TXT_SH: &str = "elpa.m3.text.shader";
-const TXT_BGL: &str = "elpa.m3.text.bgl";
-const TXT_LAY: &str = "elpa.m3.text.layout";
-const TXT_PIPE: &str = "elpa.m3.text.pipe";
-const ATLAS: &str = "elpa.m3.atlas";
-const SAMP: &str = "elpa.m3.sampler";
-const TXT_BIND: &str = "elpa.m3.text.bind";
-
-/// Characters baked into the atlas (uppercase + hyphen).
-const GLYPHS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ-";
-const ATLAS_COLS: usize = 9;
-const CELL_W: usize = 28; // atlas px per glyph cell
-const CELL_H: usize = 36;
-const PAD: f64 = 4.0; // atlas px padding around the 5×7 drawable
-
-fn atlas_index(c: char) -> Option<usize> {
-    GLYPHS.find(c.to_ascii_uppercase())
-}
-fn atlas_rows() -> usize {
-    GLYPHS.chars().count().div_ceil(ATLAS_COLS)
-}
-fn atlas_w() -> usize {
-    ATLAS_COLS * CELL_W
-}
-fn atlas_h() -> usize {
-    atlas_rows() * CELL_H
-}
-
-/// Distance from point `p` to segment `a`–`b` (cell units).
-fn seg_dist(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
-    let (dx, dy) = (bx - ax, by - ay);
-    let len2 = dx * dx + dy * dy;
-    let t = if len2 <= 1e-9 {
-        0.0
-    } else {
-        (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0)
-    };
-    let (cx, cy) = (ax + t * dx, ay + t * dy);
-    ((px - cx).powi(2) + (py - cy).powi(2)).sqrt()
-}
-
-/// Rasterize the font into an R8 SDF atlas (0.5 = glyph edge), from the same 5×7
-/// runs but as a smooth distance field for crisp, scalable sampling.
-fn build_atlas_bytes() -> Vec<u8> {
-    let (w, h) = (atlas_w(), atlas_h());
-    let mut buf = vec![0u8; w * h];
-    let scale = (CELL_W as f64 - 2.0 * PAD) / 5.0; // atlas px per cell (≈4)
-    let radius = 0.62; // stroke half-thickness, cell units
-    for (gi, ch) in GLYPHS.chars().enumerate() {
-        let runs = glyph_runs(ch);
-        let (ox, oy) = ((gi % ATLAS_COLS) * CELL_W, (gi / ATLAS_COLS) * CELL_H);
-        for ly in 0..CELL_H {
-            for lx in 0..CELL_W {
-                let cx = (lx as f64 + 0.5 - PAD) / scale;
-                let cy = (ly as f64 + 0.5 - PAD) / scale;
-                let mut best = f64::INFINITY;
-                for &(r, c0, c1) in &runs {
-                    let ay = r as f64 + 0.5;
-                    let d = seg_dist(cx, cy, c0 as f64 + 0.5, ay, c1 as f64 + 0.5, ay) - radius;
-                    best = best.min(d);
-                }
-                let v = (0.5 - best * 0.5).clamp(0.0, 1.0);
-                buf[(oy + ly) * w + ox + lx] = (v * 255.0).round() as u8;
-            }
-        }
-    }
-    buf
-}
-
-/// Standard base64 (the renderer decodes `data_b64`).
-fn base64(bytes: &[u8]) -> String {
-    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
-        out.push(T[(n >> 18 & 63) as usize] as char);
-        out.push(T[(n >> 12 & 63) as usize] as char);
-        out.push(if chunk.len() > 1 {
-            T[(n >> 6 & 63) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            T[(n & 63) as usize] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
-/// A text quad instance: center.xy, half.xy | uv0.xy, uv1.xy | rgba (12 f32).
-#[allow(clippy::too_many_arguments)]
-fn text_inst(
-    cx: Value,
-    cy: Value,
-    hw: Value,
-    hh: Value,
-    u0: f64,
-    v0: f64,
-    u1: f64,
-    v1: f64,
-    color: Vec<Value>,
-) -> Vec<Value> {
-    let mut v = vec![cx, cy, hw, hh, a_f(u0), a_f(v0), a_f(u1), a_f(v1)];
-    v.extend(color);
-    debug_assert_eq!(v.len(), 12);
-    v
-}
-
-/// Lay out a caption as one textured quad per glyph, from the label's cached
-/// globals `lx{idx}` / `ly{idx}` / `lc{idx}` (`lc` = per-cell screen size).
-fn text_glyph_instances(idx: usize, text: &str, color: Vec<Value>) -> Vec<Value> {
+fn text_dots(idx: usize, text: &str, color: Vec<Value>) -> Vec<Value> {
     let lx = a_id(&format!("lx{idx}"));
-    let ly = || a_id(&format!("ly{idx}"));
+    let ly = a_id(&format!("ly{idx}"));
     let lc = || a_id(&format!("lc{idx}"));
     let n = text.chars().count() as f64;
-    let (w, h) = (atlas_w() as f64, atlas_h() as f64);
+    let total_w = 6.0 * n - 1.0; // cells (5 wide + 1 gap per char, no trailing gap)
     let mut out = Vec::new();
-    for (i, ch) in text.chars().enumerate() {
-        let Some(gi) = atlas_index(ch) else { continue }; // spaces/unknown: no quad
-        let (col, row) = (gi % ATLAS_COLS, gi / ATLAS_COLS);
-        let u0 = (col * CELL_W) as f64 / w;
-        let v0 = (row * CELL_H) as f64 / h;
-        let u1 = ((col + 1) * CELL_W) as f64 / w;
-        let v1 = ((row + 1) * CELL_H) as f64 / h;
-        let ox = ((i as f64) - (n - 1.0) / 2.0) * 6.0; // advance, cell units
-        let px = add(lx.clone(), mul(lc(), a_f(ox)));
-        // The full atlas cell maps to the quad; screen-px-per-atlas-px = lc/4, so
-        // a cell's half extents are CELL_W/8 · lc and CELL_H/8 · lc.
-        out.extend(text_inst(
-            px,
-            ly(),
-            mul(lc(), a_f(CELL_W as f64 / 8.0)),
-            mul(lc(), a_f(CELL_H as f64 / 8.0)),
-            u0,
-            v0,
-            u1,
-            v1,
-            color.clone(),
-        ));
+    for (ci, ch) in text.chars().enumerate() {
+        for (row, c0, c1) in glyph_runs(ch) {
+            // run center / extent in cell units
+            let cx_cell = (ci as f64) * 6.0 + (c0 as f64 + c1 as f64) / 2.0 + 0.5;
+            let ox = cx_cell - total_w / 2.0;
+            let oy = (row as f64) + 0.5 - 3.5;
+            let run_w = (c1 - c0 + 1) as f64;
+            let half_w = run_w * 0.5; // cells; touches the next run horizontally
+            let half_h = 0.58; // cells; >0.5 so rows overlap vertically
+            let radius = half_w.min(half_h);
+            let px = add(lx.clone(), mul(lc(), a_f(ox)));
+            let py = add(ly.clone(), mul(lc(), a_f(oy)));
+            out.extend(inst(
+                px,
+                py,
+                mul(lc(), a_f(half_w)),
+                mul(lc(), a_f(half_h)),
+                mul(lc(), a_f(radius)),
+                a_f(0.0),
+                a_f(0.0),
+                color.clone(),
+                transparent(),
+            ));
+        }
     }
     out
-}
-
-// --- the text shader + pipeline + atlas resources ----------------------------
-
-const WGSL_TEXT: &str = r#"
-struct Globals { viewport: vec2<f32>, pad: vec2<f32> };
-@group(0) @binding(0) var<uniform> g: Globals;
-@group(0) @binding(1) var atlas: texture_2d<f32>;
-@group(0) @binding(2) var samp: sampler;
-
-struct In {
-    @location(0) a: vec4<f32>,   // center.xy, half.xy
-    @location(1) b: vec4<f32>,   // uv0.xy, uv1.xy
-    @location(2) col: vec4<f32>,
-};
-struct Out {
-    @builtin(position) clip: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-    @location(1) @interpolate(flat) col: vec4<f32>,
-};
-
-@vertex
-fn vs(@builtin(vertex_index) vi: u32, in: In) -> Out {
-    var c = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
-        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0));
-    let corner = c[vi];
-    let world = in.a.xy + corner * in.a.zw;
-    let ndc = vec2<f32>(world.x / g.viewport.x * 2.0 - 1.0, 1.0 - world.y / g.viewport.y * 2.0);
-    let t = corner * 0.5 + vec2<f32>(0.5, 0.5);
-    var o: Out;
-    o.clip = vec4<f32>(ndc, 0.0, 1.0);
-    o.uv = mix(in.b.xy, in.b.zw, t);
-    o.col = in.col;
-    return o;
-}
-
-@fragment
-fn fs(o: Out) -> @location(0) vec4<f32> {
-    let s = textureSample(atlas, samp, o.uv).r;
-    let aa = max(fwidth(s) * 0.7, 0.0008);
-    let cov = smoothstep(0.5 - aa, 0.5 + aa, s);
-    return vec4<f32>(o.col.rgb, o.col.a * cov);
-}
-"#;
-
-fn text_instance_layout() -> VertexBufferLayout {
-    VertexBufferLayout {
-        array_stride: 48,
-        step_mode: "instance".into(),
-        attributes: vec![
-            VertexAttribute {
-                format: "float32x4".into(),
-                offset: 0,
-                shader_location: 0,
-            },
-            VertexAttribute {
-                format: "float32x4".into(),
-                offset: 16,
-                shader_location: 1,
-            },
-            VertexAttribute {
-                format: "float32x4".into(),
-                offset: 32,
-                shader_location: 2,
-            },
-        ],
-    }
-}
-
-fn atlas_texture_desc() -> elpa_protocol::resource::TextureDesc {
-    use elpa_protocol::geometry::Extent3d;
-    elpa_protocol::resource::TextureDesc {
-        id: ATLAS.into(),
-        size: Extent3d {
-            width: atlas_w() as u32,
-            height: atlas_h() as u32,
-            depth: 1,
-        },
-        format: "r8unorm".into(),
-        usage: vec!["TEXTURE_BINDING".into(), "COPY_DST".into()],
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: "2d".into(),
-    }
-}
-
-/// All resources the text pipeline needs (created once, cached). The bind group
-/// reads the same per-frame viewport uniform (`GLB`) the rounded-rect UI uses.
-fn text_resources() -> Vec<ResourceDesc> {
-    use elpa_protocol::resource::{
-        BindGroupDesc, BindGroupEntry, BindGroupLayoutDesc, BindGroupLayoutEntry, BindingResource,
-        BlendComponent, BlendState, ColorTargetState, FragmentState, PipelineLayoutDesc,
-        RenderPipelineDesc, SamplerDesc, ShaderDesc, VertexState,
-    };
-    let blend = BlendState {
-        color: BlendComponent {
-            src_factor: "src-alpha".into(),
-            dst_factor: "one-minus-src-alpha".into(),
-            operation: "add".into(),
-        },
-        alpha: BlendComponent {
-            src_factor: "one".into(),
-            dst_factor: "one-minus-src-alpha".into(),
-            operation: "add".into(),
-        },
-    };
-    vec![
-        ResourceDesc::Shader(ShaderDesc {
-            id: TXT_SH.into(),
-            wgsl: WGSL_TEXT.into(),
-        }),
-        ResourceDesc::BindGroupLayout(BindGroupLayoutDesc {
-            id: TXT_BGL.into(),
-            entries: vec![
-                BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: vec!["VERTEX".into()],
-                    ty: "uniform".into(),
-                },
-                BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: vec!["FRAGMENT".into()],
-                    ty: "texture".into(),
-                },
-                BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: vec!["FRAGMENT".into()],
-                    ty: "sampler".into(),
-                },
-            ],
-        }),
-        ResourceDesc::PipelineLayout(PipelineLayoutDesc {
-            id: TXT_LAY.into(),
-            bind_group_layouts: vec![TXT_BGL.into()],
-        }),
-        ResourceDesc::RenderPipeline(RenderPipelineDesc {
-            id: TXT_PIPE.into(),
-            layout: Some(TXT_LAY.into()),
-            vertex: VertexState {
-                module: TXT_SH.into(),
-                entry_point: "vs".into(),
-                buffers: vec![text_instance_layout()],
-            },
-            fragment: Some(FragmentState {
-                module: TXT_SH.into(),
-                entry_point: "fs".into(),
-                targets: vec![ColorTargetState {
-                    format: COLOR_FORMAT.into(),
-                    blend: Some(blend),
-                    write_mask: vec![],
-                }],
-            }),
-            primitive: PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-        }),
-        ResourceDesc::Texture(atlas_texture_desc()),
-        ResourceDesc::Sampler(SamplerDesc {
-            id: SAMP.into(),
-            mag_filter: "linear".into(),
-            min_filter: "linear".into(),
-            ..Default::default()
-        }),
-        ResourceDesc::BindGroup(BindGroupDesc {
-            id: TXT_BIND.into(),
-            layout: TXT_BGL.into(),
-            entries: vec![
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::Buffer {
-                        buffer: GLB.into(),
-                        offset: 0,
-                        size: None,
-                    },
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::TextureView {
-                        texture: ATLAS.into(),
-                    },
-                },
-                BindGroupEntry {
-                    binding: 2,
-                    resource: BindingResource::Sampler {
-                        sampler: SAMP.into(),
-                    },
-                },
-            ],
-        }),
-    ]
-}
-
-/// The `labels` definition: the text pipeline + a draw of all glyph quads from
-/// the cached `txt` buffer.
-fn labels_definition() -> Definition {
-    Definition {
-        id: widget_def_id("labels"),
-        resources: text_resources(),
-        body: DefinitionBody::Render {
-            commands: vec![
-                RenderCommand::SetPipeline {
-                    pipeline: TXT_PIPE.into(),
-                },
-                RenderCommand::SetBindGroup {
-                    index: 0,
-                    bind_group: TXT_BIND.into(),
-                    dynamic_offsets: vec![],
-                },
-                RenderCommand::SetVertexBuffer {
-                    slot: 0,
-                    buffer: widget_instances_id("labels"),
-                    offset: 0,
-                },
-                RenderCommand::Draw {
-                    vertex_count: 6,
-                    instance_count: labels_layer_count(),
-                    first_vertex: 0,
-                    first_instance: 0,
-                },
-            ],
-        },
-    }
-}
-
-/// A one-time frame that creates the atlas texture and uploads its SDF pixels.
-fn atlas_upload_call() -> Value {
-    let bytes = build_atlas_bytes();
-    let b64 = base64(&bytes);
-    let atlas = a_obj(vec![
-        ("kind", a_s("texture")),
-        ("id", a_s(ATLAS)),
-        (
-            "size",
-            a_obj(vec![
-                ("width", a_i(atlas_w() as i64)),
-                ("height", a_i(atlas_h() as i64)),
-                ("depth", a_i(1)),
-            ]),
-        ),
-        ("format", a_s("r8unorm")),
-        (
-            "usage",
-            a_arr(vec![a_s("TEXTURE_BINDING"), a_s("COPY_DST")]),
-        ),
-    ]);
-    let write = a_obj(vec![
-        ("op", a_s("writeTexture")),
-        ("texture", a_s(ATLAS)),
-        (
-            "size",
-            a_obj(vec![
-                ("width", a_i(atlas_w() as i64)),
-                ("height", a_i(atlas_h() as i64)),
-                ("depth", a_i(1)),
-            ]),
-        ),
-        ("data_b64", a_s(&b64)),
-    ]);
-    let frame = a_obj(vec![
-        ("resources", a_arr(vec![atlas])),
-        ("commands", a_arr(vec![write])),
-    ]);
-    host_call("gpu.submit", vec![frame])
 }
 
 /// One caption: text, its center / cell-size expressions, and ink.
@@ -1270,16 +888,16 @@ fn labels() -> Vec<Label> {
     v
 }
 
-/// Total glyph-quad count across all captions (the `labels` draw's instance count).
+/// Total caption instance count (the `labels` widget's layer count).
 fn labels_layer_count() -> u32 {
-    labels().iter().map(|l| glyph_count(l.text)).sum()
+    labels().iter().map(|l| run_count(l.text)).sum()
 }
 
-/// All caption glyph quads, concatenated (built only on layout changes).
+/// All caption instances, concatenated (built only on layout changes).
 fn rb_labels() -> Vec<Value> {
     let mut v = Vec::new();
     for (idx, l) in labels().iter().enumerate() {
-        v.extend(text_glyph_instances(idx, l.text, ink(l.color)));
+        v.extend(text_dots(idx, l.text, ink(l.color)));
     }
     v
 }
@@ -1758,14 +1376,14 @@ fn rb(name: &str) -> Vec<Value> {
         "chip" => rb_chip(),
         "progress" => rb_progress(),
         "divider" => rb_divider(),
+        "labels" => rb_labels(),
         _ => unreachable!("unknown widget {name}"),
     }
 }
 
-// Draw order for the rounded-rect widgets: panel behind, controls, app bar, then
-// the floating action button. Captions (`elpa.m3.labels`, the text pipeline) are
-// drawn last, on top, by `render` after these.
-const DRAW_ORDER: [&str; 12] = [
+// Draw order: panel behind, controls, app bar, captions, then the floating
+// action button on top.
+const DRAW_ORDER: [&str; 13] = [
     "card",
     "divider",
     "progress",
@@ -1777,6 +1395,7 @@ const DRAW_ORDER: [&str; 12] = [
     "filledButton",
     "outlinedButton",
     "appBar",
+    "labels",
     "fab",
 ];
 
@@ -1785,12 +1404,10 @@ const DRAW_ORDER: [&str; 12] = [
 /// The importable UI-kit module: a `gpu.define` per widget. An app `vm.import`s
 /// this, then references widgets by id and feeds each a per-frame instance buffer.
 fn build_module() -> Value {
-    let mut body: Vec<Value> = catalog()
+    let body = catalog()
         .iter()
         .map(|w| host_call("gpu.define", vec![literal(&widget_definition(w))]))
         .collect();
-    // The captions widget is the only one on the text (atlas-sampling) pipeline.
-    body.push(host_call("gpu.define", vec![literal(&labels_definition())]));
     program(body)
 }
 
@@ -1869,8 +1486,7 @@ fn labels_buffer() -> Value {
     a_obj(vec![
         ("kind", a_s("buffer")),
         ("id", a_s(&widget_instances_id("labels"))),
-        // 12 f32 (48 bytes) per glyph quad.
-        ("size", a_i((labels_layer_count() as i64) * 48)),
+        ("size", a_i((labels_layer_count() as i64) * 64)),
         ("usage", a_arr(vec![a_s("VERTEX")])),
         ("data_f32", a_id("txt")),
     ])
@@ -1902,6 +1518,13 @@ fn fn_render() -> Value {
         a_globals_bind(GLB_BIND, BGL, GLB),
     ];
     for w in catalog() {
+        // Captions are expensive (one instance per lit pixel) and depend only on
+        // layout, so they live in the cached `txt` buffer, rebuilt on resize — not
+        // re-evaluated every frame here.
+        if w.name == "labels" {
+            resources.push(labels_buffer());
+            continue;
+        }
         let floats = rb(w.name);
         debug_assert_eq!(
             floats.len() as u32,
@@ -1911,17 +1534,11 @@ fn fn_render() -> Value {
         );
         resources.push(a_buffer(&widget_instances_id(w.name), &["VERTEX"], floats));
     }
-    // Captions: glyph quads sampled from the SDF atlas. They depend only on layout,
-    // so they live in the cached `txt` buffer (rebuilt on resize), not here.
-    resources.push(labels_buffer());
 
     let mut commands = vec![a_set_bind(GLB_BIND)];
     for name in DRAW_ORDER {
         commands.push(a_use(&widget_def_id(name)));
     }
-    // Draw captions last: the labels definition sets its own (text) pipeline and
-    // bind group, so nothing on the rounded-rect pipeline may follow it.
-    commands.push(a_use(&widget_def_id("labels")));
     let bg = pal_bg();
     let clear = a_obj(vec![
         ("view", a_obj(vec![("kind", a_s("surface"))])),
@@ -2273,8 +1890,6 @@ fn build_demo() -> Value {
     body.push(fn_on_frame());
     // Resize: the `info` arg already carries the new surface size.
     body.push(a_func("onResize", vec!["info"], relayout(a_id("info"))));
-    // Upload the glyph atlas once (creates the texture + writes its SDF pixels).
-    body.push(atlas_upload_call());
     // First paint: query the surface, lay out, build captions, then render.
     body.push(a_def("si0", host_call("gpu.surfaceInfo", vec![])));
     body.extend(relayout(a_id("si0")));

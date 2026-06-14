@@ -6812,34 +6812,9 @@
                             },
                             "pipeline": {
                               "data": {
-                                "value": "elpa.m3.text.pipe"
+                                "value": "elpa.m3.pipe"
                               },
                               "type": "string"
-                            }
-                          }
-                        },
-                        "type": "object"
-                      },
-                      {
-                        "data": {
-                          "value": {
-                            "bind_group": {
-                              "data": {
-                                "value": "elpa.m3.text.bind"
-                              },
-                              "type": "string"
-                            },
-                            "cmd": {
-                              "data": {
-                                "value": "setBindGroup"
-                              },
-                              "type": "string"
-                            },
-                            "index": {
-                              "data": {
-                                "value": 0
-                              },
-                              "type": "i64"
                             }
                           }
                         },
@@ -6899,7 +6874,7 @@
                             },
                             "instance_count": {
                               "data": {
-                                "value": 46
+                                "value": 425
                               },
                               "type": "i64"
                             },
@@ -6937,7 +6912,7 @@
                           "value": {
                             "id": {
                               "data": {
-                                "value": "elpa.m3.text.shader"
+                                "value": "elpa.m3.shader"
                               },
                               "type": "string"
                             },
@@ -6949,7 +6924,7 @@
                             },
                             "wgsl": {
                               "data": {
-                                "value": "\nstruct Globals { viewport: vec2<f32>, pad: vec2<f32> };\n@group(0) @binding(0) var<uniform> g: Globals;\n@group(0) @binding(1) var atlas: texture_2d<f32>;\n@group(0) @binding(2) var samp: sampler;\n\nstruct In {\n    @location(0) a: vec4<f32>,   // center.xy, half.xy\n    @location(1) b: vec4<f32>,   // uv0.xy, uv1.xy\n    @location(2) col: vec4<f32>,\n};\nstruct Out {\n    @builtin(position) clip: vec4<f32>,\n    @location(0) uv: vec2<f32>,\n    @location(1) @interpolate(flat) col: vec4<f32>,\n};\n\n@vertex\nfn vs(@builtin(vertex_index) vi: u32, in: In) -> Out {\n    var c = array<vec2<f32>, 6>(\n        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),\n        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0));\n    let corner = c[vi];\n    let world = in.a.xy + corner * in.a.zw;\n    let ndc = vec2<f32>(world.x / g.viewport.x * 2.0 - 1.0, 1.0 - world.y / g.viewport.y * 2.0);\n    let t = corner * 0.5 + vec2<f32>(0.5, 0.5);\n    var o: Out;\n    o.clip = vec4<f32>(ndc, 0.0, 1.0);\n    o.uv = mix(in.b.xy, in.b.zw, t);\n    o.col = in.col;\n    return o;\n}\n\n@fragment\nfn fs(o: Out) -> @location(0) vec4<f32> {\n    let s = textureSample(atlas, samp, o.uv).r;\n    let aa = max(fwidth(s) * 0.7, 0.0008);\n    let cov = smoothstep(0.5 - aa, 0.5 + aa, s);\n    return vec4<f32>(o.col.rgb, o.col.a * cov);\n}\n"
+                                "value": "\nstruct Globals { viewport: vec2<f32>, pad: vec2<f32> };\n@group(0) @binding(0) var<uniform> g: Globals;\n\nstruct In {\n    @location(0) a: vec4<f32>,\n    @location(1) b: vec4<f32>,\n    @location(2) fill: vec4<f32>,\n    @location(3) bcol: vec4<f32>,\n};\nstruct Out {\n    @builtin(position) clip: vec4<f32>,\n    @location(0) p: vec2<f32>,\n    @location(1) @interpolate(flat) half: vec2<f32>,\n    @location(2) @interpolate(flat) params: vec2<f32>,\n    @location(3) @interpolate(flat) fill: vec4<f32>,\n    @location(4) @interpolate(flat) bcol: vec4<f32>,\n    @location(5) @interpolate(flat) feather: f32,\n};\n\n@vertex\nfn vs(@builtin(vertex_index) vi: u32, in: In) -> Out {\n    var corners = array<vec2<f32>, 6>(\n        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),\n        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0));\n    let half = in.a.zw;\n    let local = corners[vi] * half;\n    let rot = in.b.z;\n    let cr = cos(rot);\n    let sr = sin(rot);\n    let rotated = vec2<f32>(local.x * cr - local.y * sr, local.x * sr + local.y * cr);\n    let world = in.a.xy + rotated;\n    let ndc = vec2<f32>(world.x / g.viewport.x * 2.0 - 1.0, 1.0 - world.y / g.viewport.y * 2.0);\n    var o: Out;\n    o.clip = vec4<f32>(ndc, 0.0, 1.0);\n    o.p = local;\n    o.half = half;\n    o.params = in.b.xy;\n    o.fill = in.fill;\n    o.bcol = in.bcol;\n    o.feather = in.b.w;\n    return o;\n}\n\nfn sd_round_box(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {\n    let q = abs(p) - b + vec2<f32>(r, r);\n    return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0, 0.0))) - r;\n}\n\n@fragment\nfn fs(o: Out) -> @location(0) vec4<f32> {\n    let r = min(o.params.x, min(o.half.x, o.half.y));\n    let d = sd_round_box(o.p, o.half, r);\n    // `feather` is the edge-softness in pixels: ~1 for crisp widgets, large for\n    // soft elevation shadows.\n    let f = max(o.feather, 0.75);\n    let cov = clamp(0.5 - d / f, 0.0, 1.0);       // outer coverage (feathered)\n    let inner = d + o.params.y;                   // pull the edge in by borderWidth\n    let icov = clamp(0.5 - inner / f, 0.0, 1.0);  // interior (fill) region\n    let col = mix(o.bcol, o.fill, icov);          // border ring outside the interior\n    return vec4<f32>(col.rgb, col.a * cov);\n}\n"
                               },
                               "type": "string"
                             }
@@ -6994,70 +6969,6 @@
                                       }
                                     },
                                     "type": "object"
-                                  },
-                                  {
-                                    "data": {
-                                      "value": {
-                                        "binding": {
-                                          "data": {
-                                            "value": 1
-                                          },
-                                          "type": "i64"
-                                        },
-                                        "ty": {
-                                          "data": {
-                                            "value": "texture"
-                                          },
-                                          "type": "string"
-                                        },
-                                        "visibility": {
-                                          "data": {
-                                            "value": [
-                                              {
-                                                "data": {
-                                                  "value": "FRAGMENT"
-                                                },
-                                                "type": "string"
-                                              }
-                                            ]
-                                          },
-                                          "type": "array"
-                                        }
-                                      }
-                                    },
-                                    "type": "object"
-                                  },
-                                  {
-                                    "data": {
-                                      "value": {
-                                        "binding": {
-                                          "data": {
-                                            "value": 2
-                                          },
-                                          "type": "i64"
-                                        },
-                                        "ty": {
-                                          "data": {
-                                            "value": "sampler"
-                                          },
-                                          "type": "string"
-                                        },
-                                        "visibility": {
-                                          "data": {
-                                            "value": [
-                                              {
-                                                "data": {
-                                                  "value": "FRAGMENT"
-                                                },
-                                                "type": "string"
-                                              }
-                                            ]
-                                          },
-                                          "type": "array"
-                                        }
-                                      }
-                                    },
-                                    "type": "object"
                                   }
                                 ]
                               },
@@ -7065,7 +6976,7 @@
                             },
                             "id": {
                               "data": {
-                                "value": "elpa.m3.text.bgl"
+                                "value": "elpa.m3.bgl"
                               },
                               "type": "string"
                             },
@@ -7087,7 +6998,7 @@
                                 "value": [
                                   {
                                     "data": {
-                                      "value": "elpa.m3.text.bgl"
+                                      "value": "elpa.m3.bgl"
                                     },
                                     "type": "string"
                                   }
@@ -7097,7 +7008,7 @@
                             },
                             "id": {
                               "data": {
-                                "value": "elpa.m3.text.layout"
+                                "value": "elpa.m3.layout"
                               },
                               "type": "string"
                             },
@@ -7125,7 +7036,7 @@
                                   },
                                   "module": {
                                     "data": {
-                                      "value": "elpa.m3.text.shader"
+                                      "value": "elpa.m3.shader"
                                     },
                                     "type": "string"
                                   },
@@ -7212,7 +7123,7 @@
                             },
                             "id": {
                               "data": {
-                                "value": "elpa.m3.text.pipe"
+                                "value": "elpa.m3.pipe"
                               },
                               "type": "string"
                             },
@@ -7224,7 +7135,7 @@
                             },
                             "layout": {
                               "data": {
-                                "value": "elpa.m3.text.layout"
+                                "value": "elpa.m3.layout"
                               },
                               "type": "string"
                             },
@@ -7289,7 +7200,7 @@
                                             "value": {
                                               "array_stride": {
                                                 "data": {
-                                                  "value": 48
+                                                  "value": 64
                                                 },
                                                 "type": "i64"
                                               },
@@ -7370,6 +7281,31 @@
                                                         }
                                                       },
                                                       "type": "object"
+                                                    },
+                                                    {
+                                                      "data": {
+                                                        "value": {
+                                                          "format": {
+                                                            "data": {
+                                                              "value": "float32x4"
+                                                            },
+                                                            "type": "string"
+                                                          },
+                                                          "offset": {
+                                                            "data": {
+                                                              "value": 48
+                                                            },
+                                                            "type": "i64"
+                                                          },
+                                                          "shader_location": {
+                                                            "data": {
+                                                              "value": 3
+                                                            },
+                                                            "type": "i64"
+                                                          }
+                                                        }
+                                                      },
+                                                      "type": "object"
                                                     }
                                                   ]
                                                 },
@@ -7397,289 +7333,13 @@
                                   },
                                   "module": {
                                     "data": {
-                                      "value": "elpa.m3.text.shader"
+                                      "value": "elpa.m3.shader"
                                     },
                                     "type": "string"
                                   }
                                 }
                               },
                               "type": "object"
-                            }
-                          }
-                        },
-                        "type": "object"
-                      },
-                      {
-                        "data": {
-                          "value": {
-                            "dimension": {
-                              "data": {
-                                "value": "2d"
-                              },
-                              "type": "string"
-                            },
-                            "format": {
-                              "data": {
-                                "value": "r8unorm"
-                              },
-                              "type": "string"
-                            },
-                            "id": {
-                              "data": {
-                                "value": "elpa.m3.atlas"
-                              },
-                              "type": "string"
-                            },
-                            "kind": {
-                              "data": {
-                                "value": "texture"
-                              },
-                              "type": "string"
-                            },
-                            "mip_level_count": {
-                              "data": {
-                                "value": 1
-                              },
-                              "type": "i64"
-                            },
-                            "sample_count": {
-                              "data": {
-                                "value": 1
-                              },
-                              "type": "i64"
-                            },
-                            "size": {
-                              "data": {
-                                "value": {
-                                  "depth": {
-                                    "data": {
-                                      "value": 1
-                                    },
-                                    "type": "i64"
-                                  },
-                                  "height": {
-                                    "data": {
-                                      "value": 108
-                                    },
-                                    "type": "i64"
-                                  },
-                                  "width": {
-                                    "data": {
-                                      "value": 252
-                                    },
-                                    "type": "i64"
-                                  }
-                                }
-                              },
-                              "type": "object"
-                            },
-                            "usage": {
-                              "data": {
-                                "value": [
-                                  {
-                                    "data": {
-                                      "value": "TEXTURE_BINDING"
-                                    },
-                                    "type": "string"
-                                  },
-                                  {
-                                    "data": {
-                                      "value": "COPY_DST"
-                                    },
-                                    "type": "string"
-                                  }
-                                ]
-                              },
-                              "type": "array"
-                            }
-                          }
-                        },
-                        "type": "object"
-                      },
-                      {
-                        "data": {
-                          "value": {
-                            "address_mode_u": {
-                              "data": {
-                                "value": "clamp-to-edge"
-                              },
-                              "type": "string"
-                            },
-                            "address_mode_v": {
-                              "data": {
-                                "value": "clamp-to-edge"
-                              },
-                              "type": "string"
-                            },
-                            "address_mode_w": {
-                              "data": {
-                                "value": "clamp-to-edge"
-                              },
-                              "type": "string"
-                            },
-                            "id": {
-                              "data": {
-                                "value": "elpa.m3.sampler"
-                              },
-                              "type": "string"
-                            },
-                            "kind": {
-                              "data": {
-                                "value": "sampler"
-                              },
-                              "type": "string"
-                            },
-                            "mag_filter": {
-                              "data": {
-                                "value": "linear"
-                              },
-                              "type": "string"
-                            },
-                            "min_filter": {
-                              "data": {
-                                "value": "linear"
-                              },
-                              "type": "string"
-                            },
-                            "mipmap_filter": {
-                              "data": {
-                                "value": "nearest"
-                              },
-                              "type": "string"
-                            }
-                          }
-                        },
-                        "type": "object"
-                      },
-                      {
-                        "data": {
-                          "value": {
-                            "entries": {
-                              "data": {
-                                "value": [
-                                  {
-                                    "data": {
-                                      "value": {
-                                        "binding": {
-                                          "data": {
-                                            "value": 0
-                                          },
-                                          "type": "i64"
-                                        },
-                                        "resource": {
-                                          "data": {
-                                            "value": {
-                                              "buffer": {
-                                                "data": {
-                                                  "value": "elpa.m3.globals"
-                                                },
-                                                "type": "string"
-                                              },
-                                              "offset": {
-                                                "data": {
-                                                  "value": 0
-                                                },
-                                                "type": "i64"
-                                              },
-                                              "type": {
-                                                "data": {
-                                                  "value": "buffer"
-                                                },
-                                                "type": "string"
-                                              }
-                                            }
-                                          },
-                                          "type": "object"
-                                        }
-                                      }
-                                    },
-                                    "type": "object"
-                                  },
-                                  {
-                                    "data": {
-                                      "value": {
-                                        "binding": {
-                                          "data": {
-                                            "value": 1
-                                          },
-                                          "type": "i64"
-                                        },
-                                        "resource": {
-                                          "data": {
-                                            "value": {
-                                              "texture": {
-                                                "data": {
-                                                  "value": "elpa.m3.atlas"
-                                                },
-                                                "type": "string"
-                                              },
-                                              "type": {
-                                                "data": {
-                                                  "value": "textureView"
-                                                },
-                                                "type": "string"
-                                              }
-                                            }
-                                          },
-                                          "type": "object"
-                                        }
-                                      }
-                                    },
-                                    "type": "object"
-                                  },
-                                  {
-                                    "data": {
-                                      "value": {
-                                        "binding": {
-                                          "data": {
-                                            "value": 2
-                                          },
-                                          "type": "i64"
-                                        },
-                                        "resource": {
-                                          "data": {
-                                            "value": {
-                                              "sampler": {
-                                                "data": {
-                                                  "value": "elpa.m3.sampler"
-                                                },
-                                                "type": "string"
-                                              },
-                                              "type": {
-                                                "data": {
-                                                  "value": "sampler"
-                                                },
-                                                "type": "string"
-                                              }
-                                            }
-                                          },
-                                          "type": "object"
-                                        }
-                                      }
-                                    },
-                                    "type": "object"
-                                  }
-                                ]
-                              },
-                              "type": "array"
-                            },
-                            "id": {
-                              "data": {
-                                "value": "elpa.m3.text.bind"
-                              },
-                              "type": "string"
-                            },
-                            "kind": {
-                              "data": {
-                                "value": "bindGroup"
-                              },
-                              "type": "string"
-                            },
-                            "layout": {
-                              "data": {
-                                "value": "elpa.m3.text.bgl"
-                              },
-                              "type": "string"
                             }
                           }
                         },
