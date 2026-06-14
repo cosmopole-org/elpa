@@ -150,6 +150,24 @@ pub fn create_vm_from_code(machine_id: String, code: String) -> bool {
     true
 }
 
+/// Create a VM from JavaScript source. The JS is lowered to Elpian AST JSON by
+/// the compiler module's built-in front-end and then compiled through the same
+/// `from ast` path as [`create_vm_from_ast`]. Returns `false` if the source is
+/// outside the supported JS subset (i.e. it fails to parse / compile).
+pub fn create_vm_from_js(machine_id: String, code: String) -> bool {
+    let id = machine_id.clone();
+    let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        VM::compile_and_create_of_js(id, code, 1, all_host_apis())
+    }));
+    match built {
+        Ok(vm) => {
+            VMS.lock().unwrap().insert(machine_id, vm);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 /// Validate that an AST JSON string compiles, without registering a VM.
 pub fn validate_ast(ast_json: String) -> bool {
     let ast_obj: Value = match serde_json::from_str(&ast_json) {
@@ -158,6 +176,24 @@ pub fn validate_ast(ast_json: String) -> bool {
     };
     compiler::compile_ast(ast_obj, 0);
     true
+}
+
+/// Validate that JavaScript source parses and compiles, without registering a
+/// VM. Returns `false` for source outside the supported subset.
+pub fn validate_js(code: String) -> bool {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = compiler::compile_js(&code);
+    }))
+    .is_ok()
+}
+
+/// Lower JavaScript source to its Elpian AST JSON (debug / tooling aid). On a
+/// parse error, returns a JSON object `{"error": "..."}` instead of the AST.
+pub fn compile_js_to_ast(code: String) -> String {
+    match compiler::try_parse_js(&code) {
+        Ok(ast) => ast.to_string(),
+        Err(e) => json!({ "error": e }).to_string(),
+    }
 }
 
 /// Execute a VM's top-level program.

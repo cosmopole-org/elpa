@@ -1129,6 +1129,11 @@ impl Executor {
                 self.run_cb_id = cb_id;
                 self.governor.begin_turn();
                 self.paused_out = false;
+                // A fresh top-level turn carries no pending return value. Clear
+                // any sentinel a previous call may have left behind so a function
+                // that falls off its end without an explicit `return` yields "no
+                // value" instead of leaking the last returned result.
+                self.pending_func_result_value = Val::new(254, Rc::new(RefCell::new(Box::new(0))));
                 if self.control.is_terminated() {
                     return (0x06, cb_id, Val::new(7, Rc::new(RefCell::new(Box::new(
                         self.trap.clone().unwrap_or_default(),
@@ -3862,6 +3867,13 @@ impl Executor {
                             is_reg_state_final =
                                 self.registers.last().unwrap().borrow_mut().get_state()
                                     == ExecStates::SwitchStmtFinished;
+                            // Skip past this case's body to the next case's value
+                            // expression. Without this the scan would fall into
+                            // the body and execute it while still collecting
+                            // cases. Once every case is collected the dispatch
+                            // (SwitchStmtFinished) sets the pointer itself, so the
+                            // value parked here is only used between cases.
+                            self.pointer = branch_true_end;
                             continue;
                         }
                     } else if self.registers.last().unwrap().borrow().get_type()
@@ -4121,7 +4133,24 @@ impl Executor {
                         let data = self.registers.last().unwrap().borrow().get_data();
                         let returned_val = data[0].clone();
                         self.registers.pop();
-                        self.pointer = self.end_at;
+                        // A `return` exits the whole function, not just the block
+                        // (if / loop / switch) it textually sits in. Unwind any
+                        // such intervening scopes so the enclosing function-body
+                        // frame is innermost, then jump to its end and let the
+                        // normal scope teardown deliver the value — making every
+                        // return behave like a top-level return. The outermost
+                        // scope (the top-level program) is itself tagged
+                        // "funcBody" but must never be unwound, so the length
+                        // guard keeps it in place (a top-level `return` simply
+                        // ends the run).
+                        while self.ctx.memory.len() > 1
+                            && self.ctx.memory.last().unwrap().borrow().tag != "funcBody"
+                        {
+                            self.pop_scope_governed();
+                        }
+                        let func_end = self.ctx.memory.last().unwrap().borrow().frozen_end;
+                        self.pointer = func_end;
+                        self.end_at = func_end;
                         self.pending_func_result_value = returned_val;
                         is_reg_state_final = false;
                         continue;
@@ -4395,7 +4424,7 @@ impl Executor {
                                     });
                                 }
                             } else {
-                                println!(
+                                eprintln!(
                                     "elpian error: non object value can not be indexed by string"
                                 );
                                 main_reg = Some(Val {
@@ -4441,7 +4470,7 @@ impl Executor {
                                     }
                                 }
                             } else {
-                                println!(
+                                eprintln!(
                                     "elpian error: non object value can not be indexed by string"
                                 );
                                 main_reg = Some(Val {
@@ -4450,7 +4479,7 @@ impl Executor {
                                 });
                             }
                         } else {
-                            println!(
+                            eprintln!(
                             "elpian error: types other than integer and string can not be used to index anything"
                         );
                             main_reg = Some(Val {
@@ -4937,14 +4966,17 @@ impl Executor {
                         self.pointer = self.ctx.memory.last().unwrap().borrow().frozen_pointer;
                         self.end_at = self.ctx.memory.last().unwrap().borrow().frozen_end;
                         if self.pending_func_result_value.typ != 254 {
+                            // A `return` is propagating to a caller. The callee's
+                            // own nested scopes were already unwound at the point
+                            // of return, so here we only hand the value to the
+                            // caller's awaiting expression register (an in-program
+                            // call). The caller's scope stack is left untouched —
+                            // it may legitimately sit inside its own control block.
                             let returned_val = self.pending_func_result_value.clone();
                             self.pending_func_result_value = Val {
                                 typ: 254,
                                 data: Rc::new(RefCell::new(Box::new(0))),
                             };
-                            while self.ctx.memory.last().unwrap().borrow().tag != "funcBody" {
-                                self.pop_scope_governed();
-                            }
                             if !self.registers.is_empty() {
                                 main_reg = Some(returned_val);
                                 is_reg_state_final = false;
@@ -5255,7 +5287,6 @@ impl Executor {
                 // expressions
                 // data expressions
                 1 | 2 | 3 | 4 | 5 | 6 | 7 | 10 | 11 => {
-                    println!("{}", unit);
                     self.pointer -= 1;
                     let val = self.extract_val();
                     main_reg = Some(val);
@@ -5263,7 +5294,6 @@ impl Executor {
                 }
                 // object expressions
                 8 => {
-                    println!("{}", unit);
                     let typ = self.extract_i64();
                     let props_len = self.extract_i32();
                     self.registers

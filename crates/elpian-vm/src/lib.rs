@@ -6,10 +6,16 @@
 //! ## Pipeline
 //!
 //! ```text
-//! JS source ──(acorn/babel front-end, off-VM)──▶ Elpian AST JSON
-//!           ──(compiler::compile_ast)──────────▶ bytecode (Vec<u8>)
-//!           ──(executor)───────────────────────▶ execution + host calls
+//! JS source ──(compiler::parse_js, in-VM front-end)──▶ Elpian AST JSON
+//!           ──(compiler::compile_ast)───────────────▶ bytecode (Vec<u8>)
+//!           ──(executor)──────────────────────────────▶ execution + host calls
 //! ```
+//!
+//! An Elpa instance can therefore be created from JavaScript source just like
+//! from a hand-written AST: the compiler module lowers JS to the very same
+//! Elpian AST JSON and feeds it to the shared `from ast` compiler. An external
+//! acorn/babel front-end may still be used to emit the AST directly, but is no
+//! longer required.
 //!
 //! The VM is a *pausing* interpreter: when user code calls
 //! `askHost(apiName, payload)` it suspends and hands a host-call request back
