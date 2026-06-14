@@ -1,0 +1,26 @@
+[package]
+name = "elpa-material"
+version = "0.1.0"
+edition = "2021"
+description = "A Material Design 3 (expressive) UI-kit SDK delivered as Elpian AST JSON (assets/*.ast.json) that runs directly on the Elpian VM. Importable via vm.import; draws interactive M3 widgets (buttons, FAB, switch, checkbox, radios, slider, chips, progress, cards) from a single rounded-rect SDF pipeline, with all interaction wired branch-free in the VM. `build_material` is the generator that authors the JSON; `lib` only embeds it for host examples."
+
+[lib]
+name = "elpa_material"
+
+# The generator that authors the UI kit's JSON AST assets. Not the SDK itself.
+[[bin]]
+name = "build_material"
+path = "src/bin/build_material.rs"
+
+[dependencies]
+elpa-protocol = { path = "../../crates/elpa-protocol" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# Drive the JSON-AST UI kit end to end through a real (headless) Elpa instance + VM.
+elpa = { path = "../../crates/elpa" }
+# Validate the kit's WGSL the same way wgpu does, so shader errors (reserved
+# keywords, syntax) are caught in `cargo test` without a browser/GPU.
+naga = { version = "29", features = ["wgsl-in"] }
+serde_json = { workspace = true }

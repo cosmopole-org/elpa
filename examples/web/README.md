@@ -1,18 +1,28 @@
 # Elpa web example
 
 Runs an Elpa app and draws its wgpu frames to a **full-window, DPI-aware HTML
-canvas**. The app is the **engine SDK example** ([`examples/sdk`](../sdk)), which
-is itself Elpian AST JSON: it `vm.import`s the SDK module and draws a rotating 3D
-cube and sphere with a 2D rect / triangle / circle overlay, all referenced by id.
-The shared shaders and pipelines are created **once** and cached; only the
-per-frame instance data changes — demonstrating Elpa's reusable definitions,
-resource caching, and partial rendering on real wgpu. This is what the repo's
-GitHub Pages site shows.
+canvas**. The app is the **Material Design 3 UI-kit example**
+([`examples/material`](../material)), which is itself Elpian AST JSON: it
+`vm.import`s the UI-kit module and lays out an **interactive** M3 surface —
+buttons, a FAB, a switch, checkbox, radio group, slider, chip, linear progress
+and cards — all referenced by id. The shared shader and pipeline are created
+**once** and cached; only the per-frame instance data changes — demonstrating
+Elpa's reusable definitions, resource caching, and partial rendering on real
+wgpu. This is what the repo's GitHub Pages site shows.
 
-`src/lib.rs` registers the SDK module (`elpa_sdk::MODULE_AST`) as the asset the
-demo imports — retargeting the pipelines' color format to the live surface — and
-runs `elpa_sdk::DEMO_AST`. The drawing logic lives entirely in the SDK's JSON, not
-in this crate.
+`src/lib.rs` registers the UI-kit module (`elpa_material::MODULE_AST`) as the
+asset the demo imports — retargeting the pipeline's color format to the live
+surface — runs `elpa_material::DEMO_AST`, and forwards **pointer, wheel and
+keyboard** events into the app. All layout and interaction logic lives entirely
+in the kit's JSON, not in this crate.
+
+### Try it
+
+- **Tap / click** buttons, the FAB, switch, checkbox, radios and chip.
+- **Drag** the slider thumb (or hover for the buttons' state layers).
+- **Scroll** the mouse wheel to nudge the slider.
+- **Keys:** ◀ / ▶ nudge the slider, `d` toggles dark mode, space toggles the
+  switch, `r` resets everything. The FAB cycles the accent color.
 
 This crate is intentionally **excluded from the workspace** (it pulls the full
 wgpu + web-sys stack and only targets wasm). Build it on its own.

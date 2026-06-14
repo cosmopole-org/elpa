@@ -171,6 +171,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "elpa-material"
+version = "0.1.0"
+dependencies = [
+ "elpa",
+ "elpa-protocol",
+ "naga",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "elpa-protocol"
 version = "0.1.0"
 dependencies = [
