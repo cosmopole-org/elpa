@@ -1383,6 +1383,19 @@ pub fn compile_code(p: String) -> Vec<u8> {
 //     the arithmetic/comparison operators the VM understands
 //     (`+ - * / % ** == === != !== < <= > >=`, with `**`→`^`,
 //     `===`→`==`, `!==`→`!=`) and the `!` / unary `-` prefixes.
+//   * arrow functions and `function` *expressions* (anonymous closures):
+//     `x => e`, `(a, b) => e`, `() => { ... }`, `function (a) { ... }`. The VM
+//     has no function-literal expression opcode — a function value only enters
+//     scope via the `functionDefinition` *statement* (which captures the
+//     enclosing locals as the closure's environment). So each arrow / function
+//     expression is **desugared**: it is lifted into a synthetic, uniquely-named
+//     `functionDefinition` hoisted just before the statement that uses it, and
+//     the expression site is replaced by an `identifier` referencing that name.
+//     A concise body `=> e` becomes `{ return e; }`. The lifted definition runs
+//     in place, so it closes over exactly the locals lexically in scope there —
+//     real per-call closures (e.g. a fresh `let` per loop iteration is captured
+//     independently). The VM already supports calling such a value held in any
+//     variable or object field (e.g. a widget's `onTap`).
 
 #[derive(Clone, Debug, PartialEq)]
 enum JsTok {
@@ -1401,9 +1414,9 @@ fn tokenize_js(src: &str) -> Vec<JsTok> {
     // Longest punctuators first so the greedy scan never splits `===` into
     // `==` + `=`, `<=` into `<` + `=`, and so on.
     let puncts: &[&str] = &[
-        "===", "!==", "**", "==", "!=", "<=", ">=", "&&", "||", "++", "--", "+=", "-=", "*=", "/=",
-        "%=", "(", ")", "{", "}", "[", "]", ";", ",", ".", ":", "?", "<", ">", "=", "+", "-", "*",
-        "/", "%", "!", "^", "&", "|",
+        "===", "!==", "**", "==", "!=", "<=", ">=", "=>", "&&", "||", "++", "--", "+=", "-=", "*=",
+        "/=", "%=", "(", ")", "{", "}", "[", "]", ";", ",", ".", ":", "?", "<", ">", "=", "+", "-",
+        "*", "/", "%", "!", "^", "&", "|",
     ];
     while i < n {
         let c = chars[i];
@@ -1566,11 +1579,17 @@ fn js_negate(v: Value) -> Value {
 struct JsParser {
     toks: Vec<JsTok>,
     pos: usize,
+    /// Synthetic `functionDefinition` nodes produced by desugaring arrow /
+    /// function expressions, awaiting hoisting in front of the statement
+    /// currently being parsed (drained by [`JsParser::parse_statement`]).
+    lifted: Vec<Value>,
+    /// Counter for unique synthetic closure names (`__anon_N`).
+    anon_counter: usize,
 }
 
 impl JsParser {
     fn new(toks: Vec<JsTok>) -> Self {
-        JsParser { toks, pos: 0 }
+        JsParser { toks, pos: 0, lifted: Vec::new(), anon_counter: 0 }
     }
     fn peek(&self) -> &JsTok {
         &self.toks[self.pos]
@@ -1634,7 +1653,21 @@ impl JsParser {
 
     // ---- Statements ---------------------------------------------------------
 
+    /// Parse one statement, then hoist any arrow / function expressions it
+    /// desugared into synthetic `functionDefinition`s *in front of* it, so each
+    /// closure is defined (and captures its environment) right where it appears.
     fn parse_statement(&mut self) -> Vec<Value> {
+        let mark = self.lifted.len();
+        let mut stmts = self.parse_statement_inner();
+        if self.lifted.len() > mark {
+            let mut hoisted: Vec<Value> = self.lifted.split_off(mark);
+            hoisted.append(&mut stmts);
+            return hoisted;
+        }
+        stmts
+    }
+
+    fn parse_statement_inner(&mut self) -> Vec<Value> {
         if self.eat_punct(";") {
             return vec![];
         }
@@ -1970,6 +2003,84 @@ impl JsParser {
         args
     }
 
+    // ---- arrow / function expressions (desugared to lifted closures) --------
+
+    /// With `self.pos` at a `(`, decide whether it opens an arrow parameter list
+    /// by scanning to the matching `)` and checking for a following `=>`.
+    fn is_paren_arrow(&self) -> bool {
+        let mut depth = 0i32;
+        let mut i = self.pos;
+        while i < self.toks.len() {
+            match &self.toks[i] {
+                JsTok::Punct(p) if p == "(" => depth += 1,
+                JsTok::Punct(p) if p == ")" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return matches!(self.toks.get(i + 1), Some(JsTok::Punct(p2)) if p2 == "=>");
+                    }
+                }
+                JsTok::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
+    /// Parse a parenthesized identifier list `( a, b, ... )` (arrow params or a
+    /// `function` expression's params).
+    fn parse_paren_params(&mut self) -> Vec<String> {
+        self.expect_punct("(");
+        let mut params: Vec<String> = vec![];
+        while !self.at_punct(")") && !self.at_eof() {
+            params.push(self.expect_ident_name());
+            if !self.eat_punct(",") {
+                break;
+            }
+        }
+        self.expect_punct(")");
+        params
+    }
+
+    /// Consume `=> body` (concise expression or `{ block }`) and lift the result
+    /// into a synthetic named closure, returning a reference to it.
+    fn finish_arrow(&mut self, params: Vec<String>) -> Value {
+        self.expect_punct("=>");
+        let body = if self.at_punct("{") {
+            self.parse_block()
+        } else {
+            // Concise body `=> expr` is `{ return expr; }`.
+            let e = self.parse_expr();
+            vec![json!({ "type": "returnOperation", "data": { "value": e } })]
+        };
+        self.make_anon(params, body)
+    }
+
+    /// A `function (params) { ... }` (or named `function f(...) {...}`) used in
+    /// expression position — lowered like an arrow. Any name is accepted but not
+    /// bound (the value is anonymous; reference it through where it is stored).
+    fn parse_function_expr(&mut self) -> Value {
+        self.expect_ident("function");
+        if matches!(self.peek(), JsTok::Ident(_)) {
+            self.advance(); // optional name, ignored
+        }
+        let params = self.parse_paren_params();
+        let body = self.parse_block();
+        self.make_anon(params, body)
+    }
+
+    /// Register a synthetic closure definition to be hoisted before the current
+    /// statement and return an `identifier` referencing it.
+    fn make_anon(&mut self, params: Vec<String>, body: Vec<Value>) -> Value {
+        self.anon_counter += 1;
+        let name = format!("__anon_{}", self.anon_counter);
+        self.lifted.push(json!({
+            "type": "functionDefinition",
+            "data": { "name": name, "params": params, "body": body }
+        }));
+        js_ident(&name)
+    }
+
     fn parse_primary(&mut self) -> Value {
         match self.peek().clone() {
             JsTok::Num(s) => {
@@ -1994,14 +2105,23 @@ impl JsParser {
                     self.advance();
                     js_int(0)
                 }
-                "function" => panic!("js: function expressions are not supported"),
+                "function" => self.parse_function_expr(),
                 _ => {
                     self.advance();
+                    // Single-parameter arrow without parens: `x => body`.
+                    if self.at_punct("=>") {
+                        return self.finish_arrow(vec![name]);
+                    }
                     js_ident(&name)
                 }
             },
             JsTok::Punct(p) => match p.as_str() {
                 "(" => {
+                    // `(a, b) => ...` / `() => ...` is an arrow, not a group.
+                    if self.is_paren_arrow() {
+                        let params = self.parse_paren_params();
+                        return self.finish_arrow(params);
+                    }
                     self.advance();
                     let e = self.parse_expr();
                     self.expect_punct(")");

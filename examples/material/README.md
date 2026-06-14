@@ -63,12 +63,20 @@ one stylistic one:
   marks. The JS side ships only resource objects, instanced draws, and
   per-instance `f32` data; it never does trigonometry on shapes.
 * **Everything else is ordinary JS** — `function`s, `if`/`for`, objects, arrays,
-  arithmetic, member access, and `askHost(api, [args])` host calls. Hit-tests are
-  `if` comparisons, a toggle is `x = 1 - x`, animations ease with
-  `cur + (target - cur) * k`. Boolean operators (`&&`/`||`), arrow functions and
-  ternaries are *not* in the supported subset, so conditions nest plain `if`s.
+  arithmetic, member access, `askHost(api, [args])` host calls, and **arrow
+  functions / closures**. Each tappable widget carries its behaviour as an
+  `onTap` arrow (`() => { dark = 1 - dark; }`), invoked through a function value
+  held in an object field; the radios build one closure per `idx` in a loop.
+  Boolean operators (`&&`/`||`) and ternaries are *not* in the supported subset,
+  so conditions nest plain `if`s.
 
 The whole event model and per-frame layout run as that JavaScript.
+
+> Arrow / `function` *expressions* are lowered by desugaring: Elpa's front-end
+> lifts each one into a synthetic, uniquely-named `functionDefinition` hoisted
+> just before the statement that uses it (so it closes over exactly the locals in
+> scope there), then references it by name. The VM's closure machinery — captured
+> upvalues, calling a function value from any variable or field — does the rest.
 
 ## How a program uses it
 

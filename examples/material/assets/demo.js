@@ -15,6 +15,11 @@
 // Every widget is a set of rounded-rect "layers": 16 floats per instance
 // (center.xy, halfSize.xy, cornerRadius, borderWidth, rotation, feather, then
 // fill rgba + border rgba) fed to the kit's shared SDF pipeline.
+//
+// Interaction is **callback-driven**: each tappable widget carries its behaviour
+// as an `onTap` arrow function (a closure), and a press is dispatched by finding
+// the widget under the finger and calling its `onTap()` — see `buildTaps`. The
+// three radios build their closures in a loop, each capturing its own `idx`.
 
 // Pull in the UI kit; this registers elpa.m3.{card,appBar,filledButton,...}.
 askHost("vm.import", ["assets/elpa-material.js"]);
@@ -426,15 +431,37 @@ function render() {
 
 // ------------------------------------------------------------ interaction -----
 function pad() { return vh * 0.02; }   // finger-friendly touch padding
-function hit(px, py, name) { let w = L[name]; return inRect(px, py, w.cx, w.cy, w.hw, w.hh); }
-function hitPad(px, py, name) { let w = L[name]; return inRect(px, py, w.cx, w.cy, w.hw + pad(), w.hh + pad()); }
-function radioHit(px, py, idx) {
-    let g = L.radioGroup; let cx = g.cx + (idx - 1) * g.sp;
-    return inRect(px, py, cx, g.cy, g.hw + pad(), g.hw + pad());
-}
 function sliderHit(px, py) { let s = L.slider; return inRect(px, py, s.cx, s.cy, s.hw, vh * 0.05); }
 function sliderSet(px) { let s = L.slider; sliderVal = clamp01((px - (s.cx - s.hw)) / (s.hw * 2.0)); }
 function resetAll() { swOn = 0.0; ck = 0.0; chip = 0.0; radio = 0.0; sliderVal = 0.5; }
+
+// A tappable widget = a hit rectangle plus an `onTap` **closure**. Each widget
+// carries its own behaviour as a first-class function value (an arrow), so the
+// dispatcher is just "find the rect under the finger and call its onTap" — no
+// per-widget branching. The arrows close over exactly what they need: the global
+// toggles for the buttons, and a fresh per-iteration `idx` for each radio.
+function addTap(t, w, padding, cb) {
+    push(t, { cx: w.cx, cy: w.cy, hw: w.hw + padding, hh: w.hh + padding, onTap: cb });
+}
+function buildTaps() {
+    let t = [];
+    addTap(t, L.filledButton, 0.0, () => { pressFilled = 1.0; dark = 1.0 - dark; });
+    addTap(t, L.outlinedButton, 0.0, () => { pressOutlined = 1.0; resetAll(); });
+    let f = L.fab;
+    push(t, { cx: f.cx, cy: f.cy, hw: f.hw, hh: f.hw,
+              onTap: () => { pressFab = 1.0; accent = (accent + 1) % 4; } });
+    addTap(t, L.switch, pad(), () => { swOn = 1.0 - swOn; });
+    addTap(t, L.checkbox, pad(), () => { ck = 1.0 - ck; });
+    addTap(t, L.chip, 0.0, () => { chip = 1.0 - chip; });
+    let g = L.radioGroup;
+    for (let i = 0; i < 3; i++) {
+        let idx = i;                       // captured per-iteration by the closure
+        let cx = g.cx + (idx - 1) * g.sp;
+        push(t, { cx: cx, cy: g.cy, hw: g.hw + pad(), hh: g.hw + pad(),
+                  onTap: () => { radio = idx; } });
+    }
+    return t;
+}
 
 function onEvent(e) {
     layout();
@@ -444,15 +471,14 @@ function onEvent(e) {
     if (et == "pointermove") { hx = px; hy = py; }
 
     if (et == "pointerdown") {
-        if (hit(px, py, "filledButton")) { pressFilled = 1.0; dark = 1.0 - dark; }
-        if (hit(px, py, "outlinedButton")) { pressOutlined = 1.0; resetAll(); }
-        if (inRect(px, py, L.fab.cx, L.fab.cy, L.fab.hw, L.fab.hw)) { pressFab = 1.0; accent = (accent + 1) % 4; }
-        if (hitPad(px, py, "switch")) { swOn = 1.0 - swOn; }
-        if (hitPad(px, py, "checkbox")) { ck = 1.0 - ck; }
-        if (hit(px, py, "chip")) { chip = 1.0 - chip; }
-        if (radioHit(px, py, 0)) { radio = 0.0; }
-        if (radioHit(px, py, 1)) { radio = 1.0; }
-        if (radioHit(px, py, 2)) { radio = 2.0; }
+        // Dispatch the press to whichever widget's hit rect contains it by
+        // invoking that widget's onTap closure (a function value held in a field).
+        let taps = buildTaps();
+        for (let i = 0; i < len(taps); i++) {
+            let tp = taps[i];
+            if (inRect(px, py, tp.cx, tp.cy, tp.hw, tp.hh)) { tp.onTap(); }
+        }
+        // The slider is a drag, not a tap: start dragging and seed the value.
         if (sliderHit(px, py)) { dragging = 1.0; sliderSet(px); }
     }
 
