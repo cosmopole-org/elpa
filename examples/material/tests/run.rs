@@ -43,8 +43,8 @@ fn kit_shader_is_valid_wgsl() {
     shaders.dedup();
     assert_eq!(
         shaders.len(),
-        1,
-        "the whole kit shares one rounded-rect shader"
+        2,
+        "two shaders: the rounded-rect widget pipeline and the text/atlas pipeline"
     );
 
     for src in &shaders {
@@ -225,10 +225,10 @@ fn tapping_a_radio_selects_it() {
 fn captions_are_rendered() {
     let mut app = instance();
     app.start();
-    // The cached caption buffer holds one instance per lit glyph pixel; it must be
-    // non-empty and sized to match the `labels` definition's draw.
     use elpa::protocol::ResourceDesc;
     let frame = app.last_frame().expect("frame");
+
+    // The cached caption buffer holds one textured quad (12 f32) per glyph.
     let labels = frame
         .resources
         .iter()
@@ -239,10 +239,17 @@ fn captions_are_rendered() {
         .expect("labels buffer present");
     let floats = labels.data_f32.as_ref().expect("labels data_f32").len();
     assert!(
-        floats > 16 * 100,
-        "captions produced many glyph instances ({floats} floats)"
+        floats >= 12 * 30,
+        "captions produced glyph quads ({floats} floats)"
     );
-    assert_eq!(floats % 16, 0, "whole instances");
+    assert_eq!(floats % 12, 0, "whole glyph quads");
+
+    // The SDF glyph atlas was created and the text pipeline is present.
+    assert!(frame.resources.iter().any(|r| r.id() == "elpa.m3.atlas"));
+    assert!(frame
+        .resources
+        .iter()
+        .any(|r| r.id() == "elpa.m3.text.pipe"));
 }
 
 #[test]

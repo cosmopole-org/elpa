@@ -27,10 +27,13 @@ Two extras keep it looking like M3:
 * **Elevation shadows.** The SDF carries a per-instance *feather* (edge
   softness); cards, the filled button and the FAB draw a soft, offset dark
   rounded rect behind them for a real drop shadow.
-* **Captions.** There is no glyph engine, so text (`THEME`, `RESET`, `WI-FI`,
-  `VOLUME`, the radio `A/B/C`, …) is drawn with the same primitive as a 5×7
-  dot-matrix font. Because glyph geometry depends only on layout, it is computed
-  once into a cached buffer (rebuilt on resize), so per-frame cost stays tiny.
+* **Captions.** Text (`THEME`, `RESET`, `WI-FI`, `VOLUME`, the radio `A/B/C`, …)
+  is real font-style rendering: the font is baked once into an **R8 signed-
+  distance-field atlas**, uploaded to a texture, and each glyph is drawn as one
+  quad on a small **text pipeline** that samples the atlas and `smoothstep`s the
+  distance — so captions are crisp and anti-aliased at any size. The glyph quads
+  depend only on layout, so they are cached (rebuilt on resize); the atlas is
+  uploaded once via `gpu.writeTexture`.
 
 ## Interaction (all event kinds, all wired in the VM)
 
