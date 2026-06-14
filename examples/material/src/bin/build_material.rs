@@ -786,8 +786,11 @@ struct Label {
 
 /// Every caption in the demo, positioned relative to the layout `L`.
 fn labels() -> Vec<Label> {
-    let big = || mul(a_id("vh"), a_f(0.011));
-    let cap = || mul(a_id("vh"), a_f(0.0095));
+    // Glyph cell sizes (a glyph is 5×7 cells). Kept small relative to the
+    // viewport so captions sit inside their widgets instead of dominating.
+    let title = || mul(a_id("vh"), a_f(0.0065));
+    let btn = || mul(a_id("vh"), a_f(0.0050));
+    let cap = || mul(a_id("vh"), a_f(0.0042));
     let above = |w: &str, f: f64| sub(lf(w, "cy"), mul(a_id("vh"), a_f(f)));
     let mut v = vec![
         // App-bar title (on the accent bar).
@@ -795,7 +798,7 @@ fn labels() -> Vec<Label> {
             text: "ELPA UI",
             cx: lf("appBar", "cx"),
             cy: lf("appBar", "cy"),
-            cell: big(),
+            cell: title(),
             color: Ink::White,
         },
         // Button labels (centered on each button).
@@ -803,14 +806,14 @@ fn labels() -> Vec<Label> {
             text: "THEME",
             cx: lf("filledButton", "cx"),
             cy: lf("filledButton", "cy"),
-            cell: big(),
+            cell: btn(),
             color: Ink::White,
         },
         Label {
             text: "RESET",
             cx: lf("outlinedButton", "cx"),
             cy: lf("outlinedButton", "cy"),
-            cell: big(),
+            cell: btn(),
             color: Ink::Accent,
         },
         // Control captions (above each control).
@@ -860,8 +863,8 @@ fn labels() -> Vec<Label> {
         v.push(Label {
             text: t,
             cx: ci,
-            cy: add(lf("radioGroup", "cy"), mul(a_id("vh"), a_f(0.04))),
-            cell: mul(a_id("vh"), a_f(0.0095)),
+            cy: add(lf("radioGroup", "cy"), mul(a_id("vh"), a_f(0.035))),
+            cell: mul(a_id("vh"), a_f(0.0045)),
             color: Ink::OnSurface,
         });
     }
