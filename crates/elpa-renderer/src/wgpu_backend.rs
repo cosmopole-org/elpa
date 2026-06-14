@@ -548,8 +548,34 @@ impl<'s> GpuBackend for WgpuBackend<'s> {
                 let bytes = base64::engine::general_purpose::STANDARD.decode(data_b64).unwrap_or_default();
                 self.queue.write_buffer(self.buffers.get(buffer).expect("buffer"), *offset, &bytes);
             }
-            // Texture copies/writes are recognized but left to a later milestone;
-            // they require BUFFER↔TEXTURE layout plumbing.
+            EncoderCommand::WriteTexture { texture, origin, size, data_b64 } => {
+                let bytes =
+                    base64::engine::general_purpose::STANDARD.decode(data_b64).unwrap_or_default();
+                let tex = self.textures.get(texture).expect("texture");
+                // Bytes per row from the texture's own format (e.g. 1 for r8unorm).
+                let bpp = tex.format().block_copy_size(None).unwrap_or(4);
+                self.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: tex,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d { x: origin.x, y: origin.y, z: origin.z },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &bytes,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(size.width * bpp),
+                        rows_per_image: Some(size.height),
+                    },
+                    wgpu::Extent3d {
+                        width: size.width,
+                        height: size.height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+            // Remaining texture copies are left to a later milestone (they require
+            // BUFFER↔TEXTURE layout plumbing).
             _ => {}
         }
     }
