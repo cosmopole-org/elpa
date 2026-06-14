@@ -50,6 +50,19 @@ impl Runtime {
         }
     }
 
+    /// Register a VM from JavaScript source. The JS is lowered to Elpian AST
+    /// JSON by the VM's built-in front-end and then compiled through the same
+    /// path as [`Runtime::from_ast`]. Returns `None` if the source is outside
+    /// the supported JS subset.
+    pub fn from_js(machine_id: impl Into<String>, js_source: &str) -> Option<Runtime> {
+        let machine_id = machine_id.into();
+        if api::create_vm_from_js(machine_id.clone(), js_source.to_string()) {
+            Some(Runtime { machine_id, cb_counter: 0 })
+        } else {
+            None
+        }
+    }
+
     pub fn machine_id(&self) -> &str {
         &self.machine_id
     }
