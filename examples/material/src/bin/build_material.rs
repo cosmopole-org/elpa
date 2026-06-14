@@ -70,6 +70,7 @@ struct Out {
     @location(2) @interpolate(flat) params: vec2<f32>,
     @location(3) @interpolate(flat) fill: vec4<f32>,
     @location(4) @interpolate(flat) bcol: vec4<f32>,
+    @location(5) @interpolate(flat) feather: f32,
 };
 
 @vertex
@@ -92,6 +93,7 @@ fn vs(@builtin(vertex_index) vi: u32, in: In) -> Out {
     o.params = in.b.xy;
     o.fill = in.fill;
     o.bcol = in.bcol;
+    o.feather = in.b.w;
     return o;
 }
 
@@ -104,9 +106,12 @@ fn sd_round_box(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
 fn fs(o: Out) -> @location(0) vec4<f32> {
     let r = min(o.params.x, min(o.half.x, o.half.y));
     let d = sd_round_box(o.p, o.half, r);
-    let cov = clamp(0.5 - d, 0.0, 1.0);          // outer coverage (≈1px AA)
+    // `feather` is the edge-softness in pixels: ~1 for crisp widgets, large for
+    // soft elevation shadows.
+    let f = max(o.feather, 0.75);
+    let cov = clamp(0.5 - d / f, 0.0, 1.0);       // outer coverage (feathered)
     let inner = d + o.params.y;                   // pull the edge in by borderWidth
-    let icov = clamp(0.5 - inner, 0.0, 1.0);      // interior (fill) region
+    let icov = clamp(0.5 - inner / f, 0.0, 1.0);  // interior (fill) region
     let col = mix(o.bcol, o.fill, icov);          // border ring outside the interior
     return vec4<f32>(col.rgb, col.a * cov);
 }
@@ -211,7 +216,7 @@ fn catalog() -> Vec<Widget> {
     vec![
         Widget {
             name: "card",
-            layers: 1,
+            layers: 2, // drop shadow + surface
         },
         Widget {
             name: "appBar",
@@ -219,7 +224,7 @@ fn catalog() -> Vec<Widget> {
         },
         Widget {
             name: "filledButton",
-            layers: 1,
+            layers: 2, // drop shadow + container
         },
         Widget {
             name: "outlinedButton",
@@ -227,7 +232,7 @@ fn catalog() -> Vec<Widget> {
         },
         Widget {
             name: "fab",
-            layers: 3,
+            layers: 4, // drop shadow + container + 2 icon bars
         },
         Widget {
             name: "switch",
@@ -256,6 +261,11 @@ fn catalog() -> Vec<Widget> {
         Widget {
             name: "divider",
             layers: 1,
+        },
+        // One instance per lit pixel of every caption (5×7 dot-matrix text).
+        Widget {
+            name: "labels",
+            layers: labels_layer_count(),
         },
     ]
 }
@@ -577,27 +587,324 @@ fn inst(
     fill: Vec<Value>,
     bcol: Vec<Value>,
 ) -> Vec<Value> {
-    let mut v = vec![cx, cy, hw, hh, radius, border, rot, a_f(0.0)];
+    // Crisp edge (feather ≈ 1px) for normal widgets.
+    let mut v = vec![cx, cy, hw, hh, radius, border, rot, a_f(1.0)];
     v.extend(fill);
     v.extend(bcol);
     debug_assert_eq!(v.len(), 16);
     v
 }
 
+/// A soft, downward-offset dark rounded rect *behind* an elevated surface — a
+/// Material elevation shadow. `grow`/`drop`/`blur` are pixel expressions.
+fn shadow(
+    cx: Value,
+    cy: Value,
+    hw: Value,
+    hh: Value,
+    radius: Value,
+    grow: Value,
+    drop: Value,
+    blur: Value,
+) -> Vec<Value> {
+    let mut v = vec![
+        cx,
+        add(cy, drop),
+        add(hw, grow.clone()),
+        add(hh, grow.clone()),
+        add(radius, grow),
+        a_f(0.0),
+        a_f(0.0),
+        blur, // large feather → blurred shadow edge
+    ];
+    v.extend(c4(0.0, 0.0, 0.0, 0.22)); // soft black
+    v.extend(transparent());
+    debug_assert_eq!(v.len(), 16);
+    v
+}
+
+/// The standard elevation shadow for a surface of the given geometry (drop &
+/// blur scale with the viewport so it reads on any screen).
+fn shadow_for(cx: Value, cy: Value, hw: Value, hh: Value, radius: Value) -> Vec<Value> {
+    shadow(
+        cx,
+        cy,
+        hw,
+        hh,
+        radius,
+        mul(a_id("vh"), a_f(0.004)),
+        mul(a_id("vh"), a_f(0.006)),
+        mul(a_id("vh"), a_f(0.012)),
+    )
+}
+
+// --- text: a 5×7 dot-matrix font drawn with the same rounded-rect primitive ---
+//
+// There is no glyph engine, so captions are rendered as small rounded squares —
+// one per lit pixel of a 5×7 font. The label geometry depends only on the layout
+// (not per-frame state), so it is computed once into the cached `txt` buffer and
+// reused every frame (see `buildText` / `onResize`).
+
+/// 7 rows × 5 bits per glyph (bit 4 = leftmost column). Unknown chars → blank.
+fn glyph(c: char) -> [u8; 7] {
+    match c.to_ascii_uppercase() {
+        'A' => [0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
+        'B' => [0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E],
+        'C' => [0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E],
+        'D' => [0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E],
+        'E' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F],
+        'F' => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10],
+        'G' => [0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F],
+        'H' => [0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],
+        'I' => [0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E],
+        'J' => [0x07, 0x02, 0x02, 0x02, 0x12, 0x12, 0x0C],
+        'K' => [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
+        'L' => [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F],
+        'M' => [0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11],
+        'N' => [0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11],
+        'O' => [0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
+        'P' => [0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10],
+        'Q' => [0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D],
+        'R' => [0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11],
+        'S' => [0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E],
+        'T' => [0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
+        'U' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],
+        'V' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04],
+        'W' => [0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11],
+        'X' => [0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11],
+        'Y' => [0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04],
+        'Z' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F],
+        '-' => [0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00],
+        _ => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // space / unknown
+    }
+}
+
+/// Number of lit pixels in a string (its instance count).
+fn lit_count(text: &str) -> u32 {
+    text.chars()
+        .map(|c| {
+            glyph(c)
+                .iter()
+                .map(|r| (r & 0x1F).count_ones())
+                .sum::<u32>()
+        })
+        .sum()
+}
+
+/// Text color source.
+#[derive(Clone, Copy)]
+enum Ink {
+    White,
+    Accent,
+    OnSurface,
+}
+
+/// The 4 rgba expressions for an [`Ink`]. Theme/accent-dependent inks reference a
+/// per-frame global (`g_on` / `g_acc`) so each glyph pixel costs one tiny
+/// `indexer` node, not an inlined color tree — and still tracks theme changes.
+fn ink(k: Ink) -> Vec<Value> {
+    match k {
+        Ink::White => c4(1.0, 1.0, 1.0, 1.0),
+        Ink::Accent => vec![
+            a_idxi(a_id("g_acc"), 0),
+            a_idxi(a_id("g_acc"), 1),
+            a_idxi(a_id("g_acc"), 2),
+            a_f(1.0),
+        ],
+        Ink::OnSurface => vec![
+            a_idxi(a_id("g_on"), 0),
+            a_idxi(a_id("g_on"), 1),
+            a_idxi(a_id("g_on"), 2),
+            a_f(1.0),
+        ],
+    }
+}
+
+/// Per-frame text colors (cheap): `g_on` reads on the surface in either theme;
+/// `g_acc` is the live accent. Referenced by every caption pixel.
+fn text_color_updates() -> Vec<Value> {
+    vec![
+        a_set(
+            "g_on",
+            a_arr(vec![
+                mixch(0.16, 0.92),
+                mixch(0.16, 0.92),
+                mixch(0.20, 0.94),
+            ]),
+        ),
+        a_set("g_acc", a_arr(vec![accch(0), accch(1), accch(2)])),
+    ]
+}
+
+/// Emit one rounded-square instance per lit pixel of `text`. Position and size
+/// come from the label's cached globals `lx{idx}` / `ly{idx}` / `lc{idx}` (set
+/// once per layout in `buildText`), so each pixel is just `base + cell*offset`.
+fn text_dots(idx: usize, text: &str, color: Vec<Value>) -> Vec<Value> {
+    let lx = a_id(&format!("lx{idx}"));
+    let ly = a_id(&format!("ly{idx}"));
+    let lc = || a_id(&format!("lc{idx}"));
+    let n = text.chars().count() as f64;
+    let total_w = 6.0 * n - 1.0; // cells (5 wide + 1 gap per char, no trailing gap)
+    let mut out = Vec::new();
+    for (ci, ch) in text.chars().enumerate() {
+        let rows = glyph(ch);
+        for (row, bits) in rows.iter().enumerate() {
+            for col in 0..5 {
+                if (bits >> (4 - col)) & 1 == 1 {
+                    let ox = (ci as f64) * 6.0 + (col as f64) + 0.5 - total_w / 2.0;
+                    let oy = (row as f64) + 0.5 - 3.5;
+                    let px = add(lx.clone(), mul(lc(), a_f(ox)));
+                    let py = add(ly.clone(), mul(lc(), a_f(oy)));
+                    let half = mul(lc(), a_f(0.42));
+                    let rad = mul(lc(), a_f(0.14));
+                    out.extend(inst(
+                        px,
+                        py,
+                        half.clone(),
+                        half,
+                        rad,
+                        a_f(0.0),
+                        a_f(0.0),
+                        color.clone(),
+                        transparent(),
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One caption: text, its center / cell-size expressions, and ink.
+struct Label {
+    text: &'static str,
+    cx: Value,
+    cy: Value,
+    cell: Value,
+    color: Ink,
+}
+
+/// Every caption in the demo, positioned relative to the layout `L`.
+fn labels() -> Vec<Label> {
+    let big = || mul(a_id("vh"), a_f(0.011));
+    let cap = || mul(a_id("vh"), a_f(0.0095));
+    let above = |w: &str, f: f64| sub(lf(w, "cy"), mul(a_id("vh"), a_f(f)));
+    let mut v = vec![
+        // App-bar title (on the accent bar).
+        Label {
+            text: "ELPA UI",
+            cx: lf("appBar", "cx"),
+            cy: lf("appBar", "cy"),
+            cell: big(),
+            color: Ink::White,
+        },
+        // Button labels (centered on each button).
+        Label {
+            text: "THEME",
+            cx: lf("filledButton", "cx"),
+            cy: lf("filledButton", "cy"),
+            cell: big(),
+            color: Ink::White,
+        },
+        Label {
+            text: "RESET",
+            cx: lf("outlinedButton", "cx"),
+            cy: lf("outlinedButton", "cy"),
+            cell: big(),
+            color: Ink::Accent,
+        },
+        // Control captions (above each control).
+        Label {
+            text: "WI-FI",
+            cx: lf("switch", "cx"),
+            cy: above("switch", 0.035),
+            cell: cap(),
+            color: Ink::OnSurface,
+        },
+        Label {
+            text: "AGREE",
+            cx: lf("checkbox", "cx"),
+            cy: above("checkbox", 0.035),
+            cell: cap(),
+            color: Ink::OnSurface,
+        },
+        Label {
+            text: "VOLUME",
+            cx: lf("slider", "cx"),
+            cy: above("slider", 0.03),
+            cell: cap(),
+            color: Ink::OnSurface,
+        },
+        Label {
+            text: "TASKS",
+            cx: lf("progress", "cx"),
+            cy: above("progress", 0.028),
+            cell: cap(),
+            color: Ink::OnSurface,
+        },
+        // Chip label.
+        Label {
+            text: "FILTER",
+            cx: add(lf("chip", "cx"), mul(lf("chip", "hh"), a_f(0.5))),
+            cy: lf("chip", "cy"),
+            cell: cap(),
+            color: Ink::OnSurface,
+        },
+    ];
+    // A / B / C under the radio buttons.
+    for (i, t) in ["A", "B", "C"].iter().enumerate() {
+        let ci = add(
+            lf("radioGroup", "cx"),
+            mul(a_f((i as f64) - 1.0), lf("radioGroup", "sp")),
+        );
+        v.push(Label {
+            text: t,
+            cx: ci,
+            cy: add(lf("radioGroup", "cy"), mul(a_id("vh"), a_f(0.04))),
+            cell: mul(a_id("vh"), a_f(0.0095)),
+            color: Ink::OnSurface,
+        });
+    }
+    v
+}
+
+/// Total caption instance count (the `labels` widget's layer count).
+fn labels_layer_count() -> u32 {
+    labels().iter().map(|l| lit_count(l.text)).sum()
+}
+
+/// All caption instances, concatenated (built only on layout changes).
+fn rb_labels() -> Vec<Value> {
+    let mut v = Vec::new();
+    for (idx, l) in labels().iter().enumerate() {
+        v.extend(text_dots(idx, l.text, ink(l.color)));
+    }
+    v
+}
+
 // --- per-widget instance builders (read layout `L` + animated state) ---------
 
 fn rb_card() -> Vec<Value> {
-    inst(
+    let radius = || mul(a_id("vh"), a_f(0.03));
+    let mut v = shadow_for(
         lf("card", "cx"),
         lf("card", "cy"),
         lf("card", "hw"),
         lf("card", "hh"),
-        mul(a_id("vh"), a_f(0.03)),
+        radius(),
+    );
+    v.extend(inst(
+        lf("card", "cx"),
+        lf("card", "cy"),
+        lf("card", "hw"),
+        lf("card", "hh"),
+        radius(),
         a_f(0.0),
         a_f(0.0),
         pal_surface(a_f(1.0)),
         transparent(),
-    )
+    ));
+    v
 }
 
 fn rb_appbar() -> Vec<Value> {
@@ -668,7 +975,14 @@ fn rb_filled() -> Vec<Value> {
         lf("filledButton", "hh"),
     );
     let state = add(mul(hover, a_f(0.10)), mul(a_id("pressFilled"), a_f(0.16)));
-    inst(
+    let mut v = shadow_for(
+        lf("filledButton", "cx"),
+        lf("filledButton", "cy"),
+        lf("filledButton", "hw"),
+        lf("filledButton", "hh"),
+        lf("filledButton", "hh"),
+    );
+    v.extend(inst(
         lf("filledButton", "cx"),
         lf("filledButton", "cy"),
         lf("filledButton", "hw"),
@@ -678,7 +992,8 @@ fn rb_filled() -> Vec<Value> {
         a_f(0.0),
         brighten(acc1(), state),
         transparent(),
-    )
+    ));
+    v
 }
 
 fn rb_outlined() -> Vec<Value> {
@@ -744,7 +1059,8 @@ fn rb_fab() -> Vec<Value> {
         white(),
         transparent(),
     );
-    let mut v = container;
+    let mut v = shadow_for(cx(), cy(), r(), r(), r());
+    v.extend(container);
     v.extend(bar_h);
     v.extend(bar_v);
     v
@@ -1040,12 +1356,14 @@ fn rb(name: &str) -> Vec<Value> {
         "chip" => rb_chip(),
         "progress" => rb_progress(),
         "divider" => rb_divider(),
+        "labels" => rb_labels(),
         _ => unreachable!("unknown widget {name}"),
     }
 }
 
-// Draw order: panel behind, controls, app bar, floating action button on top.
-const DRAW_ORDER: [&str; 12] = [
+// Draw order: panel behind, controls, app bar, captions, then the floating
+// action button on top.
+const DRAW_ORDER: [&str; 13] = [
     "card",
     "divider",
     "progress",
@@ -1057,6 +1375,7 @@ const DRAW_ORDER: [&str; 12] = [
     "filledButton",
     "outlinedButton",
     "appBar",
+    "labels",
     "fab",
 ];
 
@@ -1134,11 +1453,37 @@ fn fn_layout() -> Value {
         ("radioGroup", radios),
         ("slider", rect(vwf(0.5), vhf(0.56), vwf(0.40), vhf(0.005))),
         ("chip", rect(vwf(0.34), vhf(0.67), vwf(0.13), vhf(0.024))),
-        ("divider", rect(vwf(0.5), vhf(0.71), vwf(0.40), a_f(1.0))),
+        ("divider", rect(vwf(0.5), vhf(0.62), vwf(0.40), a_f(1.0))),
         ("progress", rect(vwf(0.5), vhf(0.74), vwf(0.40), vhf(0.006))),
         ("fab", rect(vwf(0.84), vhf(0.85), vhf(0.05), vhf(0.05))),
     ]);
     a_func("layout", vec![], vec![a_set("L", l)])
+}
+
+/// The `labels` instance buffer, backed by the cached `txt` array (rebuilt only
+/// on layout changes, not per frame).
+fn labels_buffer() -> Value {
+    a_obj(vec![
+        ("kind", a_s("buffer")),
+        ("id", a_s(&widget_instances_id("labels"))),
+        ("size", a_i((labels_layer_count() as i64) * 64)),
+        ("usage", a_arr(vec![a_s("VERTEX")])),
+        ("data_f32", a_id("txt")),
+    ])
+}
+
+/// `buildText()` — cache each label's base position / cell size into its
+/// `lx/ly/lc` globals from the current layout, then (re)build the `txt` glyph
+/// buffer. Cheap to skip per frame; called once at start and on every resize.
+fn fn_build_text() -> Value {
+    let mut body = Vec::new();
+    for (idx, l) in labels().into_iter().enumerate() {
+        body.push(a_set(&format!("lx{idx}"), l.cx));
+        body.push(a_set(&format!("ly{idx}"), l.cy));
+        body.push(a_set(&format!("lc{idx}"), l.cell));
+    }
+    body.push(a_set("txt", a_arr(rb_labels())));
+    a_func("buildText", vec![], body)
 }
 
 /// `render()` — query the surface, refresh layout, then build and submit one
@@ -1153,6 +1498,13 @@ fn fn_render() -> Value {
         a_globals_bind(GLB_BIND, BGL, GLB),
     ];
     for w in catalog() {
+        // Captions are expensive (one instance per lit pixel) and depend only on
+        // layout, so they live in the cached `txt` buffer, rebuilt on resize — not
+        // re-evaluated every frame here.
+        if w.name == "labels" {
+            resources.push(labels_buffer());
+            continue;
+        }
         let floats = rb(w.name);
         debug_assert_eq!(
             floats.len() as u32,
@@ -1192,17 +1544,17 @@ fn fn_render() -> Value {
         ("commands", a_arr(vec![pass])),
     ]);
 
-    a_func(
-        "render",
-        vec![],
-        vec![
-            a_def("si", host_call("gpu.surfaceInfo", vec![])),
-            a_set("vw", a_cast(a_idxs(a_id("si"), "width"), "f64")),
-            a_set("vh", a_cast(a_idxs(a_id("si"), "height"), "f64")),
-            a_call("layout"),
-            host_call("gpu.submit", vec![frame]),
-        ],
-    )
+    let mut render_body = vec![
+        a_def("si", host_call("gpu.surfaceInfo", vec![])),
+        a_set("vw", a_cast(a_idxs(a_id("si"), "width"), "f64")),
+        a_set("vh", a_cast(a_idxs(a_id("si"), "height"), "f64")),
+        a_call("layout"),
+    ];
+    // Refresh the live text colors (theme + accent) every frame; the cached glyph
+    // positions reference these globals.
+    render_body.extend(text_color_updates());
+    render_body.push(host_call("gpu.submit", vec![frame]));
+    a_func("render", vec![], render_body)
 }
 
 /// A branch-free toggle assignment: `name = name + t - 2*name*t` (t ∈ {0,1}).
@@ -1242,6 +1594,19 @@ fn fn_on_event() -> Value {
             lf(w, "hh"),
         )
     };
+    // A finger-friendly hit area: the widget's bounds grown by a comfortable
+    // touch padding so small controls are still easy to tap on a phone.
+    let hitp = |w: &str| {
+        let pad = || mul(a_id("vh"), a_f(0.02));
+        inrect(
+            a_id("px"),
+            a_id("py"),
+            lf(w, "cx"),
+            lf(w, "cy"),
+            add(lf(w, "hw"), pad()),
+            add(lf(w, "hh"), pad()),
+        )
+    };
     let mut body = vec![
         a_call("layout"),
         a_def("et", a_idxs(a_id("e"), "type")),
@@ -1261,8 +1626,8 @@ fn fn_on_event() -> Value {
         a_def("downFb", mul(a_id("isDown"), hit("filledButton"))),
         a_def("downOb", mul(a_id("isDown"), hit("outlinedButton"))),
         a_def("downFab", mul(a_id("isDown"), hit("fab"))),
-        a_def("downSw", mul(a_id("isDown"), hit("switch"))),
-        a_def("downCk", mul(a_id("isDown"), hit("checkbox"))),
+        a_def("downSw", mul(a_id("isDown"), hitp("switch"))),
+        a_def("downCk", mul(a_id("isDown"), hitp("checkbox"))),
         a_def("downChip", mul(a_id("isDown"), hit("chip"))),
         // Press state layers (decay each frame in onFrame).
         set_on("pressFilled", a_f(1.0), a_id("downFb")),
@@ -1276,13 +1641,14 @@ fn fn_on_event() -> Value {
             lf("radioGroup", "cx"),
             mul(a_f((i as f64) - 1.0), lf("radioGroup", "sp")),
         );
+        let pad = mul(a_id("vh"), a_f(0.02));
         let hit_i = inrect(
             a_id("px"),
             a_id("py"),
             ci,
             lf("radioGroup", "cy"),
-            lf("radioGroup", "hw"),
-            lf("radioGroup", "hw"),
+            add(lf("radioGroup", "hw"), pad.clone()),
+            add(lf("radioGroup", "hw"), pad),
         );
         let down_i = mul(a_id("isDown"), hit_i);
         body.push(set_on("radio", a_f(i as f64), down_i));
@@ -1465,8 +1831,31 @@ fn build_demo() -> Value {
         a_def("vw", a_f(1.0)),
         a_def("vh", a_f(1.0)),
         a_def("L", a_i(0)),
+        a_def("txt", a_arr(vec![])), // cached caption glyph instances
+        a_def("g_on", a_arr(vec![a_f(0.0), a_f(0.0), a_f(0.0)])), // text-on-surface color
+        a_def("g_acc", a_arr(vec![a_f(0.0), a_f(0.0), a_f(0.0)])), // text accent color
         a_def("accents", accents),
     ];
+
+    // Per-label cached base position (lx/ly) and cell size (lc), set in buildText.
+    let mut state = state;
+    for idx in 0..labels().len() {
+        state.push(a_def(&format!("lx{idx}"), a_f(0.0)));
+        state.push(a_def(&format!("ly{idx}"), a_f(0.0)));
+        state.push(a_def(&format!("lc{idx}"), a_f(1.0)));
+    }
+
+    // Set vw/vh from a surface-info object, refresh layout, rebuild the cached
+    // caption geometry, and paint — used at startup and on resize.
+    let relayout = |src: Value| {
+        vec![
+            a_set("vw", a_cast(a_idxs(src.clone(), "width"), "f64")),
+            a_set("vh", a_cast(a_idxs(src, "height"), "f64")),
+            a_call("layout"),
+            a_call("buildText"),
+            a_call("render"),
+        ]
+    };
 
     let mut body = vec![host_call(
         "vm.import",
@@ -1475,11 +1864,15 @@ fn build_demo() -> Value {
     body.extend(state);
     body.push(fn_clamp01());
     body.push(fn_layout());
+    body.push(fn_build_text());
     body.push(fn_render());
     body.push(fn_on_event());
     body.push(fn_on_frame());
-    body.push(a_func("onResize", vec!["info"], vec![a_call("render")]));
-    body.push(a_call("render")); // first paint
+    // Resize: the `info` arg already carries the new surface size.
+    body.push(a_func("onResize", vec!["info"], relayout(a_id("info"))));
+    // First paint: query the surface, lay out, build captions, then render.
+    body.push(a_def("si0", host_call("gpu.surfaceInfo", vec![])));
+    body.extend(relayout(a_id("si0")));
     program(body)
 }
 
@@ -1490,7 +1883,10 @@ fn main() {
     let module = serde_json::to_string_pretty(&build_module()).unwrap();
     fs::write(dir.join("elpa-material.ast.json"), &module).unwrap();
 
-    let demo = serde_json::to_string_pretty(&build_demo()).unwrap();
+    // The demo carries thousands of caption-glyph instances; serialize it
+    // compactly (it is machine-generated and too large to review by hand) to keep
+    // the embedded wasm payload small.
+    let demo = serde_json::to_string(&build_demo()).unwrap();
     fs::write(dir.join("demo.ast.json"), &demo).unwrap();
 
     println!(

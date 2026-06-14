@@ -7,7 +7,7 @@
 use elpa::protocol::{EncoderCommand, RenderCommand};
 use elpa::{Elpa, HeadlessBackend, InputEvent, SurfaceInfo};
 
-const WIDGETS: [&str; 12] = [
+const WIDGETS: [&str; 13] = [
     "elpa.m3.card",
     "elpa.m3.appBar",
     "elpa.m3.filledButton",
@@ -20,6 +20,7 @@ const WIDGETS: [&str; 12] = [
     "elpa.m3.chip",
     "elpa.m3.progress",
     "elpa.m3.divider",
+    "elpa.m3.labels",
 ];
 
 fn collect_wgsl(v: &serde_json::Value, out: &mut Vec<String>) {
@@ -170,6 +171,78 @@ fn pointer_drag_moves_the_slider() {
         button: 0,
     });
     assert!(app.take_log().is_empty());
+}
+
+/// Read one f32 field of one instance from a widget's instance buffer.
+fn inst_field(app: &Elpa<HeadlessBackend>, widget_buf: &str, instance: usize, field: usize) -> f32 {
+    use elpa::protocol::ResourceDesc;
+    let frame = app.last_frame().expect("frame");
+    let buf = frame
+        .resources
+        .iter()
+        .find_map(|r| match r {
+            ResourceDesc::Buffer(b) if b.id == widget_buf => Some(b),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{widget_buf} present"));
+    let data = buf.data_f32.as_ref().expect("data_f32");
+    data[instance * 16 + field]
+}
+
+#[test]
+fn tapping_a_radio_selects_it() {
+    let mut app = instance();
+    app.start();
+    let _ = app.take_log();
+
+    // radioGroup layout: cx=vw*0.5, sp=vw*0.13, cy=vh*0.45 → radio #2 (rightmost)
+    // center on a 900×1400 surface is (450 + 117, 630).
+    // Instances are [ring0,dot0,ring1,dot1,ring2,dot2]; a dot's half-width (field 2)
+    // grows with its selection animation.
+    let dot2_before = inst_field(&app, "elpa.m3.radioGroup.instances", 5, 2);
+    app.send_event(&InputEvent::PointerDown {
+        x: 567.0,
+        y: 630.0,
+        button: 0,
+    });
+    for _ in 0..8 {
+        app.animate(16.0);
+    }
+    let dot0_after = inst_field(&app, "elpa.m3.radioGroup.instances", 1, 2);
+    let dot2_after = inst_field(&app, "elpa.m3.radioGroup.instances", 5, 2);
+    assert!(
+        dot2_after > dot2_before,
+        "radio #2's dot grew after selecting it"
+    );
+    assert!(
+        dot2_after > dot0_after,
+        "radio #2 is now the selected (larger) dot"
+    );
+    assert!(app.take_log().is_empty());
+}
+
+#[test]
+fn captions_are_rendered() {
+    let mut app = instance();
+    app.start();
+    // The cached caption buffer holds one instance per lit glyph pixel; it must be
+    // non-empty and sized to match the `labels` definition's draw.
+    use elpa::protocol::ResourceDesc;
+    let frame = app.last_frame().expect("frame");
+    let labels = frame
+        .resources
+        .iter()
+        .find_map(|r| match r {
+            ResourceDesc::Buffer(b) if b.id == "elpa.m3.labels.instances" => Some(b),
+            _ => None,
+        })
+        .expect("labels buffer present");
+    let floats = labels.data_f32.as_ref().expect("labels data_f32").len();
+    assert!(
+        floats > 16 * 100,
+        "captions produced many glyph instances ({floats} floats)"
+    );
+    assert_eq!(floats % 16, 0, "whole instances");
 }
 
 #[test]
