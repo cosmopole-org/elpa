@@ -55,7 +55,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use elpa_runtime::{
     definition_from_define, frame_from_submit, import_request, reply_json, reply_null,
-    undefine_target, Runtime, Start,
+    undefine_target, HostEnv, Runtime, Start,
+};
+
+// Re-export the instance-governance surface so a host can cap, gate, and steer
+// an app through the `elpa` crate without reaching into `elpian-vm` directly.
+pub use elpian_vm::api::{Capability, CapabilitySet, ResourceLimits, ResourceUsage, RunState};
+pub use elpa_runtime::{
+    ClosureNet, EnvToggles, FileStore, MemoryFileStore, NativeFileStore, NetProvider, NetRequest,
+    NetResponse,
 };
 
 static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -84,6 +92,10 @@ pub struct Elpa<B: GpuBackend> {
     assets: HashMap<String, String>,
     /// Optional resolver for `vm.import` sources not found in `assets`.
     fetcher: Option<AssetFetcher>,
+    /// Host-side environmental interfaces (fabricated filesystem, networking,
+    /// clock, randomness) servicing the VM's capability-gated `fs.*`/`net.*`/
+    /// `time.*`/`random.*` calls. Togglable and bounded; see [`HostEnv`].
+    env: HostEnv,
 }
 
 impl<B: GpuBackend> Elpa<B> {
@@ -102,7 +114,73 @@ impl<B: GpuBackend> Elpa<B> {
             defs: DefinitionStore::new(),
             assets: HashMap::new(),
             fetcher: None,
+            env: HostEnv::default(),
         })
+    }
+
+    // ---- Instance governance (limits, capabilities, lifecycle) --------------
+
+    /// Apply a resource-limit policy (instructions / memory / storage / call
+    /// depth) to this app's VM.
+    pub fn set_limits(&self, limits: ResourceLimits) -> bool {
+        elpian_vm::api::set_limits(self.runtime.machine_id(), limits)
+    }
+    /// Live resource usage for this app.
+    pub fn usage(&self) -> Option<ResourceUsage> {
+        elpian_vm::api::usage(self.runtime.machine_id())
+    }
+    /// Toggle a VM capability (network, storage, …). A disabled capability makes
+    /// the matching host call short-circuit to null inside the VM.
+    pub fn set_capability(&self, cap: Capability, allowed: bool) -> bool {
+        elpian_vm::api::set_capability(self.runtime.machine_id(), cap, allowed)
+    }
+    /// Replace the whole capability set (e.g. a sandbox `deny_all`).
+    pub fn set_capabilities(&self, caps: CapabilitySet) -> bool {
+        elpian_vm::api::set_capabilities(self.runtime.machine_id(), caps)
+    }
+    /// Request the VM pause at its next step boundary (continuation preserved).
+    pub fn pause(&self) -> bool {
+        elpian_vm::api::pause_vm(self.runtime.machine_id())
+    }
+    /// Resume a paused VM, servicing any host calls it makes as it continues.
+    pub fn resume(&mut self) {
+        let Elpa { runtime, renderer, surface, last_frame, last_stats, log, defs, assets, fetcher, env } =
+            self;
+        let mid = runtime.machine_id().to_string();
+        let mut result = elpian_vm::api::resume_execution(mid.clone());
+        loop {
+            if !result.has_host_call {
+                break;
+            }
+            let reply = match elpa_protocol::HostCall::parse(&result.host_call_data) {
+                Ok(hc) => handle_call(
+                    &hc, renderer, surface, last_frame, last_stats, log, defs, assets, fetcher, env,
+                ),
+                Err(_) => reply_null(),
+            };
+            result = elpian_vm::api::continue_execution(mid.clone(), reply);
+        }
+    }
+    /// Request the VM terminate; it becomes inert.
+    pub fn terminate(&self) -> bool {
+        elpian_vm::api::terminate_vm(self.runtime.machine_id())
+    }
+    /// Current run state (running / paused / terminated / …).
+    pub fn run_state(&self) -> Option<RunState> {
+        elpian_vm::api::run_state(self.runtime.machine_id())
+    }
+    /// The fatal trap reason if a limit overrun or runtime error stopped the VM.
+    pub fn trap_reason(&self) -> Option<String> {
+        elpian_vm::api::trap_reason(self.runtime.machine_id())
+    }
+
+    /// The host environment (fabricated filesystem, networking, clock,
+    /// randomness). Use it to install backends and flip interface toggles.
+    pub fn env(&self) -> &HostEnv {
+        &self.env
+    }
+    pub fn env_mut(&mut self) -> &mut HostEnv {
+        &mut self.env
     }
 
     /// Bundle an external Elpian module so the app can `vm.import` it by
@@ -141,13 +219,13 @@ impl<B: GpuBackend> Elpa<B> {
     /// `vm.import` with an inline `ast`. Returns whether the module compiled.
     pub fn import_ast(&mut self, ast_json: &str) -> bool {
         let id = format!("elpa-import-{}", IMPORT_COUNTER.fetch_add(1, Ordering::Relaxed));
-        let Elpa { renderer, surface, last_frame, last_stats, log, defs, assets, fetcher, .. } =
+        let Elpa { renderer, surface, last_frame, last_stats, log, defs, assets, fetcher, env, .. } =
             self;
         match Runtime::from_ast(id, ast_json) {
             Some(mut rt) => {
                 pump_vm(
                     &mut rt, Start::Main, renderer, surface, last_frame, last_stats, log, defs,
-                    assets, fetcher,
+                    assets, fetcher, env,
                 );
                 rt.dispose();
                 true
@@ -213,10 +291,12 @@ impl<B: GpuBackend> Elpa<B> {
     /// Pump the VM for one turn, routing host calls (see [`handle_call`]).
     fn drive(&mut self, start: Start) {
         // Disjoint borrows of the instance's fields for the dispatch closure.
-        let Elpa { runtime, renderer, surface, last_frame, last_stats, log, defs, assets, fetcher } =
-            self;
+        let Elpa {
+            runtime, renderer, surface, last_frame, last_stats, log, defs, assets, fetcher, env,
+        } = self;
         pump_vm(
             runtime, start, renderer, surface, last_frame, last_stats, log, defs, assets, fetcher,
+            env,
         );
     }
 }
@@ -240,9 +320,10 @@ fn pump_vm<B: GpuBackend>(
     defs: &mut DefinitionStore,
     assets: &HashMap<String, String>,
     fetcher: &Option<AssetFetcher>,
+    env: &mut HostEnv,
 ) {
     rt.pump(start, |hc| {
-        handle_call(hc, renderer, surface, last_frame, last_stats, log, defs, assets, fetcher)
+        handle_call(hc, renderer, surface, last_frame, last_stats, log, defs, assets, fetcher, env)
     });
 }
 
@@ -266,7 +347,14 @@ fn handle_call<B: GpuBackend>(
     defs: &mut DefinitionStore,
     assets: &HashMap<String, String>,
     fetcher: &Option<AssetFetcher>,
+    env: &mut HostEnv,
 ) -> String {
+    // Environmental interfaces (fs.*, net.*, time.*, random.*) are serviced by
+    // the host environment; everything else falls through to the GPU/log/import
+    // handlers below.
+    if let Some(reply) = env.service(hc) {
+        return reply;
+    }
     match hc.api_name.as_str() {
         "gpu.submit" => {
             if let Some(frame) = frame_from_submit(hc) {
@@ -302,7 +390,7 @@ fn handle_call<B: GpuBackend>(
                             Some(mut rt) => {
                                 pump_vm(
                                     &mut rt, Start::Main, renderer, surface, last_frame, last_stats,
-                                    log, defs, assets, fetcher,
+                                    log, defs, assets, fetcher, env,
                                 );
                                 rt.dispose();
                             }

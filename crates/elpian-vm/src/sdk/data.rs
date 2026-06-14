@@ -127,6 +127,34 @@ impl Val {
     pub fn is_empty(&self) -> bool {
         self.typ == 0
     }
+    /// Approximate live footprint of this value in bytes, used by the resource
+    /// governor to bound a guest's heap. It is a deliberately shallow, stable
+    /// estimate (the value's own header plus its inline payload); container
+    /// elements are charged as they are themselves allocated, so a deep tree is
+    /// accounted for incrementally rather than re-walked here.
+    pub fn approx_size(&self) -> u64 {
+        const HEADER: u64 = 24; // Rc + RefCell + enum tag, amortised.
+        HEADER
+            + match self.typ {
+                1 | 6 => 2,
+                2 | 4 => 4,
+                3 | 5 => 8,
+                7 => self.as_string().len() as u64 + 16,
+                8 => {
+                    let o = self.as_object();
+                    let b = o.borrow();
+                    b.data
+                        .data
+                        .keys()
+                        .map(|k| k.len() as u64 + 16)
+                        .sum::<u64>()
+                        + 16
+                }
+                9 => self.as_array().borrow().data.len() as u64 * 8 + 16,
+                10 => 48,
+                _ => 0,
+            }
+    }
 }
 
 pub struct ValGroup {
@@ -225,12 +253,33 @@ impl Array {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Function {
     pub name: String,
     pub start: usize,
     pub end: usize,
     pub params: Vec<String>,
+    /// Captured lexical environment (closure upvalues). When a function value is
+    /// produced inside another function's body, the enclosing locals reachable
+    /// at that point are snapshotted here as `name -> Val`. The snapshot shares
+    /// the *same* `Rc`-backed values, so reference types (objects, arrays, cells)
+    /// stay live for exactly as long as some closure references them and mutate
+    /// in lock-step — this is the closure's environment lifecycle, managed for
+    /// free by reference counting rather than a tracing collector. `None` means
+    /// a plain top-level function with nothing to close over.
+    pub captured: Option<Rc<RefCell<ValGroup>>>,
+}
+
+impl std::fmt::Debug for Function {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Function")
+            .field("name", &self.name)
+            .field("start", &self.start)
+            .field("end", &self.end)
+            .field("params", &self.params)
+            .field("closure", &self.captured.is_some())
+            .finish()
+    }
 }
 
 impl Function {
@@ -240,9 +289,32 @@ impl Function {
             start,
             end,
             params,
+            captured: None,
+        }
+    }
+    /// A function value that closes over `captured`.
+    pub fn new_closure(
+        name: String,
+        start: usize,
+        end: usize,
+        params: Vec<String>,
+        captured: Rc<RefCell<ValGroup>>,
+    ) -> Self {
+        Function {
+            name,
+            start,
+            end,
+            params,
+            captured: Some(captured),
         }
     }
     pub fn clone_func(&self) -> Self {
-        Function::new(self.name.clone(), self.start, self.end, self.params.clone())
+        Function {
+            name: self.name.clone(),
+            start: self.start,
+            end: self.end,
+            params: self.params.clone(),
+            captured: self.captured.clone(),
+        }
     }
 }

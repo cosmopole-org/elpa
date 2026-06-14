@@ -206,17 +206,68 @@ and wasm-friendly.
 - **Compile:** `compiler::compile_ast(astJson, 0) -> Vec<u8>` → compact
   big-endian bytecode.
 - **Interpret:** `Executor` is a *pausing* interpreter. `single_thread_operation`
-  drives it: `0x01` run/resume, `0x03` continue after a host call.
+  drives it: `0x01` run/resume, `0x03` continue after a host call, `0x04` resume
+  after a host-ordered pause.
 - **Values:** `Val { typ, data }`; type codes `0` null · `1..5` ints/floats · `6`
-  bool · `7` string · `8` object · `9` array · `10` function · `253` paused.
+  bool · `7` string · `8` object · `9` array · `10` function (with an optional
+  captured closure environment) · `252` native-builtin marker · `253` paused ·
+  `254` pending/no-value · `255` `askHost` marker.
 - **Host-call boundary (the only seam):** `askHost(apiName, payload)` suspends the
   VM and emits `{ machineId, apiName, payload }`. The runtime services it and
-  resumes via `continue_execution`. Elpa's host API is tiny and GPU-focused:
+  resumes via `continue_execution`. Elpa's GPU-focused core APIs are
   `gpu.submit`, `gpu.writeBuffer`, `gpu.writeTexture`, `gpu.readBuffer`,
-  `gpu.surfaceInfo`, `log`. **No canvas/dom APIs.**
+  `gpu.surfaceInfo`, `log`; capability-gated environmental families
+  (`fs.*`, `net.*`, `time.*`, `random.*`) extend it. **No canvas/dom APIs.**
 
 The port is validated end-to-end (AST → bytecode → execute → `gpu.submit` →
 parsed `Frame`).
+
+### 6.1 Language & runtime extensions (`elpian-vm` + `elpa-runtime`)
+
+The VM is extended into a complete, host-governable application runtime. Every
+piece is additive — programs that used none of it behave exactly as before — and
+each subsystem is unit- and integration-tested.
+
+- **Native standard library** (`sdk/stdlib.rs`): builtins the guest calls by name
+  with no host round-trip. A full elementary **math** library (`sqrt`, `pow`,
+  `sin`/`cos`/…, `log`, `gcd`, `clamp`, `hypot`, `factorial`, constants `PI()`/
+  `E()`/…) and **foundation** utilities (type reflection, JSON in/out, string,
+  array and object helpers, `range`, `sort`, …). The executor resolves a bare
+  identifier to a builtin only when no scope binding shadows it, so guests can
+  always override a name. Builtins are pure and deterministic.
+- **Object-orientation** (`stdlib` OOP builtins on the existing object model):
+  `class(name, defaults, methods)`, `extend(parent, …)` for single inheritance,
+  `new(class, overrides)` for instantiation (defaults are deep-copied so
+  instances never alias), and `method` / `parentMethod` / `field` / `isInstance`
+  / `className` for dispatch and reflection.
+- **Closures** (`Function.captured` + executor capture/seed): a function written
+  inside another closes over the enclosing locals; the upvalues are shared by
+  `Rc`, so a closure's environment lives exactly as long as the closure and
+  mutates in lock-step — lifecycle managed by reference counting, no GC. `cell` /
+  `cellGet` / `cellSet` give a closure clean mutable captured state.
+- **Unified resource governance** (`sdk/limits.rs`): a per-instance `Governor`
+  enforcing **instruction** (lifetime and per-turn), **memory** (approximate live
+  heap, charged on bind / freed on scope teardown), **storage**, and
+  **call-depth** budgets. Every overrun is a clean trap, never a panic. Usage is
+  reported live.
+- **Togglable capabilities** (`sdk/capabilities.rs`): each side-effecting host-API
+  family is gated by a capability the host flips on/off at any time. A disabled
+  family makes the matching `askHost` short-circuit to null *inside* the VM, so
+  the guest keeps running deterministically with the interface "unplugged".
+- **Lifecycle control** (`sdk/lifecycle.rs`): the host can **pause** (the executor
+  suspends at the next step boundary, preserving its full continuation),
+  **resume** (continue exactly where it left off), and **terminate** (unwind and
+  become inert) an instance at any time via the instance API in `api.rs` /
+  `Elpa`.
+- **Host environment** (`elpa-runtime/host_env.rs`): the concrete, bounded
+  implementations behind the environmental families. A **fabricated filesystem**
+  (`FileStore`) with a `NativeFileStore` backend (sandboxed real disk on native
+  targets) and a `MemoryFileStore` backend (the browser-storage analog on the
+  web) — the guest sees the same virtual tree either way, capped in size and
+  protected against `..` escapes. **Networking** is a pluggable `NetProvider`
+  (denied by default until the host provisions one). **Clock** and **randomness**
+  round out the set. Every family has its own host-side on/off switch as a second
+  line of defense behind the VM capability gate.
 
 ---
 
