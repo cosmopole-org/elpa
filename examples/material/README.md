@@ -28,9 +28,12 @@ Two extras keep it looking like M3:
   softness); cards, the filled button and the FAB draw a soft, offset dark
   rounded rect behind them for a real drop shadow.
 * **Captions.** There is no glyph engine, so text (`THEME`, `RESET`, `WI-FI`,
-  `VOLUME`, the radio `A/B/C`, …) is drawn with the same primitive as a 5×7
-  dot-matrix font. Because glyph geometry depends only on layout, it is computed
-  once into a cached buffer (rebuilt on resize), so per-frame cost stays tiny.
+  `VOLUME`, the radio `A/B/C`, …) is drawn as a **vector stroke font**: each glyph
+  is a few line segments rendered as rounded *capsules* (rotated rounded rects
+  with fully-rounded ends, on the same primitive as every widget). Capsule ends
+  overlap at joints, so strokes connect into smooth, continuous letterforms.
+  Because glyph geometry depends only on layout, it is computed once into a cached
+  buffer (rebuilt on resize), so per-frame cost stays tiny.
 
 ## Interaction (all event kinds, all wired in the VM)
 
