@@ -183,11 +183,6 @@ dependencies = [
 [[package]]
 name = "elpa-material"
 version = "0.1.0"
-dependencies = [
- "elpa-protocol",
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "elpa-protocol"

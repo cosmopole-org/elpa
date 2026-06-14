@@ -63,7 +63,7 @@ for the same triangle running in a winit window on **desktop
 | `examples/web` | Full-window DPI canvas drawing Elpa frames (wasm) | ✅ compiles (wasm32) |
 | `examples/native` | Same triangle in a winit window — desktop + Android | ✅ builds (Linux/Windows/Android) |
 | `examples/sdk` | **Engine SDK as Elpian AST** (`assets/*.ast.json`): importable 2D/3D shape definitions, math in WGSL | ✅ tested |
-| `examples/material` | **Material Design 3 UI kit as Elpian AST** (`assets/*.ast.json`): interactive buttons/FAB/switch/checkbox/radios/slider/chips/progress; every event wired branch-free in the VM | ✅ tested |
+| `examples/material` | **Material Design 3 UI kit in JavaScript** (`assets/*.js`): interactive buttons/FAB/switch/checkbox/radios/slider/chips/progress; compiled to the VM with `Elpa::new_from_js` and wired from pointer/wheel/keyboard events | ✅ tested |
 
 ## Reusable drawing definitions + module import
 

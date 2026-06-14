@@ -1,8 +1,10 @@
-//! Run the Material kit's **JSON AST** assets on a real (headless) Elpa instance —
-//! proof that the UI kit (which is AST JSON, not Rust) loads, draws, and *reacts*
-//! to input end to end: `vm.import` registers the widget definitions, frames
-//! reference widgets by id (the host expands them into the wgpu command tree),
-//! and pointer / wheel / keyboard events mutate state through the VM.
+//! Run the Material kit's **JavaScript** assets on a real (headless) Elpa
+//! instance — proof that the UI kit (which is JS, not Rust) compiles, loads,
+//! draws, and *reacts* to input end to end: the app is built with
+//! `Elpa::new_from_js`, `vm.import` compiles + runs the JS module to register the
+//! widget definitions, frames reference widgets by id (the host expands them into
+//! the wgpu command tree), and pointer / wheel / keyboard events mutate state
+//! through the VM.
 
 use elpa::protocol::{EncoderCommand, RenderCommand};
 use elpa::{Elpa, HeadlessBackend, InputEvent, SurfaceInfo};
@@ -35,8 +37,11 @@ fn collect_wgsl(v: &serde_json::Value, out: &mut Vec<String>) {
 #[test]
 fn kit_shader_is_valid_wgsl() {
     // Validate the kit's WGSL exactly as wgpu does, so reserved-keyword / syntax
-    // errors fail in `cargo test` (not in a browser).
-    let ast: serde_json::Value = serde_json::from_str(elpa_material::MODULE_AST).unwrap();
+    // errors fail in `cargo test` (not in a browser). The kit is JavaScript, so
+    // lower it to Elpian AST first and walk that for the embedded shader string.
+    let ast: serde_json::Value =
+        serde_json::from_str(&elpa::compile_js_to_ast(elpa_material::MODULE_JS.to_string()))
+            .unwrap();
     let mut shaders = Vec::new();
     collect_wgsl(&ast, &mut shaders);
     shaders.sort();
@@ -60,24 +65,24 @@ fn kit_shader_is_valid_wgsl() {
 }
 
 fn instance() -> Elpa<HeadlessBackend> {
-    let mut app = Elpa::new(
+    let mut app = Elpa::new_from_js(
         HeadlessBackend::default(),
         SurfaceInfo::new(900, 1400, 1.0),
-        elpa_material::DEMO_AST,
+        elpa_material::DEMO_JS,
     )
-    .expect("demo AST compiles");
-    app.register_asset(elpa_material::MODULE_SOURCE, elpa_material::MODULE_AST);
+    .expect("demo JS compiles");
+    app.register_asset(elpa_material::MODULE_SOURCE, elpa_material::MODULE_JS);
     app
 }
 
 #[test]
 fn module_registers_every_widget() {
-    let mut app = Elpa::new(
+    let mut app = Elpa::new_from_js(
         HeadlessBackend::default(),
         SurfaceInfo::new(8, 8, 1.0),
-        elpa_material::MODULE_AST,
+        elpa_material::MODULE_JS,
     )
-    .expect("module AST compiles");
+    .expect("module JS compiles");
     app.start();
     assert_eq!(
         app.definitions().len(),
