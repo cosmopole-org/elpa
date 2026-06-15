@@ -307,7 +307,7 @@ function GridView(p) { p.kind = "gridView"; if (!has(p, "id")) { p.id = "grid"; 
 
 // ---- Material / content widgets ----------------------------------------------
 function Icon(p) { p.kind = "icon"; return p; }
-function IconButton(p) { p.kind = "iconButton"; if (!has(p, "id")) { p.id = p.icon; } return p; }
+function IconButton(p) { p.kind = "iconButton"; if (!has(p, "id")) { if (has(p, "icon")) { p.id = p.icon; } else { p.id = "iconBtn"; } } return p; }
 function Avatar(p) { p.kind = "avatar"; return p; }
 function Badge(p) { p.kind = "badge"; return p; }
 function ListTile(p) { p.kind = "listTile"; if (!has(p, "id")) { p.id = p.title; } return p; }
@@ -375,13 +375,19 @@ function _shadow(cx, cy, hw, hh, r, grow, drop, blur) {
     push(_curOut, 0.0); push(_curOut, 0.0); push(_curOut, 0.0); push(_curOut, 0.28);
     push(_curOut, 0.0); push(_curOut, 0.0); push(_curOut, 0.0); push(_curOut, 0.0);
 }
-function _paintText(str, cx, cy, cell, col) {
-    str = upper(str);
-    let nch = len(str); let adv = 5.0; let th = 0.92;
+// Core text rasteriser. `thick` is the stroke weight (capsule thickness as a
+// fraction of the cell — the type-weight knob), and `font` an optional custom
+// glyph map in the same stroke format as `_GLYPHS` (segments [x0,y0,x1,y1] in a
+// 4×6 cell). The built-in font is caps-only, so it is upper-cased; a supplied
+// custom font is rendered verbatim (it may carry lower-case glyphs).
+function _paintTextStyled(str, cx, cy, cell, col, thick, font) {
+    let glyphs = _GLYPHS;
+    if (font != 0) { glyphs = font; } else { str = upper(str); }
+    let nch = len(str); let adv = 5.0; let th = thick;
     for (let ci = 0; ci < nch; ci++) {
         let ch = charAt(str, ci);
-        if (has(_GLYPHS, ch)) {
-            let segs = _GLYPHS[ch];
+        if (has(glyphs, ch)) {
+            let segs = glyphs[ch];
             let gc = (ci - (nch - 1.0) / 2.0) * adv;
             for (let si = 0; si < len(segs); si++) {
                 let s = segs[si];
@@ -394,6 +400,7 @@ function _paintText(str, cx, cy, cell, col) {
         }
     }
 }
+function _paintText(str, cx, cy, cell, col) { _paintTextStyled(str, cx, cy, cell, col, 0.92, 0); }
 function _addTap(cx, cy, hw, hh, id, onTap) { push(_curTaps, { cx: cx, cy: cy, hw: hw, hh: hh, id: id, onTap: onTap }); }
 function _addDrag(cx, cy, hw, hh, onChanged, left, width) {
     push(_curDrags, { cx: cx, cy: cy, hw: hw, hh: hh,
@@ -412,7 +419,11 @@ function _ring(cx, cy, r, w, col) { _rect(cx, cy, r, r, r, w, 0.0, _CLEAR, col);
 // A tiny vector icon set: each icon is drawn from capsules/discs/rings inside a
 // box of half-extent `r` centered at (cx,cy). Unknown names fall back to a dot.
 function _icon(name, cx, cy, r, col) {
-    let t = r * 0.26;
+    // Standard Material stroke weight: ~2dp on a 24dp grid → ≈ r/6. (The old
+    // value, 0.26·r, was noticeably heavier than the spec.) A custom/SVG icon
+    // registered under this name takes precedence and is stroked from its path.
+    let t = r * 0.18;
+    if (has(_SVGICONS, name)) { let g = _SVGICONS[name]; _iconSvg(g.d, cx, cy, r, t, col, g.vb); return 0; }
     if (name == "add") { _seg(cx - r * 0.62, cy, cx + r * 0.62, cy, t, col); _seg(cx, cy - r * 0.62, cx, cy + r * 0.62, t, col); return 0; }
     if (name == "close") { _seg(cx - r * 0.5, cy - r * 0.5, cx + r * 0.5, cy + r * 0.5, t, col); _seg(cx - r * 0.5, cy + r * 0.5, cx + r * 0.5, cy - r * 0.5, t, col); return 0; }
     if (name == "check") { _seg(cx - r * 0.55, cy + r * 0.05, cx - r * 0.12, cy + r * 0.5, t, col); _seg(cx - r * 0.12, cy + r * 0.5, cx + r * 0.6, cy - r * 0.45, t, col); return 0; }
@@ -434,6 +445,134 @@ function _icon(name, cx, cy, r, col) {
     return 0;
 }
 
+// --------------------------------------------------------------- SVG icons ----
+// Full SVG-path icon support, scoped to what a stroke-only (rounded-rect SDF)
+// renderer can honour: a path's outline is *stroked* (this kit cannot fill an
+// arbitrary polygon — every primitive is a rounded rect). The path grammar
+// covers M/L/H/V/C/Q/Z in both absolute and relative forms, with cubic/quadratic
+// Béziers flattened to line segments; unsupported commands (S/T/A) are skipped.
+// Apps draw one with `Icon({ svg: "M..", viewBox: 24 })` or register a named icon
+// with `registerIcon(name, d, viewBox)` so it works anywhere a name does.
+let _DIGITS = { "0": 1, "1": 1, "2": 1, "3": 1, "4": 1, "5": 1, "6": 1, "7": 1, "8": 1, "9": 1 };
+let _PATHCMD = { M: 1, m: 1, L: 1, l: 1, H: 1, h: 1, V: 1, v: 1, C: 1, c: 1, Q: 1, q: 1, S: 1, s: 1, T: 1, t: 1, A: 1, a: 1, Z: 1, z: 1 };
+let _SVGICONS = {};
+
+// Register a named SVG icon (usable wherever an icon name is — list tiles, nav,
+// Icon/IconButton). `viewBox` is the square path coordinate extent (default 24).
+function registerIcon(name, d, viewBox) { let vb = 24.0; if (viewBox != 0) { vb = viewBox; } _SVGICONS[name] = { d: d, vb: vb }; }
+
+// Tokenise a path `d` into command letters and numeric strings (handles comma /
+// whitespace separators, implicit signs, and exponents), without leaning on
+// string ordering or regex (neither is in the VM's JS subset).
+function _svgTok(d) {
+    let toks = []; let numStr = ""; let n = len(d);
+    for (let i = 0; i < n; i++) {
+        let c = charAt(d, i);
+        let isNum = 0.0;
+        if (has(_DIGITS, c)) { isNum = 1.0; }
+        if (c == ".") { isNum = 1.0; }
+        if (c == "e") { isNum = 1.0; }
+        if (c == "E") { isNum = 1.0; }
+        if (isNum > 0.5) { numStr = concat(numStr, c); }
+        else {
+            if (c == "-") {
+                let afterE = 0.0;
+                if (len(numStr) > 0) { let lc = charAt(numStr, len(numStr) - 1.0); if (lc == "e") { afterE = 1.0; } if (lc == "E") { afterE = 1.0; } }
+                if (afterE > 0.5) { numStr = concat(numStr, c); }
+                else { if (len(numStr) > 0) { push(toks, numStr); } numStr = "-"; }
+            } else {
+                if (len(numStr) > 0) { push(toks, numStr); numStr = ""; }
+                if (c == "+") { numStr = ""; }
+                else {
+                    let sep = 0.0;
+                    if (c == " ") { sep = 1.0; } if (c == ",") { sep = 1.0; }
+                    if (c == "\n") { sep = 1.0; } if (c == "\t") { sep = 1.0; } if (c == "\r") { sep = 1.0; }
+                    if (sep < 0.5) { push(toks, c); }
+                }
+            }
+        }
+    }
+    if (len(numStr) > 0) { push(toks, numStr); }
+    return toks;
+}
+function _flatC(p0, p1, p2, p3, steps, out) {
+    for (let i = 1; i <= steps; i++) {
+        let t = num(i) / steps; let u = 1.0 - t;
+        let x = u * u * u * p0[0] + 3.0 * u * u * t * p1[0] + 3.0 * u * t * t * p2[0] + t * t * t * p3[0];
+        let y = u * u * u * p0[1] + 3.0 * u * u * t * p1[1] + 3.0 * u * t * t * p2[1] + t * t * t * p3[1];
+        push(out, [x, y]);
+    }
+}
+function _flatQ(p0, p1, p2, steps, out) {
+    for (let i = 1; i <= steps; i++) {
+        let t = num(i) / steps; let u = 1.0 - t;
+        let x = u * u * p0[0] + 2.0 * u * t * p1[0] + t * t * p2[0];
+        let y = u * u * p0[1] + 2.0 * u * t * p1[1] + t * t * p2[1];
+        push(out, [x, y]);
+    }
+}
+// Parse a path into a list of polylines (each a list of [x,y] points).
+function _svgPolys(d) {
+    let toks = _svgTok(d); let nt = len(toks);
+    let polys = []; let cur = [];
+    let px = 0.0; let py = 0.0; let sx = 0.0; let sy = 0.0;
+    let cmd = ""; let rel = 0.0; let i = 0;
+    for (let g = 0; g <= nt; g++) {
+        if (i >= nt) { g = nt + 1; }
+        else {
+            let tk = toks[i];
+            if (has(_PATHCMD, tk)) { cmd = upper(tk); rel = 0.0; if (sel(tk, cmd) < 0.5) { rel = 1.0; } i = i + 1; }
+            if (cmd == "M") {
+                let x = num(toks[i]); let y = num(toks[i + 1]); i = i + 2;
+                if (rel > 0.5) { x = px + x; y = py + y; }
+                if (len(cur) > 0) { push(polys, cur); }
+                cur = []; push(cur, [x, y]); px = x; py = y; sx = x; sy = y;
+                cmd = "L";   // subsequent coordinate pairs are implicit line-to
+            } else { if (cmd == "L") {
+                let x = num(toks[i]); let y = num(toks[i + 1]); i = i + 2;
+                if (rel > 0.5) { x = px + x; y = py + y; }
+                push(cur, [x, y]); px = x; py = y;
+            } else { if (cmd == "H") {
+                let x = num(toks[i]); i = i + 1; if (rel > 0.5) { x = px + x; }
+                push(cur, [x, py]); px = x;
+            } else { if (cmd == "V") {
+                let y = num(toks[i]); i = i + 1; if (rel > 0.5) { y = py + y; }
+                push(cur, [px, y]); py = y;
+            } else { if (cmd == "C") {
+                let x1 = num(toks[i]); let y1 = num(toks[i + 1]); let x2 = num(toks[i + 2]);
+                let y2 = num(toks[i + 3]); let x = num(toks[i + 4]); let y = num(toks[i + 5]); i = i + 6;
+                if (rel > 0.5) { x1 = px + x1; y1 = py + y1; x2 = px + x2; y2 = py + y2; x = px + x; y = py + y; }
+                _flatC([px, py], [x1, y1], [x2, y2], [x, y], 12, cur); px = x; py = y;
+            } else { if (cmd == "Q") {
+                let x1 = num(toks[i]); let y1 = num(toks[i + 1]); let x = num(toks[i + 2]); let y = num(toks[i + 3]); i = i + 4;
+                if (rel > 0.5) { x1 = px + x1; y1 = py + y1; x = px + x; y = py + y; }
+                _flatQ([px, py], [x1, y1], [x, y], 12, cur); px = x; py = y;
+            } else { if (cmd == "Z") {
+                push(cur, [sx, sy]); px = sx; py = sy;
+                if (len(cur) > 0) { push(polys, cur); } cur = [];
+            } else {
+                // Unsupported command (S/T/A …): consume one number to make progress.
+                i = i + 1;
+            } } } } } } }
+        }
+    }
+    if (len(cur) > 0) { push(polys, cur); }
+    return polys;
+}
+// Stroke a parsed path into the icon box: map the viewBox (vb×vb, top-left origin)
+// onto the box centred at (cx,cy) with half-extent `r`, then draw each segment as
+// a round-capped capsule of width `t`.
+function _iconSvg(d, cx, cy, r, t, col, vb) {
+    let polys = _svgPolys(d); let sc = (2.0 * r) / vb; let ox = cx - r; let oy = cy - r;
+    for (let p = 0; p < len(polys); p++) {
+        let poly = polys[p];
+        for (let i = 0; i < len(poly) - 1; i++) {
+            let a = poly[i]; let b = poly[i + 1];
+            _seg(ox + a[0] * sc, oy + a[1] * sc, ox + b[0] * sc, oy + b[1] * sc, t, col);
+        }
+    }
+}
+
 // ---------------------------------------------------------- sizing / cells ----
 function _cell(size) {
     if (size == "headline") { return _u * 0.82; }
@@ -443,6 +582,30 @@ function _cell(size) {
     if (size == "caption") { return _u * 0.32; }
     if (size == "micro") { return _u * 0.26; }
     return _u * 0.40;
+}
+// Resolve a Text node's cell size (the per-glyph scale). Supports the named M3
+// roles (above), an explicit pixel font size (`px`, the rendered cap height), and
+// a numeric `size` interpreted in layout units — so apps get real font sizing.
+function _cellOf(node) {
+    if (has(node, "px")) { return node.px / 6.0; }
+    let s = "body"; if (has(node, "size")) { s = node.size; }
+    if (typeOf(s) == "number") { return _u * s; }
+    return _cell(s);
+}
+// Resolve a Text node's stroke weight (capsule thickness as a fraction of the
+// cell). Accepts the CSS-like names or a numeric 100–900; the default (0.92)
+// matches the kit's prior look so untouched text is unchanged.
+function _weightThick(node) {
+    if (!has(node, "weight")) { return 0.92; }
+    let w = node.weight;
+    if (typeOf(w) == "number") { return 0.5 + w / 1000.0; }
+    if (w == "thin") { return 0.6; }
+    if (w == "light") { return 0.72; }
+    if (w == "regular") { return 0.92; }
+    if (w == "medium") { return 1.05; }
+    if (w == "semibold") { return 1.18; }
+    if (w == "bold") { return 1.32; }
+    return 0.92;
 }
 function _textW(str, cell) { return len(str) * 5.0 * cell; }
 function _btnW(label) { return _textW(label, _cell("label")) + _u * 8.0; }
@@ -507,7 +670,7 @@ function _measure(node) {
 function _measureKind(node) {
     let k = node.kind;
     if (k == "comp") { return _measure(node._sub); }
-    if (k == "text") { let c = _cell(node.size); return { w: _textW(node.text, c), h: 6.0 * c }; }
+    if (k == "text") { let c = _cellOf(node); return { w: _textW(node.text, c), h: 6.0 * c }; }
     if (k == "filledButton") { return { w: _btnW(node.label), h: _u * 5.5 }; }
     if (k == "outlinedButton") { return { w: _btnW(node.label), h: _u * 5.5 }; }
     if (k == "fab") { return { w: _u * 8.4, h: _u * 8.4 }; }
@@ -716,7 +879,7 @@ function _paint(node, cx, cy) {
     node._out = []; node._taps = []; node._drags = [];
     node._self = node._out; node._kids = [];
     _curOut = node._out; _curTaps = node._taps; _curDrags = node._drags;
-    if (k == "text") { _paintText(node.text, cx, cy, _cell(node.size), _textInk(node)); return 0; }
+    if (k == "text") { let fnt = 0; if (has(node, "font")) { fnt = node.font; } _paintTextStyled(node.text, cx, cy, _cellOf(node), _textInk(node), _weightThick(node), fnt); return 0; }
     if (k == "appBar") { _paintAppBar(node, cx, cy); return 0; }
     if (k == "filledButton") { _paintFilled(node, cx, cy); return 0; }
     if (k == "outlinedButton") { _paintOutlined(node, cx, cy); return 0; }
@@ -1150,9 +1313,18 @@ function _paintExpansion(node, cx, cy) {
 }
 
 // --------------------------------------------------- material / content paints
+// Draw an icon node, honouring an inline `svg` path (stroked) or a name (built-in
+// or registered). Shared by Icon / IconButton so both accept SVG.
+function _drawIcon(node, cx, cy, r, col) {
+    if (has(node, "svg")) {
+        let vb = 24.0; if (has(node, "viewBox")) { vb = node.viewBox; }
+        _iconSvg(node.svg, cx, cy, r, r * 0.18, col, vb); return 0;
+    }
+    _icon(node.icon, cx, cy, r, col); return 0;
+}
 function _paintIcon(node, cx, cy) {
     let r = _iconR(node); let col = _onSurface(1.0); if (has(node, "color")) { col = _colorRole(node.color, 1.0); }
-    _icon(node.icon, cx, cy, r, col);
+    _drawIcon(node, cx, cy, r, col);
 }
 function _paintIconButton(node, cx, cy) {
     let r = _iconR(node); let hw = r + _u * 1.2;
@@ -1161,7 +1333,7 @@ function _paintIconButton(node, cx, cy) {
     if (sel2 > 0.5) { _rect(cx, cy, hw, hw, hw, 0.0, 0.0, _acc(0.16), _CLEAR); }
     if (st > 0.001) { _rect(cx, cy, hw, hw, hw, 0.0, 0.0, _onSurface(st), _CLEAR); }
     let col = _onSurface(0.85); if (sel2 > 0.5) { col = _acc(1.0); } if (has(node, "color")) { col = _colorRole(node.color, 1.0); }
-    _icon(node.icon, cx, cy, r, col);
+    _drawIcon(node, cx, cy, r, col);
     _addTap(cx, cy, hw, hw, node.id, node.onTap);
 }
 function _paintAvatar(node, cx, cy) {

@@ -131,14 +131,34 @@ gallery test asserts exactly that.
   alignment), `Expanded`/`Flexible` (flex distribution), `Stack` + `Positioned`,
   `Wrap`, `ListView` (scrollable, item-culled), `GridView` (scrollable),
   `Card`, `Scaffold` (now also `bottomBar`, `drawer`, `snackbar`, `dialog`).
-* **Material** — `AppBar` (with `onMenu`/`onAction`), `Fab`, `FilledButton`,
-  `OutlinedButton`, `IconButton`, `Icon` (vector set), `Avatar`, `Badge`,
-  `Switch`, `Checkbox`, `Radio`, `Slider`, `Chip`, `Progress`,
-  `CircularProgress`, `Divider`, `ListTile`, `TextField` (focus + caret +
-  keyboard input), `Tabs`, `NavigationBar`, `SegmentedButton`, `ExpansionTile`,
-  `Banner`, `Snackbar`, `Dialog` (modal scrim), `Drawer` (sliding, animated).
-* **Content** — `Text` (now with digits/symbols and `headline`…`micro` sizes),
-  `DataTable`.
+* **Material** — `AppBar` (M3 small top app bar: surface, on-surface nav icon,
+  left-aligned title, with `onMenu`/`onAction`), `Fab`, `FilledButton`,
+  `OutlinedButton`, `IconButton`, `Icon` (built-in vector set **or** an SVG path —
+  see below), `Avatar`, `Badge`, `Switch`, `Checkbox`, `Radio`, `Slider`, `Chip`,
+  `Progress`, `CircularProgress`, `Divider`, `ListTile`, `TextField` (focus +
+  caret + keyboard input), `Tabs`, `NavigationBar`, `SegmentedButton`,
+  `ExpansionTile`, `Banner`, `Snackbar`, `Dialog` (modal scrim), `Drawer`
+  (sliding, animated).
+* **Content** — `Text` (digits/symbols, the `headline`…`micro` roles **plus**
+  explicit sizing — `px` for a pixel font size, a numeric `size` in layout units —
+  a `weight` (`thin`/`light`/`regular`/`medium`/`semibold`/`bold` or a numeric
+  100–900), and a custom `font` glyph map), `DataTable`.
+
+### Responsive layout, typography & SVG icons
+
+* **Responsive** — the layout unit is 1% of the **shorter** viewport side, so the
+  same tree fits both phone-portrait and desktop-landscape without overflowing;
+  a `ListView`/`GridView` used as the scaffold `body` fills the body region so its
+  viewport adapts to the screen.
+* **Typography** — `Text("HELLO", { px: 22.0, weight: "bold" })`,
+  `Text("...", { size: "title", weight: "medium" })`, or pass `font:` a custom
+  stroke-glyph map (same format as the built-in font; may carry lower-case).
+* **SVG icons** — `Icon({ svg: "M4 12 L10 18 L20 6", viewBox: 24 })` or register a
+  named one with `registerIcon(name, d, viewBox)` (then use it anywhere a name
+  works). The path grammar covers `M/L/H/V/C/Q/Z` (absolute + relative), with
+  Béziers flattened. Because every primitive in this kit is a rounded rect, a path
+  is **stroked** (its outline), not area-filled — ideal for line/outline icons.
+  Built-in icons now use the standard Material ≈2dp stroke weight.
 * **Charts** — `BarChart`, `LineChart`, `PieChart` (radial-spoke fill, optional
   donut hole), `Sparkline`.
 * **Media** — `Image` and `VideoPlayer` (full chrome: surface, play/pause,
