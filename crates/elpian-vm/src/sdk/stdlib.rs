@@ -541,8 +541,17 @@ pub fn invoke(name: &str, args: &[Val]) -> Result<Val, String> {
             arity(name, args, 2)?;
             match (args[0].typ, args[1].typ) {
                 (9, 9) => {
-                    let mut out = args[0].as_array().borrow().data.clone();
-                    out.extend(args[1].as_array().borrow().data.clone());
+                    // Reserve the exact final length up front and clone elements
+                    // straight into it — one allocation, no throwaway temp Vec.
+                    // `concat` is the workhorse of the layout reassembly path, so
+                    // this runs on the hot frame loop.
+                    let a = args[0].as_array();
+                    let b = args[1].as_array();
+                    let a_ref = a.borrow();
+                    let b_ref = b.borrow();
+                    let mut out = Vec::with_capacity(a_ref.data.len() + b_ref.data.len());
+                    out.extend(a_ref.data.iter().cloned());
+                    out.extend(b_ref.data.iter().cloned());
                     Ok(varr(out))
                 }
                 (7, _) | (_, 7) => Ok(vstr(format!(
