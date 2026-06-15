@@ -418,15 +418,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "elpa-material"
+version = "0.1.0"
+
+[[package]]
 name = "elpa-native-example"
 version = "0.1.0"
 dependencies = [
  "android_logger",
  "elpa",
+ "elpa-material",
  "env_logger",
  "log",
  "pollster",
- "serde_json",
  "wgpu",
  "winit",
 ]

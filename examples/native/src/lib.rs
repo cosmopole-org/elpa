@@ -1,7 +1,7 @@
 //! Cross-platform Elpa example: **desktop (Windows/macOS/Linux) and Android**.
 //!
-//! It draws the same triangle-over-animated-background as the web example, but
-//! to a native [`winit`] window via the live [`WgpuBackend`]. The window and GPU
+//! It runs the Material Design 3 SDK demo to a native [`winit`] window via
+//! the live [`WgpuBackend`]. The window and GPU
 //! surface are created lazily in [`ApplicationHandler::resumed`] and dropped in
 //! [`ApplicationHandler::suspended`]:
 //!
@@ -20,11 +20,10 @@ use std::sync::Arc;
 
 use elpa::{Elpa, InputEvent, SurfaceInfo, WgpuBackend};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
-
-mod app_ast;
 
 /// A live app instance over a window-backed wgpu surface (`'static`, since the
 /// surface is built from an `Arc<Window>` we keep alive alongside it).
@@ -44,11 +43,23 @@ fn format_token(fmt: wgpu::TextureFormat) -> String {
     .to_string()
 }
 
+/// Link the Material SDK and demo app, then patch the demo pipeline target to
+/// the live surface format chosen by wgpu. The Material SDK defaults to
+/// `bgra8unorm` for headless/web-style examples, while native surfaces often
+/// prefer an sRGB format.
+fn material_program(surface_format: &str) -> String {
+    elpa_material::program().replace(
+        r#"format: "bgra8unorm""#,
+        &format!(r#"format: "{surface_format}""#),
+    )
+}
+
 /// Everything that exists only while we hold a surface. On Android this is
 /// recreated on each `resumed` and torn down on each `suspended`.
 struct State {
     window: Arc<Window>,
     app: Rc<RefCell<App>>,
+    cursor_pos: (f64, f64),
 }
 
 #[derive(Default)]
@@ -61,7 +72,7 @@ impl ElpaApp {
     fn init(&mut self, event_loop: &ActiveEventLoop) {
         let window = Arc::new(
             event_loop
-                .create_window(Window::default_attributes().with_title("Elpa — triangle"))
+                .create_window(Window::default_attributes().with_title("Elpa — Material demo"))
                 .expect("create window"),
         );
         let size = window.inner_size();
@@ -78,14 +89,16 @@ impl ElpaApp {
             .expect("create surface from window");
         let backend = pollster::block_on(WgpuBackend::new(&instance, surface, w, h));
 
-        let ast = app_ast::build(&format_token(backend.surface_format()));
+        let program = material_program(&format_token(backend.surface_format()));
         let surface_info = SurfaceInfo::new(w, h, scale);
-        let mut app = Elpa::new(backend, surface_info, &ast).expect("app AST compiles");
+        let mut app = Elpa::new_from_js(backend, surface_info, &program)
+            .expect("Material SDK demo JS compiles");
         app.start(); // run top-level program (init + first frame)
 
         self.state = Some(State {
             window,
             app: Rc::new(RefCell::new(app)),
+            cursor_pos: (0.0, 0.0),
         });
     }
 }
@@ -104,13 +117,8 @@ impl ApplicationHandler for ElpaApp {
         self.state = None;
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _id: WindowId,
-        event: WindowEvent,
-    ) {
-        let Some(state) = self.state.as_ref() else {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        let Some(state) = self.state.as_mut() else {
             return;
         };
         match event {
@@ -121,13 +129,80 @@ impl ApplicationHandler for ElpaApp {
                 app.renderer_mut().backend_mut().resize(w, h); // reconfigure swapchain
                 app.resize(w, h, state.window.scale_factor()); // SurfaceInfo + app onResize
             }
-            // A click or touch jumps the animation forward (mirrors the web example).
-            WindowEvent::MouseInput { state: ElementState::Pressed, .. }
-            | WindowEvent::Touch(_) => {
-                state
-                    .app
-                    .borrow_mut()
-                    .send_event(&InputEvent::PointerDown { x: 0.0, y: 0.0, button: 0 });
+            WindowEvent::CursorMoved { position, .. } => {
+                let scale = state.window.scale_factor();
+                state.cursor_pos = (position.x / scale, position.y / scale);
+                state.app.borrow_mut().send_event(&InputEvent::PointerMove {
+                    x: state.cursor_pos.0,
+                    y: state.cursor_pos.1,
+                });
+            }
+            WindowEvent::MouseInput {
+                state: button_state,
+                button,
+                ..
+            } => {
+                let button = match button {
+                    MouseButton::Left => 0,
+                    MouseButton::Right => 1,
+                    MouseButton::Middle => 2,
+                    MouseButton::Back => 3,
+                    MouseButton::Forward => 4,
+                    MouseButton::Other(n) => n.min(u8::MAX as u16) as u8,
+                };
+                let event = match button_state {
+                    ElementState::Pressed => InputEvent::PointerDown {
+                        x: state.cursor_pos.0,
+                        y: state.cursor_pos.1,
+                        button,
+                    },
+                    ElementState::Released => InputEvent::PointerUp {
+                        x: state.cursor_pos.0,
+                        y: state.cursor_pos.1,
+                        button,
+                    },
+                };
+                state.app.borrow_mut().send_event(&event);
+            }
+            WindowEvent::Touch(touch) => {
+                let scale = state.window.scale_factor();
+                let x = touch.location.x / scale;
+                let y = touch.location.y / scale;
+                state.cursor_pos = (x, y);
+                let event = match touch.phase {
+                    winit::event::TouchPhase::Started => {
+                        InputEvent::PointerDown { x, y, button: 0 }
+                    }
+                    winit::event::TouchPhase::Moved => InputEvent::PointerMove { x, y },
+                    winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
+                        InputEvent::PointerUp { x, y, button: 0 }
+                    }
+                };
+                state.app.borrow_mut().send_event(&event);
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let delta_y = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(y) * 40.0,
+                    MouseScrollDelta::PixelDelta(pos) => pos.y,
+                };
+                state.app.borrow_mut().send_event(&InputEvent::Wheel {
+                    x: state.cursor_pos.0,
+                    y: state.cursor_pos.1,
+                    delta_y,
+                });
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                let key = match &event.logical_key {
+                    Key::Named(NamedKey::Space) => " ".to_string(),
+                    Key::Named(named) => format!("{named:?}"),
+                    Key::Character(ch) => ch.to_string(),
+                    Key::Unidentified(_) | Key::Dead(_) => String::new(),
+                };
+                let event = match event.state {
+                    ElementState::Pressed => InputEvent::KeyDown { key },
+                    ElementState::Released => InputEvent::KeyUp { key },
+                };
+                state.app.borrow_mut().send_event(&event);
             }
             WindowEvent::RedrawRequested => {
                 // Drive animation and present a frame.

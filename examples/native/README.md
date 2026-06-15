@@ -1,15 +1,17 @@
 # Elpa native example (desktop + Android)
 
-Runs an Elpa app in a **[winit]** window and draws its wgpu frames to the
-window's surface. It draws the same triangle-over-animated-background as the
-[web example](../web) — the background color advances every animation frame while
-the shader and pipeline are created **once** and reused, demonstrating Elpa's
-resource caching and partial rendering on real wgpu.
+Runs the Elpa **Material Design 3 SDK demo** in a **[winit]** window and draws
+its wgpu frames to the window's surface. The native desktop and Android builds
+now link the JavaScript Material SDK from [`examples/material`](../material) and
+run its interactive demo, so the APK shows the same Material controls you can
+exercise in the SDK demo.
 
 One codebase targets **desktop (Windows/macOS/Linux) and Android**:
 
-- [`src/app_ast.rs`](src/app_ast.rs) — builds the app program as Elpian AST
-  (identical to the web example).
+- [`../material/assets/elpa-material.js`](../material/assets/elpa-material.js) — the
+  Material SDK linked into this native app.
+- [`../material/assets/demo.js`](../material/assets/demo.js) — the interactive
+  demo script linked after the SDK.
 - [`src/lib.rs`](src/lib.rs) — the cross-platform window + render loop. The
   window and GPU surface are created lazily in `resumed` and dropped in
   `suspended`, which is **required on Android** (the native surface only exists
@@ -26,8 +28,10 @@ cd examples/native
 cargo run --release            # build & run on the host OS
 ```
 
-A window opens with a light-blue triangle over the animated background; clicking
-jumps the animation forward; resizing reconfigures the swapchain.
+A window opens with the Material demo. Click/tap controls, drag the slider, use
+the mouse wheel where supported, or press `d`, `Space`, `r`, `ArrowLeft`, and
+`ArrowRight` to exercise the demo keyboard handlers. Resizing reconfigures the
+swapchain and asks the SDK to relayout.
 
 ### Cross-compiling to Windows from Linux
 
@@ -97,8 +101,8 @@ APK packaging is configured under `[package.metadata.android]` in
 
 - `wgpu`'s default features provide the native backends: **DX12/Vulkan** on
   Windows, **Vulkan/GLES** on Android, **Metal** on macOS, **Vulkan/GLES** on
-  Linux. The surface color format is read from the live surface and injected
-  into the AST so the pipeline target always matches.
+  Linux. The surface color format is read from the live surface and patched into
+  the linked Material JavaScript so the pipeline target always matches.
 - This crate is intentionally **excluded from the workspace** (it pulls the full
   wgpu + winit stack); build it on its own as shown above.
 
