@@ -9,7 +9,7 @@ use crate::sdk::{
     stdlib,
 };
 use core::panic;
-use std::{any::Any, cell::RefCell, collections::HashMap, fmt, i16, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, fmt, i16, rc::Rc};
 
 use std::vec;
 
@@ -90,10 +90,114 @@ impl fmt::Display for ExecStates {
     }
 }
 
+/// The payload handed to [`Operation::set_state`] on a state transition.
+///
+/// This used to be a `Box<dyn Any>`, which heap-allocated (and then dynamically
+/// downcast) on *every* operation step — the arithmetic operand flow alone does
+/// this hundreds of thousands of times per frame. A closed enum of the handful
+/// of shapes the executor actually feeds keeps the payload on the stack: no
+/// allocation, no vtable, no downcast. Each `(operation, state)` pair fixes the
+/// shape, so the matching extractor is unambiguous (and a mismatch is a bug, not
+/// a recoverable case — hence `unreachable!`).
+pub enum StateData {
+    Empty,
+    Val(Val),
+    Bool(bool),
+    I16(i16),
+    I32(i32),
+    Str(String),
+    StrI16(String, i16),
+    ValUsize(Val, usize),
+    ValUsize2(Val, usize, usize),
+    ValI64x2(Val, i64, i64),
+    ValStr(Val, String),
+    I64I32(i64, i32),
+}
+
+impl StateData {
+    #[inline]
+    fn val(self) -> Val {
+        match self {
+            StateData::Val(v) => v,
+            _ => unreachable!("StateData::val on a non-Val payload"),
+        }
+    }
+    #[inline]
+    fn boolean(self) -> bool {
+        match self {
+            StateData::Bool(v) => v,
+            _ => unreachable!("StateData::boolean on a non-Bool payload"),
+        }
+    }
+    #[inline]
+    fn i16v(self) -> i16 {
+        match self {
+            StateData::I16(v) => v,
+            _ => unreachable!("StateData::i16v on a non-I16 payload"),
+        }
+    }
+    #[inline]
+    fn i32v(self) -> i32 {
+        match self {
+            StateData::I32(v) => v,
+            _ => unreachable!("StateData::i32v on a non-I32 payload"),
+        }
+    }
+    #[inline]
+    fn string(self) -> String {
+        match self {
+            StateData::Str(v) => v,
+            _ => unreachable!("StateData::string on a non-Str payload"),
+        }
+    }
+    #[inline]
+    fn str_i16(self) -> (String, i16) {
+        match self {
+            StateData::StrI16(s, n) => (s, n),
+            _ => unreachable!("StateData::str_i16 on a non-StrI16 payload"),
+        }
+    }
+    #[inline]
+    fn val_usize(self) -> (Val, usize) {
+        match self {
+            StateData::ValUsize(v, n) => (v, n),
+            _ => unreachable!("StateData::val_usize on a non-ValUsize payload"),
+        }
+    }
+    #[inline]
+    fn val_usize2(self) -> (Val, usize, usize) {
+        match self {
+            StateData::ValUsize2(v, a, b) => (v, a, b),
+            _ => unreachable!("StateData::val_usize2 on a non-ValUsize2 payload"),
+        }
+    }
+    #[inline]
+    fn val_i64x2(self) -> (Val, i64, i64) {
+        match self {
+            StateData::ValI64x2(v, a, b) => (v, a, b),
+            _ => unreachable!("StateData::val_i64x2 on a non-ValI64x2 payload"),
+        }
+    }
+    #[inline]
+    fn val_str(self) -> (Val, String) {
+        match self {
+            StateData::ValStr(v, s) => (v, s),
+            _ => unreachable!("StateData::val_str on a non-ValStr payload"),
+        }
+    }
+    #[inline]
+    fn i64_i32(self) -> (i64, i32) {
+        match self {
+            StateData::I64I32(a, b) => (a, b),
+            _ => unreachable!("StateData::i64_i32 on a non-I64I32 payload"),
+        }
+    }
+}
+
 pub trait Operation {
     fn get_type(&self) -> OperationTypes;
     fn get_state(&self) -> ExecStates;
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>);
+    fn set_state(&mut self, state: ExecStates, data: StateData);
     fn get_data(&self) -> Vec<Val>;
 }
 
@@ -130,12 +234,12 @@ impl Operation for DefineVariable {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::DefineVarExtractName {
-            self.var_name = Some(*data.downcast::<String>().unwrap());
+            self.var_name = Some(data.string());
         } else if state == ExecStates::DefineVarExtractValue {
-            self.var_value = Some(*data.downcast::<Val>().unwrap());
+            self.var_value = Some(data.val());
         }
     }
 
@@ -181,20 +285,20 @@ impl Operation for AssignVariable {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::AssignVarExtractName {
-            let (var_name, assign_target_type) = *data.downcast::<(String, i16)>().unwrap();
+            let (var_name, assign_target_type) = data.str_i16();
             self.var_name = Some(var_name.clone());
             self.assign_target_type = assign_target_type;
         } else if state == ExecStates::AssignVarExtractIndex {
             if self.assign_target_type == 2 {
-                self.index = Some(*data.downcast::<Val>().unwrap());
+                self.index = Some(data.val());
             } else {
                 panic!("elpian error: wrong state set to assignment operation");
             }
         } else if state == ExecStates::AssignVarExtractValue {
-            self.var_value = Some(*data.downcast::<Val>().unwrap());
+            self.var_value = Some(data.val());
         }
     }
 
@@ -309,15 +413,15 @@ impl Operation for CallFunction {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::CallFuncExtractFunc {
-            let val = data.downcast::<(Val, usize)>().unwrap();
-            if val.as_ref().0.typ == 10 {
-                self.func = Some(val.as_ref().0.as_func());
-                self.param_count = val.as_ref().1 as i32;
+            let val = data.val_usize();
+            if val.0.typ == 10 {
+                self.func = Some(val.0.as_func());
+                self.param_count = val.1 as i32;
                 self.is_native = false;
-            } else if val.as_ref().0.typ == 255 {
+            } else if val.0.typ == 255 {
                 self.func = Some(Rc::new(RefCell::new(Function::new(
                     "".to_string(),
                     0,
@@ -326,12 +430,12 @@ impl Operation for CallFunction {
                 ))));
                 self.param_count = 2;
                 self.is_native = true;
-            } else if val.as_ref().0.typ == 252 {
+            } else if val.0.typ == 252 {
                 // Native standard-library builtin. Its arity is the number of
                 // arguments the call site provides; we name the formal params
                 // `arg0..argN` so the generic "params filled" finish check fires.
-                let name = val.as_ref().0.as_string();
-                let provided = val.as_ref().1;
+                let name = val.0.as_string();
+                let provided = val.1;
                 let params: Vec<String> = (0..provided).map(|i| format!("arg{i}")).collect();
                 self.func = Some(Rc::new(RefCell::new(Function::new(name, 0, 0, params))));
                 self.param_count = provided as i32;
@@ -340,7 +444,7 @@ impl Operation for CallFunction {
                 panic!("elpian error: the specified data is not runnable");
             }
         } else if state == ExecStates::CallFuncExtractParam {
-            self.params.push(*data.downcast::<Val>().unwrap());
+            self.params.push(data.val());
         }
         if let Some(func) = &self.func {
             if func.borrow().params.len() == self.params.len() {
@@ -398,10 +502,10 @@ impl Operation for ReturnValue {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::ReturnValFinished {
-            self.value = Some(*data.downcast::<Val>().unwrap());
+            self.value = Some(data.val());
         }
     }
 
@@ -437,16 +541,16 @@ impl Operation for IfStmt {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::IfStmtIsConditioned {
-            self.has_condition = *data.downcast::<bool>().unwrap();
+            self.has_condition = data.boolean();
             if !self.has_condition {
                 self.condition = None;
                 self.state = ExecStates::IfStmtFinished;
             }
         } else if state == ExecStates::IfStmtFinished {
-            self.condition = Some(*data.downcast::<Val>().unwrap());
+            self.condition = Some(data.val());
         }
     }
 
@@ -486,10 +590,10 @@ impl Operation for LoopStmt {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::LoopStmtFinished {
-            self.condition = Some(*data.downcast::<Val>().unwrap());
+            self.condition = Some(data.val());
         }
     }
 
@@ -529,17 +633,17 @@ impl Operation for SwitchStmt {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::SwitchStmtExtractVal {
             let (comparing_val, branch_after_start, case_count) =
-                *data.downcast::<(Val, usize, usize)>().unwrap();
+                data.val_usize2();
             self.comparing_value = Some(comparing_val.clone());
             self.branch_after_start = branch_after_start;
             self.case_count = case_count;
         } else if state == ExecStates::SwitchStmtExtractCase {
             self.cases
-                .push(*data.downcast::<(Val, usize, usize)>().unwrap());
+                .push(data.val_usize2());
         }
         if self.case_count == self.cases.len() {
             self.state = ExecStates::SwitchStmtFinished;
@@ -625,14 +729,14 @@ impl Operation for Arithmetic {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::ArithmeticExtractOp {
-            self.op = *data.downcast::<i16>().unwrap();
+            self.op = data.i16v();
         } else if state == ExecStates::ArithmeticExtractArg1 {
-            self.arg1 = Some(*data.downcast::<Val>().unwrap());
+            self.arg1 = Some(data.val());
         } else if state == ExecStates::ArithmeticExtractArg2 {
-            self.arg2 = Some(*data.downcast::<Val>().unwrap());
+            self.arg2 = Some(data.val());
         }
     }
 
@@ -675,12 +779,12 @@ impl Operation for IndexerValue {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::IndexerExtractVarName {
-            self.var = Some(*data.downcast::<Val>().unwrap());
+            self.var = Some(data.val());
         } else if state == ExecStates::IndexerExtractIndex {
-            self.index = Some(*data.downcast::<Val>().unwrap());
+            self.index = Some(data.val());
         }
     }
 
@@ -714,10 +818,10 @@ impl Operation for NotValue {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::NotValFinished {
-            self.value = Some(*data.downcast::<Val>().unwrap());
+            self.value = Some(data.val());
         }
     }
 
@@ -755,14 +859,14 @@ impl Operation for ObjectExpr {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::ObjExprExtractInfo {
-            let val = data.downcast::<(i64, i32)>().unwrap();
-            self.object_typ_id = val.as_ref().0;
-            self.prop_count = val.as_ref().1;
+            let val = data.i64_i32();
+            self.object_typ_id = val.0;
+            self.prop_count = val.1;
         } else if state == ExecStates::ObjExprExtractProp {
-            let val = *data.downcast::<Val>().unwrap();
+            let val = data.val();
             self.props.push(val.clone());
         }
         if (self.prop_count as usize) == (self.props.len() / 2) {
@@ -817,12 +921,12 @@ impl Operation for ArrayExpr {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::ArrExprExtractInfo {
-            self.item_count = *data.downcast::<i32>().unwrap();
+            self.item_count = data.i32v();
         } else if state == ExecStates::ArrExprExtractItem {
-            let val = *data.downcast::<Val>().unwrap();
+            let val = data.val();
             self.items.push(val.clone());
         }
         if (self.item_count as usize) == self.items.len() {
@@ -875,10 +979,10 @@ impl Operation for CondBranch {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::CondBranchFinished {
-            let (cond, tb, fb) = *data.downcast::<(Val, i64, i64)>().unwrap().clone();
+            let (cond, tb, fb) = data.val_i64x2();
             self.condition = Some(cond);
             self.true_branch = tb;
             self.false_branch = fb;
@@ -927,10 +1031,10 @@ impl Operation for CastOp {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::CastOprtFinished {
-            let (data, tt) = *data.downcast::<(Val, String)>().unwrap().clone();
+            let (data, tt) = data.val_str();
             self.data = Some(data);
             self.target_type = tt;
         }
@@ -970,7 +1074,7 @@ impl Operation for DummyOp {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, _data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, _data: StateData) {
         self.state = state.clone();
     }
 
@@ -3671,7 +3775,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::ArrExprExtractItem,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.clone().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3689,7 +3793,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::ObjExprExtractProp,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.clone().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3706,7 +3810,7 @@ impl Executor {
                             let arg_count = self.extract_i32() as usize;
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::CallFuncExtractFunc,
-                                Box::new((main_reg.clone().unwrap(), arg_count)),
+                                StateData::ValUsize(main_reg.clone().unwrap(), arg_count),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3720,7 +3824,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::CallFuncExtractParam,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.clone().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3736,7 +3840,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::ReturnValFinished,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.clone().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3752,7 +3856,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::DefineVarExtractValue,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.clone().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3769,7 +3873,7 @@ impl Executor {
                             if self.registers.last().unwrap().borrow().get_data()[1].as_i16() == 1 {
                                 self.registers.last().unwrap().borrow_mut().set_state(
                                     ExecStates::AssignVarExtractValue,
-                                    Box::new(main_reg.clone().unwrap()),
+                                    StateData::Val(main_reg.clone().unwrap()),
                                 );
                                 main_reg = None;
                                 is_reg_state_final =
@@ -3781,7 +3885,7 @@ impl Executor {
                             {
                                 self.registers.last().unwrap().borrow_mut().set_state(
                                     ExecStates::AssignVarExtractIndex,
-                                    Box::new(main_reg.clone().unwrap()),
+                                    StateData::Val(main_reg.clone().unwrap()),
                                 );
                                 main_reg = None;
                                 is_reg_state_final =
@@ -3794,7 +3898,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::AssignVarExtractValue,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.clone().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3810,7 +3914,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::IfStmtFinished,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.clone().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3826,7 +3930,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::LoopStmtFinished,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.clone().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3844,11 +3948,7 @@ impl Executor {
                             let case_count = self.extract_i64() as usize;
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::SwitchStmtExtractVal,
-                                Box::new((
-                                    main_reg.clone().unwrap(),
-                                    branch_after_start,
-                                    case_count,
-                                )),
+                                StateData::ValUsize2(main_reg.clone().unwrap(), branch_after_start, case_count),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3864,11 +3964,7 @@ impl Executor {
                             let branch_true_end = self.extract_i64() as usize;
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::SwitchStmtExtractCase,
-                                Box::new((
-                                    main_reg.clone().unwrap(),
-                                    branch_true_start,
-                                    branch_true_end,
-                                )),
+                                StateData::ValUsize2(main_reg.clone().unwrap(), branch_true_start, branch_true_end),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3891,7 +3987,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::ArithmeticExtractArg1,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.clone().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3903,7 +3999,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::ArithmeticExtractArg2,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.clone().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3919,7 +4015,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::IndexerExtractVarName,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.clone().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3931,7 +4027,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::IndexerExtractIndex,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.clone().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3947,7 +4043,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::NotValFinished,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.clone().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3965,7 +4061,7 @@ impl Executor {
                             let fb = self.extract_i64();
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::CondBranchFinished,
-                                Box::new((main_reg.clone().unwrap(), tb, fb)),
+                                StateData::ValI64x2(main_reg.clone().unwrap(), tb, fb),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3982,7 +4078,7 @@ impl Executor {
                             let tt = self.extract_str();
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::CastOprtFinished,
-                                Box::new((main_reg.clone().unwrap(), tt)),
+                                StateData::ValStr(main_reg.clone().unwrap(), tt),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -5011,7 +5107,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(1 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(1 as i16));
                 }
                 // ge operator
                 0xf1 => {
@@ -5022,7 +5118,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(2 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(2 as i16));
                 }
                 // gee operator
                 0xf2 => {
@@ -5033,7 +5129,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(3 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(3 as i16));
                 }
                 // le operator
                 0xf3 => {
@@ -5044,7 +5140,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(4 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(4 as i16));
                 }
                 // lee operator
                 0xf4 => {
@@ -5055,7 +5151,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(5 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(5 as i16));
                 }
                 // inequality operator
                 0xf5 => {
@@ -5066,7 +5162,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(6 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(6 as i16));
                 }
                 // sum operator
                 0xf6 => {
@@ -5077,7 +5173,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(7 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(7 as i16));
                 }
                 // subtract operator
                 0xf7 => {
@@ -5088,7 +5184,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(8 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(8 as i16));
                 }
                 // multiply operator
                 0xf8 => {
@@ -5099,7 +5195,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(9 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(9 as i16));
                 }
                 // division operator
                 0xf9 => {
@@ -5110,7 +5206,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(10 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(10 as i16));
                 }
                 // mod operator
                 0xfa => {
@@ -5121,7 +5217,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(11 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(11 as i16));
                 }
                 // power operator
                 0xfb => {
@@ -5132,7 +5228,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(12 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(12 as i16));
                 }
                 // not operator
                 0xfc => {
@@ -5172,7 +5268,7 @@ impl Executor {
                             .last()
                             .unwrap()
                             .borrow_mut()
-                            .set_state(ExecStates::DefineVarExtractName, Box::new(var_name));
+                            .set_state(ExecStates::DefineVarExtractName, StateData::Str(var_name));
                     }
                 }
                 // assignment statement
@@ -5185,7 +5281,7 @@ impl Executor {
                         let var_name = self.extract_str();
                         self.registers.last().unwrap().borrow_mut().set_state(
                             ExecStates::AssignVarExtractName,
-                            Box::new((var_name, 2 as i16)),
+                            StateData::StrI16(var_name, 2 as i16),
                         );
                     } else if self.program[self.pointer] == 0x0b {
                         self.pointer += 1;
@@ -5195,7 +5291,7 @@ impl Executor {
                         let var_name = self.extract_str();
                         self.registers.last().unwrap().borrow_mut().set_state(
                             ExecStates::AssignVarExtractName,
-                            Box::new((var_name, 1 as i16)),
+                            StateData::StrI16(var_name, 1 as i16),
                         );
                     }
                 }
@@ -5211,16 +5307,16 @@ impl Executor {
                             .last()
                             .unwrap()
                             .borrow_mut()
-                            .set_state(ExecStates::IfStmtIsConditioned, Box::new(has_condition));
+                            .set_state(ExecStates::IfStmtIsConditioned, StateData::Bool(has_condition));
                     } else {
                         self.registers
                             .last()
                             .unwrap()
                             .borrow_mut()
-                            .set_state(ExecStates::IfStmtIsConditioned, Box::new(has_condition));
+                            .set_state(ExecStates::IfStmtIsConditioned, StateData::Bool(has_condition));
                         self.registers.last().unwrap().borrow_mut().set_state(
                             ExecStates::IfStmtFinished,
-                            Box::new(Val {
+                            StateData::Val(Val {
                                 typ: 6,
                                 data: Payload::from(true),
                             }),
@@ -5306,7 +5402,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ObjExprExtractInfo, Box::new((typ, props_len)));
+                        .set_state(ExecStates::ObjExprExtractInfo, StateData::I64I32(typ, props_len));
                     if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::ObjExprFinished
                     {
@@ -5324,7 +5420,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArrExprExtractInfo, Box::new(arr_len));
+                        .set_state(ExecStates::ArrExprExtractInfo, StateData::I32(arr_len));
                     if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::ArrExprFinished
                     {
