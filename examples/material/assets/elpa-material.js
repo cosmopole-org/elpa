@@ -151,6 +151,8 @@ let _darkTarget = 0.0; let _darkAnim = 0.0;    // theme
 let _accent = 0;                               // accent index
 let _anim = {}; let _target = {};              // eased 0..1 values by key
 let _press = {};                               // press state layers by key
+let _paintingComp = 0;                         // component currently being painted
+let _keySubs = {};                             // animation key -> subscriber component
 let _WHITE = [1.0, 1.0, 1.0, 1.0];
 let _CLEAR = [0.0, 0.0, 0.0, 0.0];
 
@@ -261,8 +263,12 @@ function _chipW(label) { return _textW(label, _cell("caption")) + _u * 7.0; }
 function _gapPx(node) { if (has(node, "gap")) { return node.gap * _u; } return _u * 2.0; }
 
 function _hover(cx, cy, hw, hh) { if (_inRect(_hx, _hy, cx, cy, hw, hh)) { return 1.0; } return 0.0; }
-function _pressVal(id) { if (has(_press, id)) { return _press[id]; } return 0.0; }
+// Reading a press/ease value records that the component currently being painted
+// depends on that animation key, so the frame clock can later repaint *only* the
+// components whose keys are still moving.
+function _pressVal(id) { _keySubs[id] = _paintingComp; if (has(_press, id)) { return _press[id]; } return 0.0; }
 function _ease(key, target) {
+    _keySubs[key] = _paintingComp;
     _target[key] = target;
     if (has(_anim, key)) { return _anim[key]; }
     _anim[key] = target; return target;
@@ -333,7 +339,9 @@ function _paint(node, cx, cy) {
     node._cx = cx; node._cy = cy;
     let k = node.kind;
     if (k == "comp") {
+        let prev = _paintingComp; _paintingComp = node;
         _paint(node._sub, cx, cy);
+        _paintingComp = prev;
         node._out = node._sub._out; node._taps = node._sub._taps; node._drags = node._sub._drags;
         return 0;
     }
@@ -529,6 +537,49 @@ function _partial(node) {
     _submit();
 }
 
+// --------------------------------------------- per-frame partial animation ----
+// Reassemble the whole tree's cached output bottom-up (cheap native concat; no
+// component fn re-runs, no instance re-emits) after some components were
+// repainted in place by the frame clock.
+function _reassembleTree(node) {
+    let k = node.kind;
+    if (k == "comp") { _reassembleTree(node._sub); node._out = node._sub._out; node._taps = node._sub._taps; node._drags = node._sub._drags; return 0; }
+    if (k == "column") { for (let i = 0; i < len(node.children); i++) { _reassembleTree(node.children[i]); } _join(node, node.children); return 0; }
+    if (k == "row") { for (let i = 0; i < len(node.children); i++) { _reassembleTree(node.children[i]); } _join(node, node.children); return 0; }
+    if (k == "card") { _reassembleTree(node.child); node._out = concat(node._chrome, node.child._out); node._taps = node.child._taps; node._drags = node.child._drags; return 0; }
+    if (k == "scaffold") {
+        _reassembleTree(node.appBar); _reassembleTree(node.body); _reassembleTree(node.fab);
+        node._out = concat(concat(node.appBar._out, node.body._out), node.fab._out);
+        node._taps = concat(concat(node.appBar._taps, node.body._taps), node.fab._taps);
+        node._drags = concat(concat(node.appBar._drags, node.body._drags), node.fab._drags);
+        return 0;
+    }
+    return 0;
+}
+// Mark the component that owns `key` dirty (deduped) for this frame.
+function _markDirty(dirty, key) {
+    if (has(_keySubs, key)) {
+        let c = _keySubs[key];
+        let mk = 0.0; if (has(c, "_dirtyFlag")) { mk = c._dirtyFlag; }
+        if (mk != 1.0) { c._dirtyFlag = 1.0; push(dirty, c); }
+    }
+}
+// Repaint just the dirty components in place (their state is unchanged, so no
+// fn re-run / re-mount — only re-emit with the eased values), then reassemble.
+function _repaintComps(dirty) {
+    for (let i = 0; i < len(dirty); i++) { let c = dirty[i]; _paint(c, c._cx, c._cy); c._dirtyFlag = 0.0; }
+    _reassembleTree(_root);
+    _inst = _root._out; _taps = _root._taps; _drags = _root._drags;
+    _submit();
+}
+// Re-emit the whole tree with the current theme (no fn re-run), used while the
+// light/dark cross-fade is in flight since it recolors every component.
+function _repaintAll() {
+    _paint(_root, _vw * 0.5, _vh * 0.5);
+    _inst = _root._out; _taps = _root._taps; _drags = _root._drags;
+    _submit();
+}
+
 // --------------------------------------------------------------- render -------
 function _bufF32(id, usage, data) { return { kind: "buffer", id: id, size: len(data) * 4, usage: usage, data_f32: data }; }
 function _renderApp() {
@@ -588,25 +639,33 @@ function onEvent(e) {
     if (et == "keyup") { _repaint(); }
 }
 function onFrame(dt) {
-    // Advance every animation toward its target; repaint (full) only while
-    // something is still moving, so idle frames cost nothing.
-    let active = 0.0;
+    // Advance animations; collect the components whose keys are still moving, then
+    // repaint *only those* (idle frames cost nothing). The theme cross-fade is the
+    // one exception: it recolors everything, so it repaints the whole tree.
+    let themeMoving = 0.0;
     let nd = _darkAnim + (_darkTarget - _darkAnim) * 0.18;
-    if (abs(nd - _darkAnim) > 0.0005) { active = 1.0; }
+    if (abs(nd - _darkAnim) > 0.0005) { themeMoving = 1.0; }
     _darkAnim = nd;
+    let dirty = [];
     let ks = keys(_anim);
     for (let i = 0; i < len(ks); i++) {
         let k = ks[i]; let nv = _anim[k] + (_target[k] - _anim[k]) * 0.25;
-        if (abs(nv - _anim[k]) > 0.0005) { active = 1.0; }
+        if (abs(nv - _anim[k]) > 0.0005) { _markDirty(dirty, k); }
         _anim[k] = nv;
     }
     let ps = keys(_press);
     for (let i = 0; i < len(ps); i++) {
-        let k = ps[i]; _press[k] = _press[k] * 0.85;
-        if (_press[k] < 0.002) { _press[k] = 0.0; }
-        if (_press[k] > 0.0) { active = 1.0; }
+        let k = ps[i]; let np = _press[k] * 0.85;
+        if (np < 0.002) { np = 0.0; }
+        if (np != _press[k]) { _markDirty(dirty, k); }
+        _press[k] = np;
     }
-    if (active > 0.5) { _renderApp(); }
+    if (themeMoving > 0.5) {
+        for (let i = 0; i < len(dirty); i++) { let c = dirty[i]; c._dirtyFlag = 0.0; }
+        _repaintAll();
+        return 0;
+    }
+    if (len(dirty) > 0) { _repaintComps(dirty); }
 }
 function onResize(info) {
     _vw = num(info.width); _vh = num(info.height); _u = _vh * 0.01;
