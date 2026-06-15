@@ -94,18 +94,19 @@ async fn run() {
     let backend = WgpuBackend::new(&instance, surface, w, h).await;
     let format_token = format_token(backend.surface_format());
 
-    // 3. Assemble the Elpa instance over the live backend + the UI-kit demo app.
+    // 3. Assemble the Elpa instance over the live backend + the UI-kit app.
     //
-    // The app is the **Material Design 3 example**, written in **JavaScript**: a
-    // Flutter-style widget SDK (`MODULE_JS`) linked ahead of an app (`DEMO_JS`)
-    // that composes a widget tree and calls `runApp` — see `elpa_material::program`.
+    // The app is the **Material Design 3 widget gallery**, written in
+    // **JavaScript**: a Flutter-style widget SDK (`MODULE_JS`) linked ahead of an
+    // app (`GALLERY_JS`) that composes a widget tree and calls `runApp` — see
+    // `elpa_material::gallery_program` (swap to `program()` for the smaller demo).
     // Elpa compiles the whole thing to its VM with `new_from_js`; the SDK's
     // component runtime owns layout, animation, and `gpu.submit`. The pipeline's
     // color target is retargeted to this surface's actual format (the SDK names
     // `bgra8unorm`; the browser surface may be `*-srgb`, and wgpu requires the
     // pipeline target to match the surface exactly).
     let program =
-        elpa_material::program().replace("\"bgra8unorm\"", &format!("\"{format_token}\""));
+        elpa_material::gallery_program().replace("\"bgra8unorm\"", &format!("\"{format_token}\""));
     let surface_info = SurfaceInfo::new(w, h, dpr);
     let mut app =
         Elpa::new_from_js(backend, surface_info, &program).expect("app JS compiles");

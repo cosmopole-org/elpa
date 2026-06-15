@@ -100,11 +100,17 @@ ahead of the app, like `import 'package:flutter/material.dart'`.
 
 ## Live / testing
 
-The [`examples/web`](../web) example runs this app, so it is testable live on
-GitHub Pages. Headless:
+Both host examples run the **gallery** (`gallery_program()`) on a live GPU
+surface — so the same JavaScript renders in the browser and in an Android app:
+
+* [`examples/web`](../web) — full-window DPI canvas (wasm), live on GitHub Pages.
+* [`examples/native`](../native) — a winit window on desktop **and Android**.
+
+Swap `gallery_program()` for `program()` in either host's `lib.rs` to run the
+smaller demo instead. Headless (either app, through a real VM + WGSL validation):
 
 ```bash
-cargo test -p elpa-material    # full program through a real VM + WGSL validation
+cargo test -p elpa-material
 ```
 
 Edit the SDK in [`assets/elpa-material.js`](assets/elpa-material.js) and the apps
