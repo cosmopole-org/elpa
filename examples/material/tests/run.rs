@@ -50,6 +50,35 @@ fn instance() -> Elpa<HeadlessBackend> {
     .expect("SDK + app program compiles")
 }
 
+/// The same app with layered rendering switched on (static/dynamic instance
+/// split). Injected by enabling the SDK flag just before `runApp`.
+fn layered_instance() -> Elpa<HeadlessBackend> {
+    let program = format!(
+        "{}\n{}",
+        elpa_material::MODULE_JS,
+        elpa_material::DEMO_JS.replace("runApp(App)", "setLayered(1.0); runApp(App)"),
+    );
+    Elpa::new_from_js(HeadlessBackend::default(), SurfaceInfo::new(900, 1400, 1.0), &program)
+        .expect("layered SDK + app program compiles")
+}
+
+/// Total instances across every per-frame instance buffer the SDK emitted —
+/// whether one (`elpa.m3.inst`) or the layered pair (`*.static` + `*.dyn`).
+fn total_instances(app: &Elpa<HeadlessBackend>) -> usize {
+    let frame = app.last_frame().expect("a frame was submitted");
+    let floats: usize = frame
+        .resources
+        .iter()
+        .filter_map(|r| match r {
+            ResourceDesc::Buffer(b) if b.id.starts_with("elpa.m3.inst") => {
+                b.data_f32.as_ref().map(|d| d.len())
+            }
+            _ => None,
+        })
+        .sum();
+    floats / 16
+}
+
 /// The single per-frame instance buffer the SDK emits (all rounded-rect layers).
 fn instances(app: &Elpa<HeadlessBackend>) -> Vec<f32> {
     let frame = app.last_frame().expect("a frame was submitted");
@@ -136,6 +165,65 @@ fn animation_refills_the_instance_buffer_in_place() {
     }
     assert!(saw_in_place, "the instance buffer was refilled in place while animating");
     assert!(app.take_log().is_empty());
+}
+
+#[test]
+fn layered_mode_caches_the_static_layer_during_animation() {
+    // With layering on, an easing widget rewrites only the small dynamic layer in
+    // place; the static layer (every other widget) keeps identical bytes, so the
+    // resource cache skips it — no create, no re-upload — even as the frame fully
+    // repaints and presents.
+    let mut app = layered_instance();
+    app.start();
+    let _ = app.take_log();
+
+    app.send_event(&InputEvent::KeyDown { key: " ".into() });
+    let mut saw_static_cached = false;
+    for _ in 0..8 {
+        app.animate(16.0);
+        let s = app.last_stats();
+        // created == 0 && updated >= 1 means: nothing rebuilt, only the dynamic
+        // buffer refilled — the static layer was served from cache.
+        if s.presented && s.resources_created == 0 && s.resources_updated >= 1 {
+            let frame = app.last_frame().unwrap();
+            let has_static = frame.resources.iter().any(|r| r.id() == "elpa.m3.inst.static");
+            let has_dyn = frame.resources.iter().any(|r| r.id() == "elpa.m3.inst.dyn");
+            if has_static && has_dyn {
+                saw_static_cached = true;
+            }
+        }
+    }
+    assert!(saw_static_cached, "static layer cached while only the dynamic layer updated");
+    assert!(app.trap_reason().is_none());
+    assert!(app.take_log().is_empty());
+}
+
+#[test]
+fn layered_split_conserves_every_instance() {
+    // The layered split must be visually lossless: at every step the static +
+    // dynamic instances together equal the single-buffer frame the unlayered app
+    // produces for the identical state. Drive both in lockstep (the eased values
+    // are deterministic) and compare totals.
+    let mut plain = instance();
+    let mut layered = layered_instance();
+    plain.start();
+    layered.start();
+    let _ = plain.take_log();
+    let _ = layered.take_log();
+    assert_eq!(total_instances(&plain), total_instances(&layered), "same first frame");
+
+    plain.send_event(&InputEvent::KeyDown { key: " ".into() });
+    layered.send_event(&InputEvent::KeyDown { key: " ".into() });
+    for _ in 0..8 {
+        plain.animate(16.0);
+        layered.animate(16.0);
+        assert_eq!(
+            total_instances(&plain),
+            total_instances(&layered),
+            "layered static+dynamic conserves the full instance set"
+        );
+    }
+    assert!(layered.take_log().is_empty());
 }
 
 #[test]

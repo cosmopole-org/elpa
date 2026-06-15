@@ -83,20 +83,39 @@ impl BufferDesc {
     /// The initial contents as little-endian bytes, from whichever `data_*`
     /// field is set (`None` => create the buffer uninitialized at `size`).
     pub fn init_bytes(&self) -> Option<Vec<u8>> {
-        if let Some(b64) = &self.data_b64 {
-            return Some(decode_b64(b64));
-        }
-        if let Some(v) = &self.data_f32 {
-            return Some(v.iter().flat_map(|x| x.to_le_bytes()).collect());
-        }
-        if let Some(v) = &self.data_u32 {
-            return Some(v.iter().flat_map(|x| x.to_le_bytes()).collect());
-        }
-        if let Some(v) = &self.data_u16 {
-            return Some(v.iter().flat_map(|x| x.to_le_bytes()).collect());
-        }
-        None
+        pack_le_bytes(
+            self.data_b64.as_deref(),
+            self.data_f32.as_deref(),
+            self.data_u32.as_deref(),
+            self.data_u16.as_deref(),
+        )
     }
+}
+
+/// Resolve a `data_*` payload set into little-endian bytes, trying the fields in
+/// order `b64`, `f32`, `u32`, `u16` (the first one set wins). Shared by buffer
+/// initialization and `WriteBuffer` updates so both speak the same numeric
+/// channel — a VM can stream typed number arrays straight to the GPU without
+/// base64. Returns `None` when no payload is set.
+pub fn pack_le_bytes(
+    b64: Option<&str>,
+    f32s: Option<&[f32]>,
+    u32s: Option<&[u32]>,
+    u16s: Option<&[u16]>,
+) -> Option<Vec<u8>> {
+    if let Some(b64) = b64 {
+        return Some(decode_b64(b64));
+    }
+    if let Some(v) = f32s {
+        return Some(v.iter().flat_map(|x| x.to_le_bytes()).collect());
+    }
+    if let Some(v) = u32s {
+        return Some(v.iter().flat_map(|x| x.to_le_bytes()).collect());
+    }
+    if let Some(v) = u16s {
+        return Some(v.iter().flat_map(|x| x.to_le_bytes()).collect());
+    }
+    None
 }
 
 /// Minimal standard-alphabet base64 decoder (no padding required) so the

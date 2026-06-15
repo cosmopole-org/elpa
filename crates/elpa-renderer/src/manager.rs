@@ -370,7 +370,14 @@ mod tests {
         let mut f = scene_frame(64, Some(Rect::new(0, 0, 10, 10)));
         f.commands.insert(
             0,
-            EncoderCommand::WriteBuffer { buffer: "vb".into(), offset: 0, data_b64: "AAAA".into() },
+            EncoderCommand::WriteBuffer {
+                buffer: "vb".into(),
+                offset: 0,
+                data_b64: Some("AAAA".into()),
+                data_f32: None,
+                data_u32: None,
+                data_u16: None,
+            },
         );
         let s = r.render(&f);
         assert!(s.presented, "a queue write forces the frame to run");

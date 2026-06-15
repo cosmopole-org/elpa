@@ -15,6 +15,8 @@
 //! Built only under the `wgpu-backend` feature.
 
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use base64::Engine;
 use wgpu::util::DeviceExt;
@@ -45,10 +47,30 @@ pub struct WgpuBackend<'s> {
     render_pipelines: HashMap<ResourceId, wgpu::RenderPipeline>,
     compute_pipelines: HashMap<ResourceId, wgpu::ComputePipeline>,
 
+    /// Pre-recorded draw sequences for stable, identified render passes, keyed by
+    /// pass id. A pass whose command *structure* is unchanged replays its bundle
+    /// instead of re-issuing every `set_*`/`draw` call — the per-frame CPU win
+    /// for a busy surface pass whose buffers are refilled in place. Invalidated
+    /// whenever any resource is (re)created or destroyed, since a bundle captures
+    /// the GPU handles it references.
+    render_bundles: HashMap<String, BundleEntry>,
+    /// Driver pipeline-compilation cache (when the adapter exposes
+    /// `PIPELINE_CACHE`). Threaded into every pipeline build so warm launches
+    /// skip recompilation; the host can persist [`Self::pipeline_cache_data`]
+    /// between runs.
+    pipeline_cache: Option<wgpu::PipelineCache>,
+
     // Per-frame transient state.
     frame_texture: Option<wgpu::SurfaceTexture>,
     frame_view: Option<wgpu::TextureView>,
     encoder: Option<wgpu::CommandEncoder>,
+}
+
+/// A cached render bundle plus the structural fingerprint it was built for, so a
+/// pass that changes shape (different draws/pipelines/formats) rebuilds it.
+struct BundleEntry {
+    struct_hash: u64,
+    bundle: wgpu::RenderBundle,
 }
 
 impl<'s> WgpuBackend<'s> {
@@ -59,6 +81,20 @@ impl<'s> WgpuBackend<'s> {
         width: u32,
         height: u32,
     ) -> WgpuBackend<'s> {
+        Self::new_seeded(instance, surface, width, height, None).await
+    }
+
+    /// Like [`Self::new`], but seeds the driver pipeline cache from `cache_data`
+    /// (a blob a prior run produced via [`Self::pipeline_cache_data`]). Warm
+    /// launches then reuse compiled pipelines instead of recompiling shaders,
+    /// cutting first-frame stalls. Ignored when the adapter lacks `PIPELINE_CACHE`.
+    pub async fn new_seeded(
+        instance: &wgpu::Instance,
+        surface: wgpu::Surface<'s>,
+        width: u32,
+        height: u32,
+        cache_data: Option<&[u8]>,
+    ) -> WgpuBackend<'s> {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -68,10 +104,17 @@ impl<'s> WgpuBackend<'s> {
             .await
             .expect("no compatible GPU adapter");
 
+        // Opt into the pipeline-compilation cache only when the adapter offers it.
+        let mut required_features = wgpu::Features::empty();
+        let has_pipeline_cache = adapter.features().contains(wgpu::Features::PIPELINE_CACHE);
+        if has_pipeline_cache {
+            required_features |= wgpu::Features::PIPELINE_CACHE;
+        }
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("elpa-device"),
-                required_features: wgpu::Features::empty(),
+                required_features,
                 required_limits: wgpu::Limits::downlevel_webgl2_defaults()
                     .using_resolution(adapter.limits()),
                 memory_hints: wgpu::MemoryHints::Performance,
@@ -80,6 +123,18 @@ impl<'s> WgpuBackend<'s> {
             })
             .await
             .expect("failed to create device");
+
+        // Safety: `cache_data`, when present, is opaque blob the caller obtained
+        // from a previous `get_data` on a compatible device; wgpu validates it and
+        // (with `fallback: true`) discards anything stale, so a bad/foreign blob
+        // is safe — it just yields an empty cache.
+        let pipeline_cache = has_pipeline_cache.then(|| unsafe {
+            device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
+                label: Some("elpa-pipeline-cache"),
+                data: cache_data,
+                fallback: true,
+            })
+        });
 
         let caps = surface.get_capabilities(&adapter);
         let format = caps
@@ -115,6 +170,8 @@ impl<'s> WgpuBackend<'s> {
             pipeline_layouts: HashMap::new(),
             render_pipelines: HashMap::new(),
             compute_pipelines: HashMap::new(),
+            render_bundles: HashMap::new(),
+            pipeline_cache,
             frame_texture: None,
             frame_view: None,
             encoder: None,
@@ -124,6 +181,13 @@ impl<'s> WgpuBackend<'s> {
     /// The surface's configured color format (apps must match it in pipelines).
     pub fn surface_format(&self) -> wgpu::TextureFormat {
         self.config.format
+    }
+
+    /// The driver pipeline cache as an opaque blob, for the host to persist and
+    /// feed back to [`Self::new_seeded`] on the next launch. `None` when the
+    /// adapter does not support `PIPELINE_CACHE`.
+    pub fn pipeline_cache_data(&self) -> Option<Vec<u8>> {
+        self.pipeline_cache.as_ref().and_then(|c| c.get_data())
     }
 
     /// Reconfigure the surface after a resize.
@@ -165,6 +229,9 @@ impl<'s> WgpuBackend<'s> {
 
 impl<'s> GpuBackend for WgpuBackend<'s> {
     fn create_resource(&mut self, desc: &ResourceDesc) {
+        // A new/replaced GPU handle invalidates any bundle that captured the old
+        // one; drop them all and let the next frame re-record what it still needs.
+        self.render_bundles.clear();
         match desc {
             ResourceDesc::Buffer(d) => {
                 let usage = parse::buffer_usage(&d.usage);
@@ -370,7 +437,7 @@ impl<'s> GpuBackend for WgpuBackend<'s> {
                     },
                     fragment,
                     multiview_mask: None,
-                    cache: None,
+                    cache: self.pipeline_cache.as_ref(),
                 });
                 self.render_pipelines.insert(d.id.clone(), pipeline);
             }
@@ -383,7 +450,7 @@ impl<'s> GpuBackend for WgpuBackend<'s> {
                     module,
                     entry_point: Some(&d.entry_point),
                     compilation_options: Default::default(),
-                    cache: None,
+                    cache: self.pipeline_cache.as_ref(),
                 });
                 self.compute_pipelines.insert(d.id.clone(), pipeline);
             }
@@ -392,13 +459,16 @@ impl<'s> GpuBackend for WgpuBackend<'s> {
 
     fn update_buffer(&mut self, id: &str, offset: u64, bytes: &[u8]) {
         // Reuse the resident allocation; the cache only routes here when the
-        // buffer exists at this size and declares COPY_DST.
+        // buffer exists at this size and declares COPY_DST. Bundles that bind this
+        // buffer stay valid — the handle is unchanged, only its contents move — so
+        // a recorded surface pass keeps replaying across animation frames.
         if let Some(buffer) = self.buffers.get(id) {
             self.queue.write_buffer(buffer, offset, bytes);
         }
     }
 
     fn destroy_resource(&mut self, id: &str) {
+        self.render_bundles.clear();
         self.buffers.remove(id);
         self.textures.remove(id);
         self.views.remove(id);
@@ -446,6 +516,10 @@ impl<'s> GpuBackend for WgpuBackend<'s> {
             None => return, // frame was skipped (surface unavailable)
         };
 
+        // Build (or reuse) a pre-recorded bundle for this pass's draws. `Some(id)`
+        // means we replay the cached bundle instead of re-issuing every command.
+        let bundle_id = self.ensure_bundle(pass);
+
         let color_views: Vec<&wgpu::TextureView> =
             pass.color_attachments.iter().map(|a| self.resolve_view(&a.view)).collect();
         let color_attachments: Vec<Option<wgpu::RenderPassColorAttachment>> = pass
@@ -490,8 +564,15 @@ impl<'s> GpuBackend for WgpuBackend<'s> {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            for cmd in &pass.commands {
-                self.replay_render_command(&mut rp, cmd);
+            match &bundle_id {
+                Some(id) => {
+                    rp.execute_bundles(std::iter::once(&self.render_bundles[id].bundle));
+                }
+                None => {
+                    for cmd in &pass.commands {
+                        self.replay_render_command(&mut rp, cmd);
+                    }
+                }
             }
         }
 
@@ -552,8 +633,14 @@ impl<'s> GpuBackend for WgpuBackend<'s> {
             EncoderCommand::ClearBuffer { buffer, offset, size } => {
                 encoder.clear_buffer(self.buffers.get(buffer).expect("buffer"), *offset, *size);
             }
-            EncoderCommand::WriteBuffer { buffer, offset, data_b64 } => {
-                let bytes = base64::engine::general_purpose::STANDARD.decode(data_b64).unwrap_or_default();
+            EncoderCommand::WriteBuffer { buffer, offset, data_b64, data_f32, data_u32, data_u16 } => {
+                let bytes = elpa_protocol::resource::pack_le_bytes(
+                    data_b64.as_deref(),
+                    data_f32.as_deref(),
+                    data_u32.as_deref(),
+                    data_u16.as_deref(),
+                )
+                .unwrap_or_default();
                 self.queue.write_buffer(self.buffers.get(buffer).expect("buffer"), *offset, &bytes);
             }
             EncoderCommand::WriteTexture { texture, origin, size, data_b64 } => {
@@ -600,6 +687,145 @@ impl<'s> GpuBackend for WgpuBackend<'s> {
 }
 
 impl<'s> WgpuBackend<'s> {
+    /// Whether a render command can live inside a render bundle. Bundles support
+    /// the pipeline/bind/buffer/draw subset only — dynamic state (scissor,
+    /// viewport, blend constant, stencil ref) cannot be recorded, so a pass using
+    /// any of it is replayed directly instead.
+    fn bundle_compatible(cmd: &RenderCommand) -> bool {
+        matches!(
+            cmd,
+            RenderCommand::SetPipeline { .. }
+                | RenderCommand::SetBindGroup { .. }
+                | RenderCommand::SetVertexBuffer { .. }
+                | RenderCommand::SetIndexBuffer { .. }
+                | RenderCommand::Draw { .. }
+                | RenderCommand::DrawIndexed { .. }
+                | RenderCommand::DrawIndirect { .. }
+                | RenderCommand::DrawIndexedIndirect { .. }
+        )
+    }
+
+    /// The color formats + sample count a bundle for `pass` must declare (it must
+    /// match the render pass it executes in). `None` if a referenced target is not
+    /// resident yet. Depth passes are excluded by the caller, so no depth here.
+    fn bundle_color_targets(&self, pass: &RenderPass) -> Option<(Vec<wgpu::TextureFormat>, u32)> {
+        let mut formats = Vec::with_capacity(pass.color_attachments.len());
+        let mut sample_count = 1;
+        for att in &pass.color_attachments {
+            match &att.view {
+                TargetView::Surface => formats.push(self.config.format),
+                TargetView::Texture { texture } => {
+                    let tex = self.textures.get(texture)?;
+                    formats.push(tex.format());
+                    sample_count = tex.sample_count();
+                }
+            }
+        }
+        Some((formats, sample_count))
+    }
+
+    /// Ensure a render bundle exists for an identified, bundle-eligible pass and
+    /// return its id (so the caller replays it). Rebuilds it when the pass's
+    /// structure or target formats change; returns `None` for passes that are not
+    /// bundle-eligible (no id, depth attachment, or dynamic-state commands), which
+    /// are replayed command-by-command as before.
+    fn ensure_bundle(&mut self, pass: &RenderPass) -> Option<String> {
+        let id = pass.id.clone()?;
+        if pass.depth_stencil.is_some() || !pass.commands.iter().all(Self::bundle_compatible) {
+            self.render_bundles.remove(&id);
+            return None;
+        }
+        let (formats, sample_count) = self.bundle_color_targets(pass)?;
+
+        // Structural fingerprint: the commands (which carry no buffer *contents*,
+        // so an in-place data refill leaves it unchanged) plus the target formats.
+        let mut hasher = DefaultHasher::new();
+        crate::cache::content_hash(&pass.commands).hash(&mut hasher);
+        for f in &formats {
+            format!("{f:?}").hash(&mut hasher);
+        }
+        sample_count.hash(&mut hasher);
+        let struct_hash = hasher.finish();
+
+        if self.render_bundles.get(&id).map(|e| e.struct_hash) == Some(struct_hash) {
+            return Some(id);
+        }
+
+        let color_formats: Vec<Option<wgpu::TextureFormat>> =
+            formats.iter().map(|f| Some(*f)).collect();
+        let mut be = self.device.create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
+            label: Some(&id),
+            color_formats: &color_formats,
+            depth_stencil: None,
+            sample_count,
+            multiview: None,
+        });
+        for cmd in &pass.commands {
+            self.replay_into_bundle(&mut be, cmd);
+        }
+        let bundle = be.finish(&wgpu::RenderBundleDescriptor { label: Some(&id) });
+        self.render_bundles.insert(id.clone(), BundleEntry { struct_hash, bundle });
+        Some(id)
+    }
+
+    /// Replay one (bundle-compatible) command into a render bundle encoder.
+    fn replay_into_bundle<'p>(
+        &'p self,
+        be: &mut wgpu::RenderBundleEncoder<'p>,
+        cmd: &RenderCommand,
+    ) {
+        match cmd {
+            RenderCommand::SetPipeline { pipeline } => {
+                be.set_pipeline(self.render_pipelines.get(pipeline).expect("render pipeline"));
+            }
+            RenderCommand::SetBindGroup { index, bind_group, dynamic_offsets } => {
+                be.set_bind_group(
+                    *index,
+                    Some(self.bind_groups.get(bind_group).expect("bind group")),
+                    dynamic_offsets,
+                );
+            }
+            RenderCommand::SetVertexBuffer { slot, buffer, offset } => {
+                be.set_vertex_buffer(*slot, self.buffers.get(buffer).expect("vbuf").slice(*offset..));
+            }
+            RenderCommand::SetIndexBuffer { buffer, format, offset } => {
+                let fmt = if format == "uint16" {
+                    wgpu::IndexFormat::Uint16
+                } else {
+                    wgpu::IndexFormat::Uint32
+                };
+                be.set_index_buffer(self.buffers.get(buffer).expect("ibuf").slice(*offset..), fmt);
+            }
+            RenderCommand::Draw { vertex_count, instance_count, first_vertex, first_instance } => {
+                be.draw(
+                    *first_vertex..*first_vertex + *vertex_count,
+                    *first_instance..*first_instance + *instance_count,
+                );
+            }
+            RenderCommand::DrawIndexed {
+                index_count,
+                instance_count,
+                first_index,
+                base_vertex,
+                first_instance,
+            } => {
+                be.draw_indexed(
+                    *first_index..*first_index + *index_count,
+                    *base_vertex,
+                    *first_instance..*first_instance + *instance_count,
+                );
+            }
+            RenderCommand::DrawIndirect { buffer, offset } => {
+                be.draw_indirect(self.buffers.get(buffer).expect("indirect"), *offset);
+            }
+            RenderCommand::DrawIndexedIndirect { buffer, offset } => {
+                be.draw_indexed_indirect(self.buffers.get(buffer).expect("indirect"), *offset);
+            }
+            // The caller only routes bundle-compatible commands here.
+            _ => {}
+        }
+    }
+
     fn replay_render_command<'p>(&'p self, rp: &mut wgpu::RenderPass<'p>, cmd: &RenderCommand) {
         match cmd {
             RenderCommand::SetPipeline { pipeline } => {
