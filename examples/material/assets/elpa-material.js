@@ -179,6 +179,8 @@ let _focusInput = 0; let _hasFocusInput = 0.0; // focused field's key handler (p
 let _scroll = {};                              // scroll offset (px) per scrollable id
 let _listRegions = {};                         // last painted scroll viewport per id
 let _scrollDragOn = 0.0; let _scrollDragId = ""; let _scrollDragY = 0.0;  // touch scroll
+let _scrollVel = 0.0;                          // smoothed drag velocity (px/frame)
+let _flingId = ""; let _flingV = 0.0;          // active momentum fling (id + velocity)
 let _darkTarget = 0.0; let _darkAnim = 0.0;    // theme
 let _accent = 0;                               // accent index
 let _anim = {}; let _target = {};              // eased 0..1 values by key
@@ -492,7 +494,17 @@ function _measureWrap(node) {
     }
     return { w: maxW, h: totalH + rowH };
 }
+// Intrinsic size of a node by kind. `_measure` wraps this to honour a parent's
+// forced allocation (`_fw`/`_fh`), so a `Container` placed in an `Expanded` slot
+// or a `GridView` cell fills the box the parent gave it instead of collapsing to
+// its (often zero) content size — the Flutter "tight constraints" behaviour.
 function _measure(node) {
+    let m = _measureKind(node);
+    if (has(node, "_fw")) { if (node._fw >= 0.0) { m.w = node._fw; } }
+    if (has(node, "_fh")) { if (node._fh >= 0.0) { m.h = node._fh; } }
+    return m;
+}
+function _measureKind(node) {
     let k = node.kind;
     if (k == "comp") { return _measure(node._sub); }
     if (k == "text") { let c = _cell(node.size); return { w: _textW(node.text, c), h: 6.0 * c }; }
@@ -762,13 +774,18 @@ function _paintColumn(node, cx, cy) {
     let top = cy - main / 2.0; let kids = [];
     for (let i = 0; i < nc; i++) {
         let ch = node.children[i]; let chh = _measure(ch).h;
-        if (ch.kind == "expanded") { chh = 0.0; if (flexTotal > 0.0) { chh = extra * ch.flex / flexTotal; } }
+        if (ch.kind == "expanded") {
+            chh = 0.0; if (flexTotal > 0.0) { chh = extra * ch.flex / flexTotal; }
+            // Give the flex child tight vertical constraints so it fills its slot.
+            if (has(ch, "child")) { let cc = ch.child; cc._fh = chh; }
+        }
         let ccx = cx; let cw = _measure(ch).w;
         if (has(node, "cross")) {
             if (node.cross == "start") { ccx = cx - mz.w / 2.0 + cw / 2.0; }
             if (node.cross == "end") { ccx = cx + mz.w / 2.0 - cw / 2.0; }
         }
         _paint(ch, ccx, top + chh / 2.0); top = top + chh + gap; push(kids, ch);
+        if (ch.kind == "expanded") { if (has(ch, "child")) { let cc = ch.child; cc._fh = -1.0; } }
     }
     node._kids = kids; _compose(node);
 }
@@ -787,13 +804,18 @@ function _paintRow(node, cx, cy) {
     let left = cx - main / 2.0; let kids = [];
     for (let i = 0; i < nc; i++) {
         let ch = node.children[i]; let cw = _measure(ch).w;
-        if (ch.kind == "expanded") { cw = 0.0; if (flexTotal > 0.0) { cw = extra * ch.flex / flexTotal; } }
+        if (ch.kind == "expanded") {
+            cw = 0.0; if (flexTotal > 0.0) { cw = extra * ch.flex / flexTotal; }
+            // Give the flex child tight horizontal constraints so it fills its slot.
+            if (has(ch, "child")) { let cc = ch.child; cc._fw = cw; }
+        }
         let ccy = cy; let chh2 = _measure(ch).h;
         if (has(node, "cross")) {
             if (node.cross == "start") { ccy = cy - mz.h / 2.0 + chh2 / 2.0; }
             if (node.cross == "end") { ccy = cy + mz.h / 2.0 - chh2 / 2.0; }
         }
         _paint(ch, left + cw / 2.0, ccy); left = left + cw + gap; push(kids, ch);
+        if (ch.kind == "expanded") { if (has(ch, "child")) { let cc = ch.child; cc._fw = -1.0; } }
     }
     node._kids = kids; _compose(node);
 }
@@ -813,12 +835,16 @@ function _paintScaffold(node) {
     let aH = _u * 10.0;
     if (has(node, "onKey")) { _keyHandler = node.onKey; _hasKey = 1.0; }
     let kids = [];
-    if (has(node, "appBar")) { if (!isNull(node.appBar)) { _paint(node.appBar, _vw / 2.0, aH / 2.0); push(kids, node.appBar); } }
+    // Paint the body first so the top app bar and bottom navigation draw *over*
+    // it: this single-pass kit has no per-widget scissor, so scrolling list items
+    // that extend past the viewport edges are covered by the bars (M3 also layers
+    // the app bar above scrolling content) instead of bleeding across them.
     if (has(node, "body")) { if (!isNull(node.body)) {
         let bodyTop = aH; let bodyH = _vh - aH;
         if (has(node, "bottomBar")) { bodyH = bodyH - _u * 11.0; }
         _paint(node.body, _vw / 2.0, bodyTop + bodyH / 2.0); push(kids, node.body);
     } }
+    if (has(node, "appBar")) { if (!isNull(node.appBar)) { _paint(node.appBar, _vw / 2.0, aH / 2.0); push(kids, node.appBar); } }
     if (has(node, "bottomBar")) { if (!isNull(node.bottomBar)) { _paint(node.bottomBar, _vw / 2.0, _vh - _u * 5.5); push(kids, node.bottomBar); } }
     if (has(node, "fab")) { if (!isNull(node.fab)) { _paint(node.fab, _vw - _u * 9.0, _vh - _u * 9.0); push(kids, node.fab); } }
     if (has(node, "drawer")) { if (!isNull(node.drawer)) { _paint(node.drawer, _vw / 2.0, _vh / 2.0); push(kids, node.drawer); } }
@@ -826,21 +852,30 @@ function _paintScaffold(node) {
     if (has(node, "dialog")) { if (!isNull(node.dialog)) { _paint(node.dialog, _vw / 2.0, _vh / 2.0); push(kids, node.dialog); } }
     node._kids = kids; _compose(node);
 }
+// M3 small top app bar: a *surface* bar (not a saturated primary block — that is
+// the Material 2 look) with on-surface nav icon + left-aligned title, an
+// on-surface-variant trailing action, and a hairline divider separating it from
+// the scrolling body.
 function _paintAppBar(node, cx, cy) {
-    _rect(_vw / 2.0, cy, _vw / 2.0, cy, 0.0, 0.0, 0.0, _acc(1.0), _CLEAR);
+    let bot = cy * 2.0;
+    _rect(_vw / 2.0, cy, _vw / 2.0, cy, 0.0, 0.0, 0.0, _surfaceContainer(1.0), _CLEAR);
+    _rect(_vw / 2.0, bot - _u * 0.05, _vw / 2.0, _u * 0.05, 0.0, 0.0, 0.0, _outlineVar(0.8), _CLEAR);
+    let onS = _onSurface(1.0); let onSV = _onSurface(0.7);
     let lineCx = _u * 6.0; let lw = _u * 2.0; let lh = _u * 0.4; let sp = _u * 1.3;
-    _rect(lineCx, cy - sp, lw, lh, lh, 0.0, 0.0, _onAcc(0.95), _CLEAR);
-    _rect(lineCx, cy, lw, lh, lh, 0.0, 0.0, _onAcc(0.95), _CLEAR);
-    _rect(lineCx, cy + sp, lw, lh, lh, 0.0, 0.0, _onAcc(0.95), _CLEAR);
-    _rect(_vw - _u * 6.0, cy, _u * 2.6, _u * 2.6, _u * 2.6, 0.0, 0.0, _onAcc(0.9), _CLEAR);
-    _paintText(node.title, _vw / 2.0, cy, _cell("title"), _onAcc(0.98));
+    _rect(lineCx, cy - sp, lw, lh, lh, 0.0, 0.0, onS, _CLEAR);
+    _rect(lineCx, cy, lw, lh, lh, 0.0, 0.0, onS, _CLEAR);
+    _rect(lineCx, cy + sp, lw, lh, lh, 0.0, 0.0, onS, _CLEAR);
+    // Trailing action rendered as a small accent avatar (theme/profile affordance).
+    _disc(_vw - _u * 6.0, cy, _u * 2.4, _acc(1.0));
+    _paintTextLeft(node.title, _u * 11.0, cy, _cell("title"), onS);
     if (has(node, "onMenu")) { _addTap(lineCx, cy, _u * 3.0, _u * 3.0, "appMenu", node.onMenu); }
     if (has(node, "onAction")) { _addTap(_vw - _u * 6.0, cy, _u * 3.0, _u * 3.0, "appAction", node.onAction); }
 }
+// M3 filled button: a fully-rounded accent pill at *elevation 0* (no drop shadow
+// — that was a Material 2 trait); hover/press add a tonal state layer.
 function _paintFilled(node, cx, cy) {
     let mz = _measure(node); let hw = mz.w / 2.0; let hh = mz.h / 2.0;
     let st = _hover(cx, cy, hw, hh) * 0.08 + _pressVal(node.id) * 0.12;
-    _shadow(cx, cy, hw, hh, hh, _u * 0.2, _u * 0.6, _u * 1.8);
     _rect(cx, cy, hw, hh, hh, 0.0, 0.0, _brighten(_acc(1.0), st), _CLEAR);
     _paintText(node.label, cx, cy, _cell("label"), _onAcc(1.0));
     _addTap(cx, cy, hw, hh, node.id, node.onTap);
@@ -1067,7 +1102,12 @@ function _paintGridView(node, cx, cy) {
     for (let i = 0; i < nc; i++) {
         let col = i % cols; let row = floor(num(i) / cols);
         let cxi = left + col * (cellW + gap) + cellW / 2.0; let cyi = top + row * (cellH + gap) + cellH / 2.0;
-        if (cyi + cellH / 2.0 >= cy - hh) { if (cyi - cellH / 2.0 <= cy + hh) { _paint(node.children[i], cxi, cyi); push(kids, node.children[i]); } }
+        if (cyi + cellH / 2.0 >= cy - hh) { if (cyi - cellH / 2.0 <= cy + hh) {
+            // Tight constraints: each cell fills its grid box.
+            let cell = node.children[i]; cell._fw = cellW; cell._fh = cellH;
+            _paint(cell, cxi, cyi); push(kids, cell);
+            cell._fw = -1.0; cell._fh = -1.0;
+        } }
     }
     node._kids = kids; _compose(node);
 }
@@ -1551,6 +1591,8 @@ function onEvent(e) {
     let et = e.type; let px = e.nx * _vw; let py = e.ny * _vh;
     if (et == "pointermove") { _hx = px; _hy = py; }
     if (et == "pointerdown") {
+        // A new touch always halts any in-flight momentum (catch-to-stop).
+        _flingId = ""; _flingV = 0.0;
         let hit = 0.0;
         for (let i = 0; i < len(_taps); i++) {
             let t = _taps[i];
@@ -1562,15 +1604,29 @@ function onEvent(e) {
         }
         if (hit < 0.5) {
             let sid = _scrollIdAt(px, py);
-            if (len(sid) > 0) { _scrollDragOn = 1.0; _scrollDragId = sid; _scrollDragY = py; }
+            if (len(sid) > 0) { _scrollDragOn = 1.0; _scrollDragId = sid; _scrollDragY = py; _scrollVel = 0.0; }
             else { if (_focused != 0) { _focused = 0; } _repaint(); }
         }
     }
     if (et == "pointermove") {
-        if (_scrollDragOn > 0.5) { _scrollBy(px, _scrollDragY, _scrollDragY - py); _scrollDragY = py; _repaint(); }
+        if (_scrollDragOn > 0.5) {
+            let dy = _scrollDragY - py;
+            _scrollBy(px, _scrollDragY, dy);
+            // Track a smoothed finger velocity so release can keep the list moving.
+            _scrollVel = _scrollVel * 0.55 + dy * 0.45;
+            _scrollDragY = py; _repaint();
+        }
         else { if (_dragging > 0.5) { _activeDrag.onDrag(px); } else { _repaint(); } }
     }
-    if (et == "pointerup") { _dragging = 0.0; _scrollDragOn = 0.0; _repaint(); }
+    if (et == "pointerup") {
+        // On release, hand the gesture to a momentum fling if it was moving fast
+        // enough — the list keeps scrolling and decelerates smoothly instead of
+        // stopping dead under the finger.
+        if (_scrollDragOn > 0.5) {
+            if (abs(_scrollVel) > 0.6) { _flingId = _scrollDragId; _flingV = _scrollVel; }
+        }
+        _dragging = 0.0; _scrollDragOn = 0.0; _repaint();
+    }
     if (et == "wheel") {
         let h = _scrollBy(px, py, e.deltaY);
         if (h > 0.5) { _repaint(); } else { if (_hasWheel > 0.5) { _wheelFn(e.deltaY); } }
@@ -1580,6 +1636,24 @@ function onEvent(e) {
         else { if (_hasKey > 0.5) { _keyHandler(e.key); } }
     }
     if (et == "keyup") { _repaint(); }
+}
+// Advance one momentum-scroll step: move the flung list by the current velocity,
+// decelerate it, and stop when it slows below a threshold or reaches an edge.
+// Returns whether a fling is still active (so the frame knows to repaint).
+function _flingStep() {
+    if (len(_flingId) == 0) { return 0.0; }
+    if (!has(_listRegions, _flingId)) { _flingId = ""; _flingV = 0.0; return 0.0; }
+    let rg = _listRegions[_flingId];
+    let off = 0.0; if (has(_scroll, _flingId)) { off = _scroll[_flingId]; }
+    off = off + _flingV;
+    let edge = 0.0;
+    if (off <= 0.0) { off = 0.0; edge = 1.0; }
+    if (off >= rg.maxOff) { off = rg.maxOff; edge = 1.0; }
+    _scroll[_flingId] = off;
+    _flingV = _flingV * 0.93;            // friction
+    if (edge > 0.5) { _flingV = 0.0; _flingId = ""; return 1.0; }
+    if (abs(_flingV) < 0.4) { _flingV = 0.0; _flingId = ""; }
+    return 1.0;
 }
 function onFrame(dt) {
     // Advance animations; collect the components whose keys are still moving, then
@@ -1603,9 +1677,17 @@ function onFrame(dt) {
         if (np != _press[k]) { _markDirty(dirty, k); }
         _press[k] = np;
     }
+    let flinging = _flingStep();
     if (themeMoving > 0.5) {
         for (let i = 0; i < len(dirty); i++) { let c = dirty[i]; c._dirtyFlag = 0.0; }
         _repaintAll();
+        return 0;
+    }
+    // A live fling pans a scroll viewport, so the whole frame is re-laid out (the
+    // same path a drag takes); do this before the cheaper per-component repaint.
+    if (flinging > 0.5) {
+        for (let i = 0; i < len(dirty); i++) { let c = dirty[i]; c._dirtyFlag = 0.0; }
+        _repaint();
         return 0;
     }
     if (len(dirty) > 0) { _repaintComps(dirty); }
