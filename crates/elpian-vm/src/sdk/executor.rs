@@ -4096,7 +4096,7 @@ impl Executor {
                     if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::ArrExprFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let items_vec = regs[1].clone();
                         self.registers.pop();
                         main_reg = Some(items_vec);
@@ -4105,7 +4105,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::ObjExprFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let typ_id = regs[0].as_i64();
                         let props_vec = regs[2].as_array();
                         let mut props_map = ValMap::default();
@@ -4128,7 +4128,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::CallFuncFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let is_native = regs[1].as_bool();
                         if !is_native {
                             let func = regs[0].as_func().clone();
@@ -4259,7 +4259,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::DefineVarExtractValue
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let var_name = regs[0].as_string();
                         let var_value = regs[1].clone();
                         self.registers.pop();
@@ -4269,7 +4269,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::AssignVarExtractValue
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let var_name = regs[0].as_string();
                         let assign_target_type = regs[1].as_i16();
                         let data = regs[3].clone();
@@ -4314,7 +4314,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::IfStmtFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let has_condition = regs[0].as_bool();
                         let cond_val = regs[1].clone();
                         let mut condition = false;
@@ -4371,7 +4371,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::LoopStmtFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let cond_val = regs[0].clone();
                         let mut condition = false;
                         if cond_val.typ == 6 {
@@ -4404,7 +4404,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::SwitchStmtFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let comparing_val = regs[0].clone();
                         let branch_after_start = regs[1].as_i64() as usize;
                         let cases = regs[3].as_array();
@@ -4441,7 +4441,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::ArithmeticExtractArg2
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let op = regs[0].as_i16();
                         let arg1 = regs[1].clone();
                         let arg2 = regs[2].clone();
@@ -4508,7 +4508,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::IndexerExtractIndex
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let indexed = regs[0].clone();
                         let index = regs[1].clone();
                         self.registers.pop();
@@ -4611,7 +4611,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::CondBranchFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let condition = regs[0].as_bool();
                         let branch_true_start = regs[1].as_i64() as usize;
                         let branch_false_start = regs[2].as_i64() as usize;
@@ -4626,7 +4626,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::CastOprtFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let data = regs[0].clone();
                         let target_type = regs[1].as_string();
                         if target_type == "i16" {
