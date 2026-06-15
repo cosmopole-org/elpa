@@ -7,7 +7,7 @@ component runtime; an app uses them as a black box and never touches the GPU.
 
 | File | What it is |
 |------|------------|
-| [`assets/elpa-material.js`](assets/elpa-material.js) | **The SDK.** The rounded-rect SDF pipeline, the glyph font, the responsive layout coordinator, the M3 colors/sizes, the widget constructors, and the retained-tree component runtime (`Component` / `runApp`, with per-component `update`) whose internals end in `gpu.submit`. |
+| [`assets/elpa-material.js`](assets/elpa-material.js) | **The SDK.** The rounded-rect SDF pipeline, the glyph font, the responsive layout coordinator, the M3 colors/sizes, the widget constructors, and the retained-tree component runtime (`defineComponent` / `runApp`, with per-component `update`) whose internals end in `gpu.submit`. |
 | [`assets/demo.js`](assets/demo.js) | **The app.** Declares state, composes a widget tree from the SDK's widgets (including custom components), and calls `runApp`. No `gpu.submit`, no glyphs, no coordinates. |
 | `src/lib.rs` | Embeds the JS (`MODULE_JS`, `DEMO_JS`) and links them with [`program`]. |
 | `tests/run.rs` | Runs the linked program on a headless `Elpa` instance end to end — first paint, tap/key/wheel interaction, animation, resize — and validates the WGSL with `naga`. |
@@ -17,23 +17,24 @@ component runtime; an app uses them as a black box and never touches the GPU.
 ```js
 let count = 0; let sw = 0.0;
 
-// A custom widget is a plain function `(props, update) => widget`, React-style.
-// Place it in the tree with `Component(fn, props)` so the runtime owns its
-// identity — then its `update` repaints only it.
-function Counter(props, update) {
+// A custom widget is a plain function `(props, update) => widget`, wrapped once
+// with `defineComponent(...)` to become a widget constructor. Instantiate it in
+// the tree like a Flutter widget — `Counter({ ... })`, no wrapper — and the
+// runtime owns its identity, so its `update` repaints only it.
+let Counter = defineComponent(function(props, update) {
     return Row({ gap: 4.0, children: [
         FilledButton({ label: "TAP", onTap: () => { count = count + 1; update(); } }),
         Switch({ id: "wifi", value: sw, onTap: () => { sw = 1.0 - sw; update(); } }),
     ] });
-}
+});
 
-function App(props, update) {
+let App = defineComponent(function(props, update) {
     return Scaffold({
         appBar: AppBar({ title: "ELPA UI" }),
         fab: Fab({ onTap: () => { count = count + 1; update(); } }),
-        body: Card({ child: Component(Counter, {}) }),
+        body: Card({ child: Counter({}) }),
     });
-}
+});
 runApp(App);
 ```
 
@@ -41,9 +42,11 @@ runApp(App);
   `Card`, `Column`, `Row`, `Text`, `FilledButton`, `OutlinedButton`, `Fab`,
   `Switch`, `Checkbox`, `Radio`, `Slider`, `Chip`, `Progress`, `Divider` — just
   build them, exactly like Flutter `Widget`s.
-* **Components are plain functions** `(props, update) => widget`, React-style,
-  placed in the tree with `Component(fn, props)` (the React-element analog).
-  Compose your own widgets by nesting components (see `Tile` and `RadioRow`).
+* **Components are plain functions** `(props, update) => widget`, wrapped once
+  with `defineComponent(fn)` into a widget constructor (the Flutter
+  `StatelessWidget` / `StatefulWidget` analog). Instantiate them in the tree like
+  any built-in widget — `Tile({ ... })`, no `Component(...)` wrapper — so custom
+  widgets nest exactly like the built-ins (see `Tile` and `RadioRow`).
 * **`update()` repaints only its component.** The runtime re-runs *just that
   component's* function, repaints its subtree in place, and reassembles the frame
   from every other component's cached output — parents and siblings are not
