@@ -17,6 +17,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use elpa::{Elpa, InputEvent, SurfaceInfo, WgpuBackend};
 use winit::application::ApplicationHandler;
@@ -60,6 +61,7 @@ struct State {
     window: Arc<Window>,
     app: Rc<RefCell<App>>,
     cursor_pos: (f64, f64),
+    last_frame: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -99,13 +101,19 @@ impl ElpaApp {
             window,
             app: Rc::new(RefCell::new(app)),
             cursor_pos: (0.0, 0.0),
+            last_frame: None,
         });
     }
 }
 
 impl ApplicationHandler for ElpaApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        event_loop.set_control_flow(ControlFlow::Poll);
+        // Let the platform sleep between redraws. The old native loop used
+        // `Poll`, which made Android spin even when the compositor was not
+        // ready for a new frame. The web example is paced by
+        // requestAnimationFrame, so use winit's wait + explicit redraw flow to
+        // get the same vsync-friendly behaviour on native surfaces.
+        event_loop.set_control_flow(ControlFlow::Wait);
         if self.state.is_none() {
             self.init(event_loop);
         }
@@ -136,6 +144,7 @@ impl ApplicationHandler for ElpaApp {
                     x: state.cursor_pos.0,
                     y: state.cursor_pos.1,
                 });
+                state.window.request_redraw();
             }
             WindowEvent::MouseInput {
                 state: button_state,
@@ -163,6 +172,7 @@ impl ApplicationHandler for ElpaApp {
                     },
                 };
                 state.app.borrow_mut().send_event(&event);
+                state.window.request_redraw();
             }
             WindowEvent::Touch(touch) => {
                 let scale = state.window.scale_factor();
@@ -179,6 +189,7 @@ impl ApplicationHandler for ElpaApp {
                     }
                 };
                 state.app.borrow_mut().send_event(&event);
+                state.window.request_redraw();
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let delta_y = match delta {
@@ -190,6 +201,7 @@ impl ApplicationHandler for ElpaApp {
                     y: state.cursor_pos.1,
                     delta_y,
                 });
+                state.window.request_redraw();
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let key = match &event.logical_key {
@@ -203,10 +215,19 @@ impl ApplicationHandler for ElpaApp {
                     ElementState::Released => InputEvent::KeyUp { key },
                 };
                 state.app.borrow_mut().send_event(&event);
+                state.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
-                // Drive animation and present a frame.
-                state.app.borrow_mut().animate(16.0);
+                // Drive animation and present a frame using wall-clock deltas,
+                // matching the web example's requestAnimationFrame timestamp
+                // loop instead of assuming every native frame is exactly 16 ms.
+                let now = Instant::now();
+                let dt = state
+                    .last_frame
+                    .map(|last| now.duration_since(last).as_secs_f64() * 1_000.0)
+                    .unwrap_or(16.0);
+                state.last_frame = Some(now);
+                state.app.borrow_mut().animate(dt);
             }
             _ => {}
         }
