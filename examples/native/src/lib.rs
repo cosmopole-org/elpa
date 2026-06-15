@@ -181,6 +181,7 @@ impl ApplicationHandler for ElpaApp {
                     x: state.cursor_pos.0,
                     y: state.cursor_pos.1,
                 });
+                state.window.request_redraw();
             }
             WindowEvent::MouseInput {
                 state: button_state,
@@ -235,6 +236,7 @@ impl ApplicationHandler for ElpaApp {
                     y: state.cursor_pos.1,
                     delta_y,
                 });
+                state.window.request_redraw();
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let key = match &event.logical_key {
