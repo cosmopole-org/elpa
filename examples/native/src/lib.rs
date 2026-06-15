@@ -31,6 +31,7 @@ use winit::window::{Window, WindowId};
 type App = Elpa<WgpuBackend<'static>>;
 
 const TARGET_FRAME_TIME: Duration = Duration::from_nanos(16_666_667);
+const MAX_ANIMATION_DT_MS: f64 = 100.0;
 
 /// Map a wgpu surface format to the protocol's format token so the app's
 /// pipeline target matches the surface.
@@ -78,20 +79,18 @@ impl State {
     }
 
     fn queue_event(&mut self, event: InputEvent) {
-        // Pointer/touch move events can arrive faster than Android can render.
-        // Keep only the newest contiguous move so input delivery remains cheap
-        // and the frame uses the freshest position, mirroring browser event
-        // coalescing before requestAnimationFrame. Press/release, wheel, and key
-        // events are kept in order because they carry discrete state changes.
-        if matches!(event, InputEvent::PointerMove { .. })
-            && matches!(
-                self.pending_events.last(),
-                Some(InputEvent::PointerMove { .. })
-            )
-        {
-            *self.pending_events.last_mut().unwrap() = event;
-        } else {
-            self.pending_events.push(event);
+        // Pointer/touch move and wheel events can arrive faster than Android can
+        // render. Keep only the newest contiguous move/wheel sample so input
+        // delivery remains cheap and the frame uses the freshest position,
+        // mirroring browser event coalescing before requestAnimationFrame.
+        // Press/release and key events are kept in order because they carry
+        // discrete state changes.
+        match (&event, self.pending_events.last_mut()) {
+            (InputEvent::PointerMove { .. }, Some(last @ InputEvent::PointerMove { .. }))
+            | (InputEvent::Wheel { .. }, Some(last @ InputEvent::Wheel { .. })) => {
+                *last = event;
+            }
+            _ => self.pending_events.push(event),
         }
         self.request_redraw();
     }
@@ -253,22 +252,36 @@ impl ApplicationHandler for ElpaApp {
             }
             WindowEvent::RedrawRequested => {
                 state.redraw_pending = false;
-                // Drive animation and present a frame using wall-clock deltas,
-                // matching the web example's requestAnimationFrame timestamp
-                // loop instead of assuming every native frame is exactly 16 ms.
+
+                // Treat one redraw as one frame-computation budget. Input can
+                // already repaint (and global theme changes can be expensive), so
+                // if queued input consumes the frame budget, drop this frame's
+                // animation computation instead of immediately building a
+                // catch-up backlog. The next scheduled redraw advances animation
+                // with the real elapsed time.
+                let frame_start = Instant::now();
                 let events = std::mem::take(&mut state.pending_events);
+                let had_input = !events.is_empty();
                 for event in events {
                     state.app.borrow_mut().send_event(&event);
                 }
 
-                let now = Instant::now();
-                let dt = state
-                    .last_frame
-                    .map(|last| now.duration_since(last).as_secs_f64() * 1_000.0)
-                    .unwrap_or(16.0);
-                state.last_frame = Some(now);
-                state.app.borrow_mut().animate(dt);
-                state.next_frame = now + TARGET_FRAME_TIME;
+                let input_elapsed = frame_start.elapsed();
+                if !had_input || input_elapsed < TARGET_FRAME_TIME {
+                    let dt = state
+                        .last_frame
+                        .map(|last| frame_start.duration_since(last).as_secs_f64() * 1_000.0)
+                        .unwrap_or(16.0)
+                        .min(MAX_ANIMATION_DT_MS);
+                    state.last_frame = Some(frame_start);
+                    state.app.borrow_mut().animate(dt);
+                }
+
+                // Schedule relative to the end of computation, not its start. If
+                // the VM/render work took longer than a frame, this intentionally
+                // drops catch-up frame computations and gives Android input and
+                // presentation time before the next tick.
+                state.next_frame = Instant::now() + TARGET_FRAME_TIME;
             }
             _ => {}
         }
