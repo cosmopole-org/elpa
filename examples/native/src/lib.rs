@@ -47,12 +47,13 @@ fn format_token(fmt: wgpu::TextureFormat) -> String {
     .to_string()
 }
 
-/// Link the Material SDK and demo app, then patch the demo pipeline target to
-/// the live surface format chosen by wgpu. The Material SDK defaults to
+/// Link the Material SDK and the widget-gallery app, then patch the pipeline
+/// target to the live surface format chosen by wgpu. The Material SDK defaults to
 /// `bgra8unorm` for headless/web-style examples, while native surfaces often
-/// prefer an sRGB format.
+/// prefer an sRGB format. (Swap `gallery_program` for `program` to run the
+/// smaller demo instead.)
 fn material_program(surface_format: &str) -> String {
-    elpa_material::program().replace(
+    elpa_material::gallery_program().replace(
         r#"format: "bgra8unorm""#,
         &format!(r#"format: "{surface_format}""#),
     )

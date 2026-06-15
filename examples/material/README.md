@@ -7,10 +7,12 @@ component runtime; an app uses them as a black box and never touches the GPU.
 
 | File | What it is |
 |------|------------|
-| [`assets/elpa-material.js`](assets/elpa-material.js) | **The SDK.** The rounded-rect SDF pipeline, the glyph font, the responsive layout coordinator, the M3 colors/sizes, the widget constructors, and the retained-tree component runtime (`defineComponent` / `runApp`, with per-component `update`) whose internals end in `gpu.submit`. |
-| [`assets/demo.js`](assets/demo.js) | **The app.** Declares state, composes a widget tree from the SDK's widgets (including custom components), and calls `runApp`. No `gpu.submit`, no glyphs, no coordinates. |
-| `src/lib.rs` | Embeds the JS (`MODULE_JS`, `DEMO_JS`) and links them with [`program`]. |
-| `tests/run.rs` | Runs the linked program on a headless `Elpa` instance end to end — first paint, tap/key/wheel interaction, animation, resize — and validates the WGSL with `naga`. |
+| [`assets/elpa-material.js`](assets/elpa-material.js) | **The SDK.** The rounded-rect SDF pipeline, the glyph font (now with digits + symbols), a vector icon set, the responsive layout coordinator, the M3 colors/sizes, ~50 widget constructors (layout, Material, content, charts, media), the platform-service wrappers (storage/clock/network), and the retained-tree component runtime (`defineComponent` / `runApp`, with per-component `update`) whose internals end in `gpu.submit`. |
+| [`assets/demo.js`](assets/demo.js) | **The original app.** Declares state, composes a widget tree from the SDK's widgets (including custom components), and calls `runApp`. No `gpu.submit`, no glyphs, no coordinates. |
+| [`assets/gallery.js`](assets/gallery.js) | **The widget gallery.** A second app that showcases the *extended* widget set across four bottom-nav sections (Layout · Widgets · Charts · Media), a navigation drawer, a modal dialog and a snackbar, plus the storage/clock/network wrappers. |
+| `src/lib.rs` | Embeds the JS (`MODULE_JS`, `DEMO_JS`, `GALLERY_JS`) and links them with [`program`] / [`gallery_program`]. |
+| `tests/run.rs` | Runs the original demo on a headless `Elpa` instance end to end — first paint, tap/key/wheel interaction, animation, resize — and validates the WGSL with `naga`. |
+| `tests/gallery.rs` | Runs the gallery end to end: first paint, section switching, list scrolling, text input, modal overlays, the drawer animation, and a storage round-trip — all as **one** instanced draw over the same shader. |
 
 ## Writing an app
 
@@ -38,10 +40,8 @@ let App = defineComponent(function(props, update) {
 runApp(App);
 ```
 
-* **Widgets are description objects.** Constructors — `Scaffold`, `AppBar`,
-  `Card`, `Column`, `Row`, `Text`, `FilledButton`, `OutlinedButton`, `Fab`,
-  `Switch`, `Checkbox`, `Radio`, `Slider`, `Chip`, `Progress`, `Divider` — just
-  build them, exactly like Flutter `Widget`s.
+* **Widgets are description objects.** Constructors just build them, exactly like
+  Flutter `Widget`s. The catalog now spans five families (see below).
 * **Components are plain functions** `(props, update) => widget`, wrapped once
   with `defineComponent(fn)` into a widget constructor (the Flutter
   `StatelessWidget` / `StatefulWidget` analog). Instantiate them in the tree like
@@ -100,13 +100,95 @@ ahead of the app, like `import 'package:flutter/material.dart'`.
 
 ## Live / testing
 
-The [`examples/web`](../web) example runs this app, so it is testable live on
-GitHub Pages. Headless:
+Both host examples run the **gallery** (`gallery_program()`) on a live GPU
+surface — so the same JavaScript renders in the browser and in an Android app:
+
+* [`examples/web`](../web) — full-window DPI canvas (wasm), live on GitHub Pages.
+* [`examples/native`](../native) — a winit window on desktop **and Android**.
+
+Swap `gallery_program()` for `program()` in either host's `lib.rs` to run the
+smaller demo instead. Headless (either app, through a real VM + WGSL validation):
 
 ```bash
-cargo test -p elpa-material    # full program through a real VM + WGSL validation
+cargo test -p elpa-material
 ```
 
-Edit the SDK in [`assets/elpa-material.js`](assets/elpa-material.js) and the app
-in [`assets/demo.js`](assets/demo.js) — there is no generator step; the JS *is*
-the framework.
+Edit the SDK in [`assets/elpa-material.js`](assets/elpa-material.js) and the apps
+in [`assets/demo.js`](assets/demo.js) / [`assets/gallery.js`](assets/gallery.js)
+— there is no generator step; the JS *is* the framework.
+
+## Widget catalog
+
+Everything below is built from the **one** rounded-rect SDF instance (16 floats:
+center, half-size, corner radius, border, rotation, feather, fill rgba, border
+rgba). Text is vector-stroke capsules; icons, charts, the pie's wedges and the
+video chrome are all the same instance with different parameters. So the entire
+catalog still renders as a **single instanced draw** over **one** shader — the
+gallery test asserts exactly that.
+
+* **Layout** — `Container` (color/border/radius/padding/size), `Padding`,
+  `Center`, `Align`, `SizedBox`, `Spacer`, `Row`/`Column` (with `cross`
+  alignment), `Expanded`/`Flexible` (flex distribution), `Stack` + `Positioned`,
+  `Wrap`, `ListView` (scrollable, item-culled), `GridView` (scrollable),
+  `Card`, `Scaffold` (now also `bottomBar`, `drawer`, `snackbar`, `dialog`).
+* **Material** — `AppBar` (with `onMenu`/`onAction`), `Fab`, `FilledButton`,
+  `OutlinedButton`, `IconButton`, `Icon` (vector set), `Avatar`, `Badge`,
+  `Switch`, `Checkbox`, `Radio`, `Slider`, `Chip`, `Progress`,
+  `CircularProgress`, `Divider`, `ListTile`, `TextField` (focus + caret +
+  keyboard input), `Tabs`, `NavigationBar`, `SegmentedButton`, `ExpansionTile`,
+  `Banner`, `Snackbar`, `Dialog` (modal scrim), `Drawer` (sliding, animated).
+* **Content** — `Text` (now with digits/symbols and `headline`…`micro` sizes),
+  `DataTable`.
+* **Charts** — `BarChart`, `LineChart`, `PieChart` (radial-spoke fill, optional
+  donut hole), `Sparkline`.
+* **Media** — `Image` and `VideoPlayer` (full chrome: surface, play/pause,
+  draggable scrubber, time). See the production-readiness note below for what
+  "real" images/video need from the host.
+
+## Platform services & production-readiness assessment
+
+The task that produced the gallery asked whether Elpa's **network and storage**
+are enough to make this a production app framework. The SDK exposes thin,
+capability-gated wrappers over Elpa's `askHost` seam, and the answer is **yes for
+data, with two clearly-scoped host gaps for pixels**:
+
+| Capability | SDK API | Host backing (today) | Verdict |
+|---|---|---|---|
+| **Storage** | `storeRead/Write/Exists/List/Delete` | `fs.*` → `MemoryFileStore` (web/IndexedDB analog) **or** `NativeFileStore` (sandboxed disk), byte-capped | ✅ Production-ready. Same virtual FS on web, mobile, desktop; bounded; on by default. |
+| **Network** | `httpGet/httpPost` | `net.fetch` → pluggable `NetProvider` (synchronous) | ✅ Sufficient for REST/JSON. Denied by default; the host grants a provider. The gallery degrades gracefully to "OFFLINE" when it isn't. |
+| **Clock** | `now()` | `time.now`/`time.monotonic` | ✅ On by default. |
+| **Randomness** | `randomUnit()` | `random.*` (SplitMix64) | ✅ Off by default; granted explicitly. |
+| **Bitmap images** | `Image` widget | — (no texture-sampling pipeline yet) | ⚠️ Rendered as a styled placeholder surface. Needs a **textured pipeline + an image-decode/`writeTexture` host call**. |
+| **Video** | `VideoPlayer` widget | — (no external-surface compositing) | ⚠️ Full controls render; frames are a placeholder. Needs an **external/video-surface composite** host call (platform player → GPU texture). |
+
+Every service is gated by a `Capability` (and an `EnvToggles` switch) and
+short-circuits to a typed null when unplugged, so the wrappers never trap — an
+app can probe what the platform actually grants. **Net-net:** for data-driven,
+cross-platform apps (the bulk of Flutter's surface — lists, forms, dashboards,
+settings, charts fed by a REST API and cached to storage) the runtime is already
+enough. The two gaps are both *additive host calls* on the existing
+`elpa-protocol`/`HostEnv` seam — no change to the VM or the SDK's widget model —
+which is the natural next step on the roadmap.
+
+## VM fix shipped with this work
+
+Extending the SDK surfaced one real bug in the **VM's executor**
+(`crates/elpian-vm/src/sdk/executor.rs`) that only appeared once a *large*
+program (this SDK plus an app) ran. It manifested three ways — a `return` of a
+conditionally-built array coming back `null`, "array used as object key" traps in
+later object literals, and corrupted values after control blocks — but all three
+were **one** root cause:
+
+> When a control-flow body (`if` / `for` / `switch`) contained a *call statement*
+> and was followed by another statement **inside a called function**, the body's
+> scope teardown wrongly popped the enclosing function frame's `DummyOp` marker.
+> The register stack then sat one frame short, so the next statement leaked its
+> discarded value into the caller's awaiting expression.
+
+The fix pops that marker **only** when tearing down a true `funcBody` scope, not
+an `ifBody`/`loopBody`/`switchBody`. It's covered by a regression test
+(`statement_after_control_block_does_not_unbalance_in_called_fn` in
+`crates/elpian-vm/tests/js_compiler.rs`). With it, ordinary Flutter-shaped code —
+conditional `push` loops, `let`+`if` before object literals, large builder
+functions — compiles and runs correctly; the gallery's small-function structure
+is now kept purely for readability, not correctness.
