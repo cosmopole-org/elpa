@@ -2,7 +2,7 @@
 name = "elpa-native-example"
 version = "0.1.0"
 edition = "2021"
-description = "Cross-platform example: a winit window running an Elpa instance. Builds for desktop (Windows/macOS/Linux) and Android from one codebase."
+description = "Cross-platform example: a winit window running the Elpa Material SDK demo. Builds for desktop (Windows/macOS/Linux) and Android from one codebase."
 
 # A library (used by the desktop binary and built as a `cdylib` for Android) plus
 # the desktop binary entry point.
@@ -16,9 +16,9 @@ path = "src/main.rs"
 
 [dependencies]
 elpa = { path = "../../crates/elpa", features = ["wgpu"] }
+elpa-material = { path = "../material" }
 winit = "0.30"
 pollster = "0.3"
-serde_json = "1.0"
 # `wgpu`'s default features bring in the native backends: DX12 (Windows),
 # Vulkan/GLES (Android, Linux), Metal (macOS).
 wgpu = "29"
@@ -48,6 +48,6 @@ min_sdk_version = 24
 target_sdk_version = 30
 
 [package.metadata.android.application]
-label = "Elpa Triangle"
+label = "Elpa Material"
 
 [workspace]
