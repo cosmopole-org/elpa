@@ -81,12 +81,26 @@ pub enum EncoderCommand {
         dst: ResourceId,
         size: Extent3d,
     },
-    /// `queue.write_buffer` with base64 data.
+    /// `queue.write_buffer` — refill part of a persistent buffer in place.
+    ///
+    /// The bytes come from whichever payload field is set, tried in order
+    /// `data_b64`, `data_f32`, `data_u32`, `data_u16` (numeric arrays are packed
+    /// little-endian at the backend). The numeric forms let a VM program stream a
+    /// geometry/instance delta into a buffer it declared once — the language
+    /// expresses number arrays natively — without paying to base64-encode it and
+    /// without re-declaring the whole resource set each frame.
     WriteBuffer {
         buffer: ResourceId,
         #[serde(default)]
         offset: u64,
-        data_b64: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data_b64: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data_f32: Option<Vec<f32>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data_u32: Option<Vec<u32>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data_u16: Option<Vec<u16>>,
     },
     /// `queue.write_texture` with base64 data.
     WriteTexture {
@@ -335,6 +349,32 @@ mod tests {
                 assert!(refs.contains(&"vb".to_string()));
             }
             _ => panic!("expected render pass"),
+        }
+    }
+
+    #[test]
+    fn write_buffer_accepts_numeric_payload() {
+        // The numeric channel: a write carrying a float array, no base64.
+        let json = r#"{"commands":[
+            {"op":"writeBuffer","buffer":"inst","offset":16,"data_f32":[1.0,-1.0]}
+        ]}"#;
+        let f = Frame::parse(json).unwrap();
+        match &f.commands[0] {
+            EncoderCommand::WriteBuffer { buffer, offset, data_f32, data_b64, .. } => {
+                assert_eq!(buffer, "inst");
+                assert_eq!(*offset, 16);
+                assert!(data_b64.is_none(), "no base64 needed");
+                let bytes = crate::resource::pack_le_bytes(
+                    None,
+                    data_f32.as_deref(),
+                    None,
+                    None,
+                )
+                .unwrap();
+                assert_eq!(&bytes[0..4], &1.0f32.to_le_bytes());
+                assert_eq!(&bytes[4..8], &(-1.0f32).to_le_bytes());
+            }
+            _ => panic!("expected writeBuffer"),
         }
     }
 

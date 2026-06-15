@@ -389,7 +389,7 @@ fn handle_call<B: GpuBackend>(
     match hc.api_name.as_str() {
         "gpu.submit" => {
             if let Some(frame) = frame_from_submit(hc) {
-                match defs.expand(&frame) {
+                match defs.expand(frame) {
                     Ok(flat) => {
                         *last_stats = renderer.render(&flat);
                         *last_frame = Some(flat);

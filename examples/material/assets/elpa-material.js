@@ -154,6 +154,8 @@ let _anim = {}; let _target = {};              // eased 0..1 values by key
 let _press = {};                               // press state layers by key
 let _paintingComp = 0;                         // component currently being painted
 let _keySubs = {};                             // animation key -> subscriber component
+let _layered = 0.0;                            // split static/dynamic instance layers
+let _animatingComps = [];                      // components animating this frame (layered mode)
 let _WHITE = [1.0, 1.0, 1.0, 1.0];
 let _CLEAR = [0.0, 0.0, 0.0, 0.0];
 
@@ -166,6 +168,15 @@ let _accDark  = [[0.816,0.737,1.000],[0.306,0.847,0.859],[0.616,0.839,0.490],[1.
 // Push the app's theme into the framework (call from the root builder each
 // build, like reading ThemeData from MaterialApp).
 function setTheme(darkTarget, accent) { _darkTarget = darkTarget; _accent = accent; }
+
+// Opt into layered rendering: while widgets animate, the instances of the
+// *non-animating* widgets are uploaded as a separate "static" buffer whose
+// contents don't change frame to frame, so the renderer's resource cache skips
+// re-uploading it (and only the small "dynamic" buffer of the animating widgets
+// is rewritten in place). The visible result is identical for this app's
+// non-overlapping layout; it is opt-in because pulling animating widgets to the
+// end of the draw order could reorder alpha-blending where widgets overlap.
+function setLayered(on) { _layered = on; }
 
 // Place a component function in the tree (the runtime's element node). `fn` is a
 // plain function `(props, update) => widget`; the runtime owns its identity, so
@@ -585,7 +596,32 @@ function _repaintComps(dirty) {
     for (let i = 0; i < len(dirty); i++) { let c = dirty[i]; _paint(c, c._cx, c._cy); c._dirtyFlag = 0.0; }
     _reassembleTree(_root);
     _inst = _root._out; _taps = _root._taps; _drags = _root._drags;
-    _submit();
+    if (_layered > 0.5) { _submitLayered(dirty); } else { _submit(); }
+}
+
+// Split the reassembled tree into a static layer (everything that is NOT in the
+// animating set) and a dynamic layer (the animating components' whole subtrees).
+// Returns the static instance array and pushes dynamic instances into `dyn`. Each
+// instance lands in exactly one layer, so static ∪ dynamic == the full frame.
+function _bucketLayers(node, dyn) {
+    let k = node.kind;
+    if (k == "comp") {
+        if (has(node, "_animLayer")) { if (node._animLayer > 0.5) {
+            for (let i = 0; i < len(node._out); i++) { push(dyn, node._out[i]); }
+            return [];
+        } }
+        return _bucketLayers(node._sub, dyn);
+    }
+    if (k == "column") { let s = []; for (let i = 0; i < len(node.children); i++) { s = concat(s, _bucketLayers(node.children[i], dyn)); } return s; }
+    if (k == "row") { let s = []; for (let i = 0; i < len(node.children); i++) { s = concat(s, _bucketLayers(node.children[i], dyn)); } return s; }
+    if (k == "card") { return concat(node._chrome, _bucketLayers(node.child, dyn)); }
+    if (k == "scaffold") {
+        let s = _bucketLayers(node.appBar, dyn);
+        s = concat(s, _bucketLayers(node.body, dyn));
+        s = concat(s, _bucketLayers(node.fab, dyn));
+        return s;
+    }
+    return node._out;
 }
 // Re-emit the whole tree with the current theme (no fn re-run), used while the
 // light/dark cross-fade is in flight since it recolors every component.
@@ -613,7 +649,12 @@ function _submit() {
         _bufF32("elpa.m3.globals", ["UNIFORM", "COPY_DST"], [_vw, _vh, 0.0, 0.0]),
         { kind: "bindGroup", id: "elpa.m3.gb", layout: "elpa.m3.bgl",
           entries: [{ binding: 0, resource: { type: "buffer", buffer: "elpa.m3.globals" } }] },
-        _bufF32("elpa.m3.inst", ["VERTEX"], _inst),
+        // The instance buffer is re-declared every frame with fresh geometry.
+        // Marking it COPY_DST lets the renderer's resource cache refill the same
+        // GPU allocation in place (a queue write) whenever the instance *count*
+        // is unchanged — the steady state while animating — instead of freeing
+        // and reallocating a buffer each frame.
+        _bufF32("elpa.m3.inst", ["VERTEX", "COPY_DST"], _inst),
     ]);
     askHost("gpu.submit", [{
         resources: res,
@@ -627,6 +668,42 @@ function _submit() {
                 { cmd: "draw", vertex_count: 6, instance_count: len(_inst) / 16, first_vertex: 0, first_instance: 0 },
             ] }],
     }]);
+}
+
+// Submit a layered frame: a cached "static" buffer (non-animating widgets, whose
+// bytes are unchanged frame to frame → the renderer skips re-uploading it) plus a
+// small "dynamic" buffer (the animating components), drawn back-to-back with the
+// shared pipeline. Falls back to a single buffer when nothing is animating.
+function _submitLayered(animating) {
+    for (let i = 0; i < len(animating); i++) { let c = animating[i]; c._animLayer = 1.0; }
+    let dyn = [];
+    let stat = _bucketLayers(_root, dyn);
+    for (let i = 0; i < len(animating); i++) { let c = animating[i]; c._animLayer = 0.0; }
+    if (len(dyn) < 1) { _submit(); return 0; }
+
+    let bg = _colorBg();
+    let res = concat(_pipelineResources(), [
+        _bufF32("elpa.m3.globals", ["UNIFORM", "COPY_DST"], [_vw, _vh, 0.0, 0.0]),
+        { kind: "bindGroup", id: "elpa.m3.gb", layout: "elpa.m3.bgl",
+          entries: [{ binding: 0, resource: { type: "buffer", buffer: "elpa.m3.globals" } }] },
+        _bufF32("elpa.m3.inst.static", ["VERTEX", "COPY_DST"], stat),
+        _bufF32("elpa.m3.inst.dyn", ["VERTEX", "COPY_DST"], dyn),
+    ]);
+    askHost("gpu.submit", [{
+        resources: res,
+        commands: [{ op: "renderPass", id: "elpa.m3.pass",
+            color_attachments: [{ view: { kind: "surface" }, load: "clear",
+                clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
+            commands: [
+                { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" },
+                { cmd: "setPipeline", pipeline: "elpa.m3.pipe" },
+                { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst.static", offset: 0 },
+                { cmd: "draw", vertex_count: 6, instance_count: len(stat) / 16, first_vertex: 0, first_instance: 0 },
+                { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst.dyn", offset: 0 },
+                { cmd: "draw", vertex_count: 6, instance_count: len(dyn) / 16, first_vertex: 0, first_instance: 0 },
+            ] }],
+    }]);
+    return 0;
 }
 
 // ------------------------------------------------------------- event loop -----

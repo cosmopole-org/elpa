@@ -95,9 +95,18 @@ impl DefinitionStore {
     ///
     /// The returned frame contains the frame's own resources plus those of every
     /// (transitively) referenced definition, deduplicated by id, and a command
-    /// tree with every `useDefinition` replaced by the referenced commands. If
-    /// nothing references a definition, this is a cheap clone-shaped passthrough.
-    pub fn expand(&self, frame: &Frame) -> Result<Frame, ExpandError> {
+    /// tree with every `useDefinition` replaced by the referenced commands.
+    ///
+    /// Takes the frame **by value** so the overwhelmingly common case — a frame
+    /// that references no definitions — is a zero-copy move straight through,
+    /// rather than a deep clone of every resource and command (which for a UI app
+    /// re-declaring a multi-megabyte instance buffer each frame would copy that
+    /// buffer on every submit). Only when a `useDefinition` is actually present
+    /// is a new frame materialized.
+    pub fn expand(&self, frame: Frame) -> Result<Frame, ExpandError> {
+        if !frame_references_definitions(&frame) {
+            return Ok(frame);
+        }
         let mut out = Expander::new(self);
         let commands = out.encoder_commands(&frame.commands, &mut Vec::new())?;
         // Definition-supplied resources come **first** so dependencies are
@@ -114,6 +123,20 @@ impl DefinitionStore {
         }
         Ok(Frame { resources, commands })
     }
+}
+
+/// Whether a frame contains any `useDefinition` reference (at the encoder level
+/// or inside a render pass). When it does not, [`DefinitionStore::expand`] can
+/// hand the frame straight back with no allocation.
+fn frame_references_definitions(frame: &Frame) -> bool {
+    frame.commands.iter().any(|cmd| match cmd {
+        EncoderCommand::UseDefinition { .. } => true,
+        EncoderCommand::RenderPass(rp) => rp
+            .commands
+            .iter()
+            .any(|c| matches!(c, RenderCommand::UseDefinition { .. })),
+        _ => false,
+    })
 }
 
 /// Carries the resources accumulated from referenced definitions while a single
@@ -290,7 +313,7 @@ mod tests {
                 first_instance: 0,
             }])],
         };
-        assert_eq!(store.expand(&frame).unwrap(), frame);
+        assert_eq!(store.expand(frame.clone()).unwrap(), frame);
     }
 
     #[test]
@@ -308,7 +331,7 @@ mod tests {
             ])],
         };
 
-        let out = store.expand(&frame).unwrap();
+        let out = store.expand(frame).unwrap();
         assert_eq!(out.resources.len(), 1, "shape resource merged once");
         match &out.commands[0] {
             EncoderCommand::RenderPass(rp) => {
@@ -342,7 +365,7 @@ mod tests {
             resources: vec![],
             commands: vec![EncoderCommand::UseDefinition { definition: "scene".into() }],
         };
-        let out = store.expand(&frame).unwrap();
+        let out = store.expand(frame).unwrap();
         assert_eq!(out.commands.len(), 1);
         assert_eq!(out.resources.len(), 2, "scene shader + triangle buffer");
         match &out.commands[0] {
@@ -358,7 +381,7 @@ mod tests {
             resources: vec![],
             commands: vec![EncoderCommand::UseDefinition { definition: "ghost".into() }],
         };
-        assert_eq!(store.expand(&frame), Err(ExpandError::Unknown("ghost".into())));
+        assert_eq!(store.expand(frame), Err(ExpandError::Unknown("ghost".into())));
     }
 
     #[test]
@@ -382,7 +405,7 @@ mod tests {
             resources: vec![],
             commands: vec![EncoderCommand::UseDefinition { definition: "a".into() }],
         };
-        match store.expand(&frame) {
+        match store.expand(frame) {
             Err(ExpandError::Cycle(chain)) => {
                 assert_eq!(chain, vec!["a".to_string(), "b".to_string(), "a".to_string()])
             }
@@ -400,7 +423,7 @@ mod tests {
             commands: vec![EncoderCommand::UseDefinition { definition: "tri".into() }],
         };
         assert_eq!(
-            store.expand(&frame),
+            store.expand(frame),
             Err(ExpandError::WrongLevel { id: "tri".into(), expected: "encoder" })
         );
     }
