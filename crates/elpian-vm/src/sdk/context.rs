@@ -1,6 +1,6 @@
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
-use crate::sdk::data::{Val, ValGroup};
+use crate::sdk::data::{Payload, Val, ValGroup, ValMap};
 
 pub struct Scope {
     pub tag: String,
@@ -29,7 +29,7 @@ impl Scope {
         initial_pointer: usize,
         frozen_start: usize,
         frozen_end: usize,
-        args: HashMap<String, Val>,
+        args: ValMap,
     ) -> Self {
         Scope {
             tag,
@@ -52,13 +52,11 @@ impl Scope {
         self.frozen_start = frozen_start;
         self.frozen_end = frozen_end;
     }
-    pub fn find_val(&self, name: String) -> Val {
+    pub fn find_val(&self, name: &str) -> Val {
         let v = self.memory.borrow();
-        let val = v.data.get(&name);
-        if val.is_none() {
-            return Val::new(0, Rc::new(RefCell::new(Box::new(0))));
-        } else {
-            return val.unwrap().clone();
+        match v.data.get(name) {
+            None => Val::new(0, Payload::Null),
+            Some(val) => val.clone(),
         }
     }
     pub fn update_val(&mut self, name: String, val: Val) -> bool {
@@ -103,7 +101,7 @@ impl Context {
         inital_pointer: usize,
         frozen_start: usize,
         frozen_end: usize,
-        args: HashMap<String, Val>,
+        args: ValMap,
     ) {
         self.memory.push(Rc::new(RefCell::new(Scope::new_with_args(
             tag,
@@ -119,42 +117,35 @@ impl Context {
     pub fn get_scope(&mut self, index: usize) -> Rc<RefCell<Scope>> {
         self.memory.get(index).unwrap().clone()
     }
-    pub fn find_val_globally(&mut self, name: String) -> Val {
+    pub fn find_val_globally(&mut self, name: &str) -> Val {
         for scope in self.memory.iter().rev() {
-            let val = scope.borrow().find_val(name.clone());
+            let val = scope.borrow().find_val(name);
             if !val.is_empty() {
                 return val;
             }
         }
-        Val::new(0, Rc::new(RefCell::new(Box::new(0))))
+        Val::new(0, Payload::Null)
     }
     pub fn define_val_globally(&mut self, name: String, val: Val) {
-        self.memory
-            .last()
-            .unwrap()
-            .borrow_mut()
-            .define_val(name.clone(), val.clone());
+        self.memory.last().unwrap().borrow_mut().define_val(name, val);
     }
     pub fn update_val_globally(&mut self, name: String, val: Val) {
-        let mut found = false;
+        // Walk scopes inner→outer; the first that already binds `name` takes the
+        // new value. Probe with a borrow (no clone of name or val) and move the
+        // owned pair into exactly one `insert`, instead of cloning both for every
+        // scope tried as the previous `update_val` loop did.
         for scope in self.memory.iter().rev() {
-            if scope.borrow_mut().update_val(name.clone(), val.clone()) {
-                found = true;
-                break;
+            if scope.borrow().memory.borrow().data.contains_key(&name) {
+                scope.borrow().memory.borrow_mut().data.insert(name, val);
+                return;
             }
         }
-        if !found {
-            self.memory
-                .last()
-                .unwrap()
-                .borrow_mut()
-                .define_val(name.clone(), val.clone());
-        }
+        self.memory.last().unwrap().borrow_mut().define_val(name, val);
     }
-    pub fn find_val_in_last_scope(&mut self, name: String) -> Val {
-        self.memory.last().unwrap().borrow().find_val(name.clone())
+    pub fn find_val_in_last_scope(&mut self, name: &str) -> Val {
+        self.memory.last().unwrap().borrow().find_val(name)
     }
-    pub fn find_val_in_first_scope(&mut self, name: String) -> Val {
-        self.memory.first().unwrap().borrow().find_val(name.clone())
+    pub fn find_val_in_first_scope(&mut self, name: &str) -> Val {
+        self.memory.first().unwrap().borrow().find_val(name)
     }
 }

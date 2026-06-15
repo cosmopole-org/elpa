@@ -3,13 +3,13 @@
 use crate::sdk::{
     capabilities::CapabilitySet,
     context::Context,
-    data::{Array, Function, Object, Val, ValGroup},
+    data::{Array, Function, Object, Payload, Val, ValGroup, ValMap},
     lifecycle::ExecControl,
     limits::{Governor, ResourceLimits},
     stdlib,
 };
 use core::panic;
-use std::{any::Any, cell::RefCell, collections::HashMap, fmt, i16, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, fmt, i16, rc::Rc};
 
 use std::vec;
 
@@ -90,10 +90,114 @@ impl fmt::Display for ExecStates {
     }
 }
 
+/// The payload handed to [`Operation::set_state`] on a state transition.
+///
+/// This used to be a `Box<dyn Any>`, which heap-allocated (and then dynamically
+/// downcast) on *every* operation step — the arithmetic operand flow alone does
+/// this hundreds of thousands of times per frame. A closed enum of the handful
+/// of shapes the executor actually feeds keeps the payload on the stack: no
+/// allocation, no vtable, no downcast. Each `(operation, state)` pair fixes the
+/// shape, so the matching extractor is unambiguous (and a mismatch is a bug, not
+/// a recoverable case — hence `unreachable!`).
+pub enum StateData {
+    Empty,
+    Val(Val),
+    Bool(bool),
+    I16(i16),
+    I32(i32),
+    Str(String),
+    StrI16(String, i16),
+    ValUsize(Val, usize),
+    ValUsize2(Val, usize, usize),
+    ValI64x2(Val, i64, i64),
+    ValStr(Val, String),
+    I64I32(i64, i32),
+}
+
+impl StateData {
+    #[inline]
+    fn val(self) -> Val {
+        match self {
+            StateData::Val(v) => v,
+            _ => unreachable!("StateData::val on a non-Val payload"),
+        }
+    }
+    #[inline]
+    fn boolean(self) -> bool {
+        match self {
+            StateData::Bool(v) => v,
+            _ => unreachable!("StateData::boolean on a non-Bool payload"),
+        }
+    }
+    #[inline]
+    fn i16v(self) -> i16 {
+        match self {
+            StateData::I16(v) => v,
+            _ => unreachable!("StateData::i16v on a non-I16 payload"),
+        }
+    }
+    #[inline]
+    fn i32v(self) -> i32 {
+        match self {
+            StateData::I32(v) => v,
+            _ => unreachable!("StateData::i32v on a non-I32 payload"),
+        }
+    }
+    #[inline]
+    fn string(self) -> String {
+        match self {
+            StateData::Str(v) => v,
+            _ => unreachable!("StateData::string on a non-Str payload"),
+        }
+    }
+    #[inline]
+    fn str_i16(self) -> (String, i16) {
+        match self {
+            StateData::StrI16(s, n) => (s, n),
+            _ => unreachable!("StateData::str_i16 on a non-StrI16 payload"),
+        }
+    }
+    #[inline]
+    fn val_usize(self) -> (Val, usize) {
+        match self {
+            StateData::ValUsize(v, n) => (v, n),
+            _ => unreachable!("StateData::val_usize on a non-ValUsize payload"),
+        }
+    }
+    #[inline]
+    fn val_usize2(self) -> (Val, usize, usize) {
+        match self {
+            StateData::ValUsize2(v, a, b) => (v, a, b),
+            _ => unreachable!("StateData::val_usize2 on a non-ValUsize2 payload"),
+        }
+    }
+    #[inline]
+    fn val_i64x2(self) -> (Val, i64, i64) {
+        match self {
+            StateData::ValI64x2(v, a, b) => (v, a, b),
+            _ => unreachable!("StateData::val_i64x2 on a non-ValI64x2 payload"),
+        }
+    }
+    #[inline]
+    fn val_str(self) -> (Val, String) {
+        match self {
+            StateData::ValStr(v, s) => (v, s),
+            _ => unreachable!("StateData::val_str on a non-ValStr payload"),
+        }
+    }
+    #[inline]
+    fn i64_i32(self) -> (i64, i32) {
+        match self {
+            StateData::I64I32(a, b) => (a, b),
+            _ => unreachable!("StateData::i64_i32 on a non-I64I32 payload"),
+        }
+    }
+}
+
 pub trait Operation {
     fn get_type(&self) -> OperationTypes;
     fn get_state(&self) -> ExecStates;
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>);
+    fn set_state(&mut self, state: ExecStates, data: StateData);
     fn get_data(&self) -> Vec<Val>;
 }
 
@@ -130,12 +234,12 @@ impl Operation for DefineVariable {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::DefineVarExtractName {
-            self.var_name = Some(*data.downcast::<String>().unwrap());
+            self.var_name = Some(data.string());
         } else if state == ExecStates::DefineVarExtractValue {
-            self.var_value = Some(*data.downcast::<Val>().unwrap());
+            self.var_value = Some(data.val());
         }
     }
 
@@ -143,7 +247,7 @@ impl Operation for DefineVariable {
         vec![
             Val {
                 typ: 7,
-                data: Rc::new(RefCell::new(Box::new(self.var_name.clone().unwrap()))),
+                data: Payload::from(self.var_name.clone().unwrap()),
             },
             self.var_value.clone().unwrap(),
         ]
@@ -181,20 +285,20 @@ impl Operation for AssignVariable {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::AssignVarExtractName {
-            let (var_name, assign_target_type) = *data.downcast::<(String, i16)>().unwrap();
+            let (var_name, assign_target_type) = data.str_i16();
             self.var_name = Some(var_name.clone());
             self.assign_target_type = assign_target_type;
         } else if state == ExecStates::AssignVarExtractIndex {
             if self.assign_target_type == 2 {
-                self.index = Some(*data.downcast::<Val>().unwrap());
+                self.index = Some(data.val());
             } else {
                 panic!("elpian error: wrong state set to assignment operation");
             }
         } else if state == ExecStates::AssignVarExtractValue {
-            self.var_value = Some(*data.downcast::<Val>().unwrap());
+            self.var_value = Some(data.val());
         }
     }
 
@@ -206,32 +310,32 @@ impl Operation for AssignVariable {
             let index = self
                 .index
                 .clone()
-                .unwrap_or_else(|| Val { typ: 0, data: Rc::new(RefCell::new(Box::new(0))) });
+                .unwrap_or_else(|| Val { typ: 0, data: Payload::Null });
             if self.var_value.is_none() {
                 return vec![
                     Val {
                         typ: 7,
-                        data: Rc::new(RefCell::new(Box::new(self.var_name.clone().unwrap()))),
+                        data: Payload::from(self.var_name.clone().unwrap()),
                     },
                     Val {
                         typ: 6,
-                        data: Rc::new(RefCell::new(Box::new(self.assign_target_type))),
+                        data: Payload::from(self.assign_target_type),
                     },
                     index,
                     Val {
                         typ: 0,
-                        data: Rc::new(RefCell::new(Box::new(0))),
+                        data: Payload::Null,
                     },
                 ];
             } else {
                 return vec![
                     Val {
                         typ: 7,
-                        data: Rc::new(RefCell::new(Box::new(self.var_name.clone().unwrap()))),
+                        data: Payload::from(self.var_name.clone().unwrap()),
                     },
                     Val {
                         typ: 6,
-                        data: Rc::new(RefCell::new(Box::new(self.assign_target_type))),
+                        data: Payload::from(self.assign_target_type),
                     },
                     index,
                     self.var_value.clone().unwrap(),
@@ -242,34 +346,34 @@ impl Operation for AssignVariable {
                 return vec![
                     Val {
                         typ: 7,
-                        data: Rc::new(RefCell::new(Box::new(self.var_name.clone().unwrap()))),
+                        data: Payload::from(self.var_name.clone().unwrap()),
                     },
                     Val {
                         typ: 6,
-                        data: Rc::new(RefCell::new(Box::new(self.assign_target_type))),
+                        data: Payload::from(self.assign_target_type),
                     },
                     Val {
                         typ: 0,
-                        data: Rc::new(RefCell::new(Box::new(0))),
+                        data: Payload::Null,
                     },
                     Val {
                         typ: 0,
-                        data: Rc::new(RefCell::new(Box::new(0))),
+                        data: Payload::Null,
                     },
                 ];
             } else {
                 return vec![
                     Val {
                         typ: 7,
-                        data: Rc::new(RefCell::new(Box::new(self.var_name.clone().unwrap()))),
+                        data: Payload::from(self.var_name.clone().unwrap()),
                     },
                     Val {
                         typ: 6,
-                        data: Rc::new(RefCell::new(Box::new(self.assign_target_type))),
+                        data: Payload::from(self.assign_target_type),
                     },
                     Val {
                         typ: 0,
-                        data: Rc::new(RefCell::new(Box::new(0))),
+                        data: Payload::Null,
                     },
                     self.var_value.clone().unwrap(),
                 ];
@@ -309,15 +413,15 @@ impl Operation for CallFunction {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::CallFuncExtractFunc {
-            let val = data.downcast::<(Val, usize)>().unwrap();
-            if val.as_ref().0.typ == 10 {
-                self.func = Some(val.as_ref().0.as_func());
-                self.param_count = val.as_ref().1 as i32;
+            let val = data.val_usize();
+            if val.0.typ == 10 {
+                self.func = Some(val.0.as_func());
+                self.param_count = val.1 as i32;
                 self.is_native = false;
-            } else if val.as_ref().0.typ == 255 {
+            } else if val.0.typ == 255 {
                 self.func = Some(Rc::new(RefCell::new(Function::new(
                     "".to_string(),
                     0,
@@ -326,12 +430,12 @@ impl Operation for CallFunction {
                 ))));
                 self.param_count = 2;
                 self.is_native = true;
-            } else if val.as_ref().0.typ == 252 {
+            } else if val.0.typ == 252 {
                 // Native standard-library builtin. Its arity is the number of
                 // arguments the call site provides; we name the formal params
                 // `arg0..argN` so the generic "params filled" finish check fires.
-                let name = val.as_ref().0.as_string();
-                let provided = val.as_ref().1;
+                let name = val.0.as_string();
+                let provided = val.1;
                 let params: Vec<String> = (0..provided).map(|i| format!("arg{i}")).collect();
                 self.func = Some(Rc::new(RefCell::new(Function::new(name, 0, 0, params))));
                 self.param_count = provided as i32;
@@ -340,7 +444,7 @@ impl Operation for CallFunction {
                 panic!("elpian error: the specified data is not runnable");
             }
         } else if state == ExecStates::CallFuncExtractParam {
-            self.params.push(*data.downcast::<Val>().unwrap());
+            self.params.push(data.val());
         }
         if let Some(func) = &self.func {
             if func.borrow().params.len() == self.params.len() {
@@ -353,21 +457,21 @@ impl Operation for CallFunction {
         vec![
             Val {
                 typ: 10,
-                data: Rc::new(RefCell::new(Box::new(self.func.clone().unwrap()))),
+                data: Payload::from(self.func.clone().unwrap()),
             },
             Val {
                 typ: 6,
-                data: Rc::new(RefCell::new(Box::new(self.is_native))),
+                data: Payload::from(self.is_native),
             },
             Val {
                 typ: 2,
-                data: Rc::new(RefCell::new(Box::new(self.param_count))),
+                data: Payload::from(self.param_count),
             },
             Val {
                 typ: 9,
-                data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(Array::new(
+                data: Payload::from(Rc::new(RefCell::new(Array::new(
                     self.params.clone(),
-                )))))),
+                )))),
             },
         ]
     }
@@ -398,10 +502,10 @@ impl Operation for ReturnValue {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::ReturnValFinished {
-            self.value = Some(*data.downcast::<Val>().unwrap());
+            self.value = Some(data.val());
         }
     }
 
@@ -437,16 +541,16 @@ impl Operation for IfStmt {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::IfStmtIsConditioned {
-            self.has_condition = *data.downcast::<bool>().unwrap();
+            self.has_condition = data.boolean();
             if !self.has_condition {
                 self.condition = None;
                 self.state = ExecStates::IfStmtFinished;
             }
         } else if state == ExecStates::IfStmtFinished {
-            self.condition = Some(*data.downcast::<Val>().unwrap());
+            self.condition = Some(data.val());
         }
     }
 
@@ -454,7 +558,7 @@ impl Operation for IfStmt {
         vec![
             Val {
                 typ: 6,
-                data: Rc::new(RefCell::new(Box::new(self.has_condition))),
+                data: Payload::from(self.has_condition),
             },
             self.condition.clone().unwrap(),
         ]
@@ -486,10 +590,10 @@ impl Operation for LoopStmt {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::LoopStmtFinished {
-            self.condition = Some(*data.downcast::<Val>().unwrap());
+            self.condition = Some(data.val());
         }
     }
 
@@ -529,17 +633,17 @@ impl Operation for SwitchStmt {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::SwitchStmtExtractVal {
             let (comparing_val, branch_after_start, case_count) =
-                *data.downcast::<(Val, usize, usize)>().unwrap();
+                data.val_usize2();
             self.comparing_value = Some(comparing_val.clone());
             self.branch_after_start = branch_after_start;
             self.case_count = case_count;
         } else if state == ExecStates::SwitchStmtExtractCase {
             self.cases
-                .push(*data.downcast::<(Val, usize, usize)>().unwrap());
+                .push(data.val_usize2());
         }
         if self.case_count == self.cases.len() {
             self.state = ExecStates::SwitchStmtFinished;
@@ -551,28 +655,28 @@ impl Operation for SwitchStmt {
             .cases
             .iter()
             .map(|item| {
-                let mut case_info = HashMap::new();
+                let mut case_info = ValMap::default();
                 case_info.insert("val".to_string(), item.0.clone());
                 case_info.insert(
                     "start".to_string(),
                     Val {
                         typ: 3,
-                        data: Rc::new(RefCell::new(Box::new(item.1 as i64))),
+                        data: Payload::from(item.1 as i64),
                     },
                 );
                 case_info.insert(
                     "end".to_string(),
                     Val {
                         typ: 3,
-                        data: Rc::new(RefCell::new(Box::new(item.2 as i64))),
+                        data: Payload::from(item.2 as i64),
                     },
                 );
                 Val {
                     typ: 8,
-                    data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(Object::new(
+                    data: Payload::from(Rc::new(RefCell::new(Object::new(
                         -1,
                         ValGroup::new(case_info),
-                    )))))),
+                    )))),
                 }
             })
             .collect();
@@ -580,17 +684,17 @@ impl Operation for SwitchStmt {
             self.comparing_value.clone().unwrap(),
             Val {
                 typ: 3,
-                data: Rc::new(RefCell::new(Box::new(self.branch_after_start as i64))),
+                data: Payload::from(self.branch_after_start as i64),
             },
             Val {
                 typ: 3,
-                data: Rc::new(RefCell::new(Box::new(self.case_count as i64))),
+                data: Payload::from(self.case_count as i64),
             },
             Val {
                 typ: 9,
-                data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(Array::new(
+                data: Payload::from(Rc::new(RefCell::new(Array::new(
                     case_items,
-                )))))),
+                )))),
             },
         ]
     }
@@ -625,14 +729,14 @@ impl Operation for Arithmetic {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::ArithmeticExtractOp {
-            self.op = *data.downcast::<i16>().unwrap();
+            self.op = data.i16v();
         } else if state == ExecStates::ArithmeticExtractArg1 {
-            self.arg1 = Some(*data.downcast::<Val>().unwrap());
+            self.arg1 = Some(data.val());
         } else if state == ExecStates::ArithmeticExtractArg2 {
-            self.arg2 = Some(*data.downcast::<Val>().unwrap());
+            self.arg2 = Some(data.val());
         }
     }
 
@@ -640,7 +744,7 @@ impl Operation for Arithmetic {
         vec![
             Val {
                 typ: 1,
-                data: Rc::new(RefCell::new(Box::new(self.op))),
+                data: Payload::from(self.op),
             },
             self.arg1.clone().unwrap(),
             self.arg2.clone().unwrap(),
@@ -675,12 +779,12 @@ impl Operation for IndexerValue {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::IndexerExtractVarName {
-            self.var = Some(*data.downcast::<Val>().unwrap());
+            self.var = Some(data.val());
         } else if state == ExecStates::IndexerExtractIndex {
-            self.index = Some(*data.downcast::<Val>().unwrap());
+            self.index = Some(data.val());
         }
     }
 
@@ -714,10 +818,10 @@ impl Operation for NotValue {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::NotValFinished {
-            self.value = Some(*data.downcast::<Val>().unwrap());
+            self.value = Some(data.val());
         }
     }
 
@@ -755,14 +859,14 @@ impl Operation for ObjectExpr {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::ObjExprExtractInfo {
-            let val = data.downcast::<(i64, i32)>().unwrap();
-            self.object_typ_id = val.as_ref().0;
-            self.prop_count = val.as_ref().1;
+            let val = data.i64_i32();
+            self.object_typ_id = val.0;
+            self.prop_count = val.1;
         } else if state == ExecStates::ObjExprExtractProp {
-            let val = *data.downcast::<Val>().unwrap();
+            let val = data.val();
             self.props.push(val.clone());
         }
         if (self.prop_count as usize) == (self.props.len() / 2) {
@@ -774,17 +878,17 @@ impl Operation for ObjectExpr {
         vec![
             Val {
                 typ: 3,
-                data: Rc::new(RefCell::new(Box::new(self.object_typ_id))),
+                data: Payload::from(self.object_typ_id),
             },
             Val {
                 typ: 2,
-                data: Rc::new(RefCell::new(Box::new(self.prop_count))),
+                data: Payload::from(self.prop_count),
             },
             Val {
                 typ: 9,
-                data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(Array::new(
+                data: Payload::from(Rc::new(RefCell::new(Array::new(
                     self.props.clone(),
-                )))))),
+                )))),
             },
         ]
     }
@@ -817,12 +921,12 @@ impl Operation for ArrayExpr {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::ArrExprExtractInfo {
-            self.item_count = *data.downcast::<i32>().unwrap();
+            self.item_count = data.i32v();
         } else if state == ExecStates::ArrExprExtractItem {
-            let val = *data.downcast::<Val>().unwrap();
+            let val = data.val();
             self.items.push(val.clone());
         }
         if (self.item_count as usize) == self.items.len() {
@@ -834,13 +938,13 @@ impl Operation for ArrayExpr {
         vec![
             Val {
                 typ: 2,
-                data: Rc::new(RefCell::new(Box::new(self.item_count))),
+                data: Payload::from(self.item_count),
             },
             Val {
                 typ: 9,
-                data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(Array::new(
+                data: Payload::from(Rc::new(RefCell::new(Array::new(
                     self.items.clone(),
-                )))))),
+                )))),
             },
         ]
     }
@@ -875,10 +979,10 @@ impl Operation for CondBranch {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::CondBranchFinished {
-            let (cond, tb, fb) = *data.downcast::<(Val, i64, i64)>().unwrap().clone();
+            let (cond, tb, fb) = data.val_i64x2();
             self.condition = Some(cond);
             self.true_branch = tb;
             self.false_branch = fb;
@@ -890,11 +994,11 @@ impl Operation for CondBranch {
             self.condition.clone().unwrap(),
             Val {
                 typ: 3,
-                data: Rc::new(RefCell::new(Box::new(self.true_branch))),
+                data: Payload::from(self.true_branch),
             },
             Val {
                 typ: 3,
-                data: Rc::new(RefCell::new(Box::new(self.false_branch))),
+                data: Payload::from(self.false_branch),
             },
         ]
     }
@@ -927,10 +1031,10 @@ impl Operation for CastOp {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state.clone();
         if state == ExecStates::CastOprtFinished {
-            let (data, tt) = *data.downcast::<(Val, String)>().unwrap().clone();
+            let (data, tt) = data.val_str();
             self.data = Some(data);
             self.target_type = tt;
         }
@@ -941,7 +1045,7 @@ impl Operation for CastOp {
             self.data.clone().unwrap(),
             Val {
                 typ: 7,
-                data: Rc::new(RefCell::new(Box::new(self.target_type.clone()))),
+                data: Payload::from(self.target_type.clone()),
             },
         ]
     }
@@ -970,7 +1074,7 @@ impl Operation for DummyOp {
         self.typ.clone()
     }
 
-    fn set_state(&mut self, state: ExecStates, _data: Box<dyn Any>) {
+    fn set_state(&mut self, state: ExecStates, _data: StateData) {
         self.state = state.clone();
     }
 
@@ -1025,7 +1129,7 @@ impl Executor {
             ctx: Context::new(),
             program,
             cb_counter: 0,
-            pending_func_result_value: Val::new(254, Rc::new(RefCell::new(Box::new(0)))),
+            pending_func_result_value: Val::new(254, Payload::Null),
             registers: vec![],
             run_cb_id: 0,
             exec_globally: false,
@@ -1115,12 +1219,12 @@ impl Executor {
             // Status 0x06 = terminated/trapped; payload is the reason string
             // (empty for a clean host-ordered terminate).
             let msg = self.trap.clone().unwrap_or_default();
-            return Some((0x06, cb_id, Val::new(7, Rc::new(RefCell::new(Box::new(msg))))));
+            return Some((0x06, cb_id, Val::new(7, Payload::from(msg))));
         }
         if self.paused_out {
             self.processing = false;
             // Status 0x05 = paused; the continuation is preserved for `resume`.
-            return Some((0x05, cb_id, Val::new(253, Rc::new(RefCell::new(Box::new(0))))));
+            return Some((0x05, cb_id, Val::new(253, Payload::Null)));
         }
         None
     }
@@ -1140,11 +1244,11 @@ impl Executor {
                 // any sentinel a previous call may have left behind so a function
                 // that falls off its end without an explicit `return` yields "no
                 // value" instead of leaking the last returned result.
-                self.pending_func_result_value = Val::new(254, Rc::new(RefCell::new(Box::new(0))));
+                self.pending_func_result_value = Val::new(254, Payload::Null);
                 if self.control.is_terminated() {
-                    return (0x06, cb_id, Val::new(7, Rc::new(RefCell::new(Box::new(
+                    return (0x06, cb_id, Val::new(7, Payload::from(
                         self.trap.clone().unwrap_or_default(),
-                    )))));
+                    )));
                 }
                 if payload.typ != 9 {
                     self.exec_globally = true;
@@ -1155,7 +1259,7 @@ impl Executor {
                         false,
                         Val {
                             typ: 0,
-                            data: Rc::new(RefCell::new(Box::new(0))),
+                            data: Payload::Null,
                         },
                         false,
                     );
@@ -1176,7 +1280,7 @@ impl Executor {
                             0,
                             Val {
                                 typ: 0,
-                                data: Rc::new(RefCell::new(Box::new(0))),
+                                data: Payload::Null,
                             },
                         );
                     }
@@ -1186,10 +1290,10 @@ impl Executor {
                     let arr = payload.as_array();
                     let func_name = arr.borrow().data[0].as_string();
                     let input = arr.borrow().data[1].clone();
-                    let val = self.ctx.find_val_in_first_scope(func_name);
+                    let val = self.ctx.find_val_in_first_scope(&func_name);
                     if !val.is_empty() {
                         let func = val.as_func();
-                        let mut m = HashMap::new();
+                        let mut m = ValMap::default();
                         if !func.borrow().params.is_empty() {
                             m.insert(func.borrow().params[0].clone(), input);
                         }
@@ -1206,7 +1310,7 @@ impl Executor {
                             false,
                             Val {
                                 typ: 0,
-                                data: Rc::new(RefCell::new(Box::new(0))),
+                                data: Payload::Null,
                             },
                             true,
                         );
@@ -1227,7 +1331,7 @@ impl Executor {
                                 0,
                                 Val {
                                     typ: 0,
-                                    data: Rc::new(RefCell::new(Box::new(0))),
+                                    data: Payload::Null,
                                 },
                             );
                         }
@@ -1254,7 +1358,7 @@ impl Executor {
                     0,
                     Val {
                         typ: 0,
-                        data: Rc::new(RefCell::new(Box::new(0))),
+                        data: Payload::Null,
                     },
                 );
             }
@@ -1266,9 +1370,9 @@ impl Executor {
                 self.governor.begin_turn();
                 self.paused_out = false;
                 if self.control.is_terminated() {
-                    return (0x06, cb_id, Val::new(7, Rc::new(RefCell::new(Box::new(
+                    return (0x06, cb_id, Val::new(7, Payload::from(
                         self.trap.clone().unwrap_or_default(),
-                    )))));
+                    )));
                 }
                 self.processing = true;
                 let result = self.run_from(
@@ -1299,7 +1403,7 @@ impl Executor {
                                 0,
                                 Val {
                                     typ: 0,
-                                    data: Rc::new(RefCell::new(Box::new(0))),
+                                    data: Payload::Null,
                                 },
                             );
                         }
@@ -1318,7 +1422,7 @@ impl Executor {
                                 0,
                                 Val {
                                     typ: 0,
-                                    data: Rc::new(RefCell::new(Box::new(0))),
+                                    data: Payload::Null,
                                 },
                             );
                         }
@@ -1330,7 +1434,7 @@ impl Executor {
                         0,
                         Val {
                             typ: 0,
-                            data: Rc::new(RefCell::new(Box::new(0))),
+                            data: Payload::Null,
                         },
                     );
                 }
@@ -1342,7 +1446,7 @@ impl Executor {
                     0,
                     Val {
                         typ: 0,
-                        data: Rc::new(RefCell::new(Box::new(0))),
+                        data: Payload::Null,
                     },
                 );
             }
@@ -1426,49 +1530,49 @@ impl Executor {
         match p {
             0x01 => Val {
                 typ: 1,
-                data: Rc::new(RefCell::new(Box::new(self.extract_i16()))),
+                data: Payload::from(self.extract_i16()),
             },
             0x02 => Val {
                 typ: 2,
-                data: Rc::new(RefCell::new(Box::new(self.extract_i32()))),
+                data: Payload::from(self.extract_i32()),
             },
             0x03 => Val {
                 typ: 3,
-                data: Rc::new(RefCell::new(Box::new(self.extract_i64()))),
+                data: Payload::from(self.extract_i64()),
             },
             0x04 => Val {
                 typ: 4,
-                data: Rc::new(RefCell::new(Box::new(self.extract_f32()))),
+                data: Payload::from(self.extract_f32()),
             },
             0x05 => Val {
                 typ: 5,
-                data: Rc::new(RefCell::new(Box::new(self.extract_f64()))),
+                data: Payload::from(self.extract_f64()),
             },
             0x06 => Val {
                 typ: 6,
-                data: Rc::new(RefCell::new(Box::new(self.extract_bool()))),
+                data: Payload::from(self.extract_bool()),
             },
             0x07 => Val {
                 typ: 7,
-                data: Rc::new(RefCell::new(Box::new(self.extract_str()))),
+                data: Payload::from(self.extract_str()),
             },
             0x09 => Val {
                 typ: 9,
-                data: Rc::new(RefCell::new(Box::new(self.extract_arr()))),
+                data: Payload::from(self.extract_arr()),
             },
             0x0a => Val {
                 typ: 10,
-                data: Rc::new(RefCell::new(Box::new(self.extract_func()))),
+                data: Payload::from(self.extract_func()),
             },
             0x0b => {
                 let id = self.extract_str();
                 if id == "askHost" {
                     return Val {
                         typ: 255,
-                        data: Rc::new(RefCell::new(Box::new(0))),
+                        data: Payload::Null,
                     };
                 }
-                let bound = self.ctx.find_val_globally(id.clone());
+                let bound = self.ctx.find_val_globally(&id);
                 if !bound.is_empty() {
                     return bound;
                 }
@@ -1478,14 +1582,14 @@ impl Executor {
                 if stdlib::is_builtin(&id) {
                     return Val {
                         typ: 252,
-                        data: Rc::new(RefCell::new(Box::new(id))),
+                        data: Payload::from(id),
                     };
                 }
                 bound
             }
             _ => Val {
                 typ: 0,
-                data: Rc::new(RefCell::new(Box::new(0))),
+                data: Payload::Null,
             },
         }
     }
@@ -1493,12 +1597,12 @@ impl Executor {
         if num < f32::MAX.into() {
             return Val {
                 typ: 4,
-                data: Rc::new(RefCell::new(Box::new(num as f32))),
+                data: Payload::from(num as f32),
             };
         } else {
             return Val {
                 typ: 5,
-                data: Rc::new(RefCell::new(Box::new(num))),
+                data: Payload::from(num),
             };
         }
     }
@@ -1506,17 +1610,17 @@ impl Executor {
         if num < i16::MAX.into() {
             return Val {
                 typ: 1,
-                data: Rc::new(RefCell::new(Box::new(num as i16))),
+                data: Payload::from(num as i16),
             };
         } else if num < i32::MAX.into() {
             return Val {
                 typ: 2,
-                data: Rc::new(RefCell::new(Box::new(num as i32))),
+                data: Payload::from(num as i32),
             };
         } else {
             return Val {
                 typ: 3,
-                data: Rc::new(RefCell::new(Box::new(num))),
+                data: Payload::from(num),
             };
         }
     }
@@ -1560,7 +1664,7 @@ impl Executor {
                         let val1_temp = val1.to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1_temp, val2)))),
+                            data: Payload::from(format!("{}{}", val1_temp, val2)),
                         }
                     }
                     8 => {
@@ -1571,7 +1675,7 @@ impl Executor {
                         val2.data.insert(0, arg1);
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(val2))))),
+                            data: Payload::from(Rc::new(RefCell::new(val2))),
                         }
                     }
                     10 => {
@@ -1617,7 +1721,7 @@ impl Executor {
                         let val1_temp = val1.to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1_temp, val2)))),
+                            data: Payload::from(format!("{}{}", val1_temp, val2)),
                         }
                     }
                     8 => {
@@ -1628,7 +1732,7 @@ impl Executor {
                         val2.data.insert(0, arg1);
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(val2))))),
+                            data: Payload::from(Rc::new(RefCell::new(val2))),
                         }
                     }
                     10 => {
@@ -1661,7 +1765,7 @@ impl Executor {
                         let val2 = arg2.as_bool();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1 ^ val2))),
+                            data: Payload::from(val1 ^ val2),
                         }
                     }
                     7 => {
@@ -1669,7 +1773,7 @@ impl Executor {
                         let val1_temp = val1.to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1_temp, val2)))),
+                            data: Payload::from(format!("{}{}", val1_temp, val2)),
                         }
                     }
                     8 => {
@@ -1680,7 +1784,7 @@ impl Executor {
                         val2.data.insert(0, arg1);
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(val2))))),
+                            data: Payload::from(Rc::new(RefCell::new(val2))),
                         }
                     }
                     10 => {
@@ -1698,63 +1802,63 @@ impl Executor {
                         let val2 = arg2.as_i16().to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1, val2)))),
+                            data: Payload::from(format!("{}{}", val1, val2)),
                         }
                     }
                     2 => {
                         let val2 = arg2.as_i32().to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1, val2)))),
+                            data: Payload::from(format!("{}{}", val1, val2)),
                         }
                     }
                     3 => {
                         let val2 = arg2.as_i64().to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1, val2)))),
+                            data: Payload::from(format!("{}{}", val1, val2)),
                         }
                     }
                     4 => {
                         let val2 = arg2.as_f32().to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1, val2)))),
+                            data: Payload::from(format!("{}{}", val1, val2)),
                         }
                     }
                     5 => {
                         let val2 = arg2.as_f64().to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1, val2)))),
+                            data: Payload::from(format!("{}{}", val1, val2)),
                         }
                     }
                     6 => {
                         let val2 = arg2.as_bool().to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1, val2)))),
+                            data: Payload::from(format!("{}{}", val1, val2)),
                         }
                     }
                     7 => {
                         let val2 = arg2.as_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1, val2)))),
+                            data: Payload::from(format!("{}{}", val1, val2)),
                         }
                     }
                     8 => {
                         let val2 = arg2.as_object().borrow().stringify();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1, val2)))),
+                            data: Payload::from(format!("{}{}", val1, val2)),
                         }
                     }
                     9 => {
                         let val2 = arg2.as_array().borrow().stringify();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1, val2)))),
+                            data: Payload::from(format!("{}{}", val1, val2)),
                         }
                     }
                     10 => {
@@ -1791,7 +1895,7 @@ impl Executor {
                         let val2 = arg2.as_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1_temp, val2)))),
+                            data: Payload::from(format!("{}{}", val1_temp, val2)),
                         }
                     }
                     8 => {
@@ -1801,7 +1905,7 @@ impl Executor {
                         });
                         Val {
                             typ: 8,
-                            data: Rc::new(RefCell::new(Box::new(val2))),
+                            data: Payload::from(val2),
                         }
                     }
                     9 => {
@@ -1809,7 +1913,7 @@ impl Executor {
                         val2.data.insert(0, arg1);
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(val2))))),
+                            data: Payload::from(Rc::new(RefCell::new(val2))),
                         }
                     }
                     10 => {
@@ -1827,7 +1931,7 @@ impl Executor {
                         val1.borrow_mut().data.push(arg2);
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     7 => {
@@ -1835,7 +1939,7 @@ impl Executor {
                         let val2 = arg2.as_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1_temp, val2)))),
+                            data: Payload::from(format!("{}{}", val1_temp, val2)),
                         }
                     }
                     9 => {
@@ -1843,7 +1947,7 @@ impl Executor {
                         val1.data.append(&mut arg2.as_array().borrow().data.clone());
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(val1))))),
+                            data: Payload::from(Rc::new(RefCell::new(val1))),
                         }
                     }
                     _ => {
@@ -1902,7 +2006,7 @@ impl Executor {
                         }
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(res))),
+                            data: Payload::from(res),
                         }
                     }
                     8 => {
@@ -1916,9 +2020,9 @@ impl Executor {
                         }
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                            data: Payload::from(Rc::new(RefCell::new(
                                 Array::new(res),
-                            ))))),
+                            ))),
                         }
                     }
                     10 => {
@@ -1964,7 +2068,7 @@ impl Executor {
                         let val1_temp = val1.to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1_temp, val2)))),
+                            data: Payload::from(format!("{}{}", val1_temp, val2)),
                         }
                     }
                     8 => {
@@ -2003,7 +2107,7 @@ impl Executor {
                         let val2 = arg2.as_bool();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1 & val2))),
+                            data: Payload::from(val1 & val2),
                         }
                     }
                     7 => {
@@ -2011,7 +2115,7 @@ impl Executor {
                         let val1_temp = val1.to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1_temp, val2)))),
+                            data: Payload::from(format!("{}{}", val1_temp, val2)),
                         }
                     }
                     8 => {
@@ -2020,9 +2124,9 @@ impl Executor {
                         } else {
                             return Val {
                                 typ: 8,
-                                data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                                data: Payload::from(Rc::new(RefCell::new(
                                     Object::new(-2, ValGroup::new_empty()),
-                                ))))),
+                                ))),
                             };
                         }
                     }
@@ -2032,9 +2136,9 @@ impl Executor {
                         } else {
                             return Val {
                                 typ: 9,
-                                data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                                data: Payload::from(Rc::new(RefCell::new(
                                     Array::new_empty(),
-                                ))))),
+                                ))),
                             };
                         }
                     }
@@ -2056,7 +2160,7 @@ impl Executor {
                         }
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(res))),
+                            data: Payload::from(res),
                         }
                     }
                     2 => {
@@ -2066,7 +2170,7 @@ impl Executor {
                         }
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(res))),
+                            data: Payload::from(res),
                         }
                     }
                     3 => {
@@ -2076,7 +2180,7 @@ impl Executor {
                         }
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(res))),
+                            data: Payload::from(res),
                         }
                     }
                     4 => {
@@ -2118,9 +2222,9 @@ impl Executor {
                         }
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                            data: Payload::from(Rc::new(RefCell::new(
                                 Array::new(res),
-                            ))))),
+                            ))),
                         }
                     }
                     2 => {
@@ -2130,9 +2234,9 @@ impl Executor {
                         }
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                            data: Payload::from(Rc::new(RefCell::new(
                                 Array::new(res),
-                            ))))),
+                            ))),
                         }
                     }
                     3 => {
@@ -2142,9 +2246,9 @@ impl Executor {
                         }
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                            data: Payload::from(Rc::new(RefCell::new(
                                 Array::new(res),
-                            ))))),
+                            ))),
                         }
                     }
                     4 | 5 => {
@@ -2156,9 +2260,9 @@ impl Executor {
                         } else {
                             return Val {
                                 typ: 9,
-                                data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                                data: Payload::from(Rc::new(RefCell::new(
                                     Array::new_empty(),
-                                ))))),
+                                ))),
                             };
                         }
                     }
@@ -2305,7 +2409,7 @@ impl Executor {
                         let val2 = arg2.as_bool();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1 ^ val2))),
+                            data: Payload::from(val1 ^ val2),
                         }
                     }
                     7 => {
@@ -2319,7 +2423,7 @@ impl Executor {
                         val2.borrow_mut().data.insert(0, arg1);
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(val2))),
+                            data: Payload::from(val2),
                         }
                     }
                     10 => {
@@ -2338,7 +2442,7 @@ impl Executor {
                         val1 = val1.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     2 => {
@@ -2346,7 +2450,7 @@ impl Executor {
                         val1 = val1.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     3 => {
@@ -2354,7 +2458,7 @@ impl Executor {
                         val1 = val1.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     4 => {
@@ -2362,7 +2466,7 @@ impl Executor {
                         val1 = val1.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     5 => {
@@ -2370,7 +2474,7 @@ impl Executor {
                         val1 = val1.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     6 => {
@@ -2378,7 +2482,7 @@ impl Executor {
                         val1 = val1.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     7 => {
@@ -2386,7 +2490,7 @@ impl Executor {
                         val1 = val1.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     8 => {
@@ -2394,7 +2498,7 @@ impl Executor {
                         val1 = val1.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     9 => {
@@ -2402,7 +2506,7 @@ impl Executor {
                         val1 = val1.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     10 => {
@@ -2440,7 +2544,7 @@ impl Executor {
                         val1_temp = val1_temp.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1_temp))),
+                            data: Payload::from(val1_temp),
                         }
                     }
                     8 => {
@@ -2460,7 +2564,7 @@ impl Executor {
                         });
                         Val {
                             typ: 8,
-                            data: Rc::new(RefCell::new(Box::new(val2))),
+                            data: Payload::from(val2),
                         }
                     }
                     9 => {
@@ -2492,7 +2596,7 @@ impl Executor {
                             .collect();
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     9 => {
@@ -2512,7 +2616,7 @@ impl Executor {
                             .collect();
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     _ => {
@@ -3578,7 +3682,7 @@ impl Executor {
         if self.ctx.memory.len() <= 1 {
             return None;
         }
-        let mut map: HashMap<String, Val> = HashMap::new();
+        let mut map: ValMap = ValMap::default();
         for scope in self.ctx.memory[1..].iter() {
             for (k, v) in scope.borrow().memory.borrow().data.iter() {
                 map.insert(k.clone(), v.clone());
@@ -3615,7 +3719,7 @@ impl Executor {
                 let returned_val = self.pending_func_result_value.clone();
                 self.pending_func_result_value = Val {
                     typ: 254,
-                    data: Rc::new(RefCell::new(Box::new(0))),
+                    data: Payload::Null,
                 };
                 if !self.registers.is_empty() {
                     main_reg = Some(returned_val);
@@ -3652,7 +3756,8 @@ impl Executor {
             }
             if main_reg.is_some() {
                 if !self.registers.is_empty() {
-                    if self.registers.last().unwrap().borrow().get_type() == OperationTypes::Dummy {
+                    let op_type = self.registers.last().unwrap().borrow().get_type();
+                    if op_type == OperationTypes::Dummy {
                         // A `DummyOp` is a called-function frame marker. A bare
                         // expression statement inside that body bubbles its value
                         // up to here; statement values are discarded (only an
@@ -3662,7 +3767,7 @@ impl Executor {
                         main_reg = None;
                         continue;
                     }
-                    if self.registers.last().unwrap().borrow().get_type() == OperationTypes::ArrExpr
+                    if op_type == OperationTypes::ArrExpr
                     {
                         if self.registers.last().unwrap().borrow().get_state()
                             == ExecStates::ArrExprExtractInfo
@@ -3671,7 +3776,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::ArrExprExtractItem,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3679,7 +3784,7 @@ impl Executor {
                                     == ExecStates::ArrExprFinished;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::ObjExpr
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3689,7 +3794,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::ObjExprExtractProp,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3697,7 +3802,7 @@ impl Executor {
                                     == ExecStates::ObjExprFinished;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::CallFunc
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3706,7 +3811,7 @@ impl Executor {
                             let arg_count = self.extract_i32() as usize;
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::CallFuncExtractFunc,
-                                Box::new((main_reg.clone().unwrap(), arg_count)),
+                                StateData::ValUsize(main_reg.take().unwrap(), arg_count),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3720,7 +3825,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::CallFuncExtractParam,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3728,7 +3833,7 @@ impl Executor {
                                     == ExecStates::CallFuncFinished;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::ReturnVal
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3736,7 +3841,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::ReturnValFinished,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3744,7 +3849,7 @@ impl Executor {
                                     == ExecStates::ReturnValFinished;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::DefineVar
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3752,7 +3857,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::DefineVarExtractValue,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3760,7 +3865,7 @@ impl Executor {
                                     == ExecStates::DefineVarExtractValue;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::AssignVar
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3769,7 +3874,7 @@ impl Executor {
                             if self.registers.last().unwrap().borrow().get_data()[1].as_i16() == 1 {
                                 self.registers.last().unwrap().borrow_mut().set_state(
                                     ExecStates::AssignVarExtractValue,
-                                    Box::new(main_reg.clone().unwrap()),
+                                    StateData::Val(main_reg.take().unwrap()),
                                 );
                                 main_reg = None;
                                 is_reg_state_final =
@@ -3781,7 +3886,7 @@ impl Executor {
                             {
                                 self.registers.last().unwrap().borrow_mut().set_state(
                                     ExecStates::AssignVarExtractIndex,
-                                    Box::new(main_reg.clone().unwrap()),
+                                    StateData::Val(main_reg.take().unwrap()),
                                 );
                                 main_reg = None;
                                 is_reg_state_final =
@@ -3794,7 +3899,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::AssignVarExtractValue,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3802,7 +3907,7 @@ impl Executor {
                                     == ExecStates::AssignVarExtractValue;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::IfStmt
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3810,7 +3915,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::IfStmtFinished,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3818,7 +3923,7 @@ impl Executor {
                                     == ExecStates::IfStmtFinished;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::LoopStmt
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3826,7 +3931,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::LoopStmtFinished,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3834,7 +3939,7 @@ impl Executor {
                                     == ExecStates::LoopStmtFinished;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::SwitchStmt
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3844,11 +3949,7 @@ impl Executor {
                             let case_count = self.extract_i64() as usize;
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::SwitchStmtExtractVal,
-                                Box::new((
-                                    main_reg.clone().unwrap(),
-                                    branch_after_start,
-                                    case_count,
-                                )),
+                                StateData::ValUsize2(main_reg.take().unwrap(), branch_after_start, case_count),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3864,11 +3965,7 @@ impl Executor {
                             let branch_true_end = self.extract_i64() as usize;
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::SwitchStmtExtractCase,
-                                Box::new((
-                                    main_reg.clone().unwrap(),
-                                    branch_true_start,
-                                    branch_true_end,
-                                )),
+                                StateData::ValUsize2(main_reg.take().unwrap(), branch_true_start, branch_true_end),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3883,7 +3980,7 @@ impl Executor {
                             self.pointer = branch_true_end;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::Arithmetic
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3891,7 +3988,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::ArithmeticExtractArg1,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3903,7 +4000,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::ArithmeticExtractArg2,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3911,7 +4008,7 @@ impl Executor {
                                     == ExecStates::ArithmeticExtractArg2;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::Indexer
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3919,7 +4016,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::IndexerExtractVarName,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3931,7 +4028,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::IndexerExtractIndex,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3939,7 +4036,7 @@ impl Executor {
                                     == ExecStates::IndexerExtractIndex;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::NotVal
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3947,7 +4044,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::NotValFinished,
-                                Box::new(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3955,7 +4052,7 @@ impl Executor {
                                     == ExecStates::NotValFinished;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::CondBrch
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3965,7 +4062,7 @@ impl Executor {
                             let fb = self.extract_i64();
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::CondBranchFinished,
-                                Box::new((main_reg.clone().unwrap(), tb, fb)),
+                                StateData::ValI64x2(main_reg.take().unwrap(), tb, fb),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3973,7 +4070,7 @@ impl Executor {
                                     == ExecStates::CondBranchFinished;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::CastOprt
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3982,7 +4079,7 @@ impl Executor {
                             let tt = self.extract_str();
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::CastOprtFinished,
-                                Box::new((main_reg.clone().unwrap(), tt)),
+                                StateData::ValStr(main_reg.take().unwrap(), tt),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3999,7 +4096,7 @@ impl Executor {
                     if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::ArrExprFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let items_vec = regs[1].clone();
                         self.registers.pop();
                         main_reg = Some(items_vec);
@@ -4008,10 +4105,10 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::ObjExprFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let typ_id = regs[0].as_i64();
                         let props_vec = regs[2].as_array();
-                        let mut props_map = HashMap::new();
+                        let mut props_map = ValMap::default();
                         for i in (0..props_vec.borrow().data.len()).step_by(2) {
                             props_map.insert(
                                 props_vec.borrow().data[i].as_string(),
@@ -4020,9 +4117,9 @@ impl Executor {
                         }
                         let result = Val {
                             typ: 8,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                            data: Payload::from(Rc::new(RefCell::new(
                                 Object::new(typ_id, ValGroup::new(props_map)),
-                            ))))),
+                            ))),
                         };
                         self.registers.pop();
                         main_reg = Some(result);
@@ -4031,7 +4128,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::CallFuncFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let is_native = regs[1].as_bool();
                         if !is_native {
                             let func = regs[0].as_func().clone();
@@ -4043,7 +4140,7 @@ impl Executor {
                             }
                             let expected_params = func.borrow().params.clone();
                             let provided_args = regs[3].as_array().borrow().data.clone();
-                            let mut args = HashMap::new();
+                            let mut args = ValMap::default();
                             // Seed the frame with the closure's captured upvalues
                             // first, so explicit parameters override them.
                             if let Some(captured) = func.borrow().captured.clone() {
@@ -4053,7 +4150,7 @@ impl Executor {
                             }
                             for (i, param_name) in expected_params.iter().enumerate() {
                                 let arg = provided_args.get(i).cloned().unwrap_or_else(|| {
-                                    Val::new(0, Rc::new(RefCell::new(Box::new(0))))
+                                    Val::new(0, Payload::Null)
                                 });
                                 args.insert(param_name.clone(), arg);
                             }
@@ -4105,7 +4202,7 @@ impl Executor {
                             // keeps running deterministically.
                             if !self.capabilities.allows_api(&api_name) {
                                 self.registers.pop();
-                                main_reg = Some(Val::new(0, Rc::new(RefCell::new(Box::new(0)))));
+                                main_reg = Some(Val::new(0, Payload::Null));
                                 is_reg_state_final = false;
                                 continue;
                             }
@@ -4118,18 +4215,16 @@ impl Executor {
                                 cb_id,
                                 Val {
                                     typ: 9,
-                                    data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                                    data: Payload::from(Rc::new(RefCell::new(
                                         Array::new(vec![
                                             arg1,
                                             Val {
                                                 typ: 1,
-                                                data: Rc::new(RefCell::new(Box::new(
-                                                    self.executor_id,
-                                                ))),
+                                                data: Payload::from(self.executor_id),
                                             },
                                             arg2,
                                         ]),
-                                    ))))),
+                                    ))),
                                 },
                             ));
                             break;
@@ -4164,7 +4259,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::DefineVarExtractValue
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let var_name = regs[0].as_string();
                         let var_value = regs[1].clone();
                         self.registers.pop();
@@ -4174,7 +4269,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::AssignVarExtractValue
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let var_name = regs[0].as_string();
                         let assign_target_type = regs[1].as_i16();
                         let data = regs[3].clone();
@@ -4182,7 +4277,7 @@ impl Executor {
                             self.assign(var_name.clone(), data);
                         } else if assign_target_type == 2 {
                             let index = regs[2].clone();
-                            let indexed = self.ctx.find_val_globally(var_name);
+                            let indexed = self.ctx.find_val_globally(&var_name);
                             if index.typ == 7 {
                                 if indexed.typ == 8 {
                                     let obj = indexed.as_object();
@@ -4219,7 +4314,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::IfStmtFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let has_condition = regs[0].as_bool();
                         let cond_val = regs[1].clone();
                         let mut condition = false;
@@ -4276,7 +4371,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::LoopStmtFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let cond_val = regs[0].clone();
                         let mut condition = false;
                         if cond_val.typ == 6 {
@@ -4309,7 +4404,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::SwitchStmtFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let comparing_val = regs[0].clone();
                         let branch_after_start = regs[1].as_i64() as usize;
                         let cases = regs[3].as_array();
@@ -4346,7 +4441,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::ArithmeticExtractArg2
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let op = regs[0].as_i16();
                         let arg1 = regs[1].clone();
                         let arg2 = regs[2].clone();
@@ -4355,37 +4450,37 @@ impl Executor {
                             1 => {
                                 main_reg = Some(Val {
                                     typ: 6,
-                                    data: Rc::new(RefCell::new(Box::new(self.is_eq(arg1, arg2)))),
+                                    data: Payload::from(self.is_eq(arg1, arg2)),
                                 });
                             }
                             2 => {
                                 main_reg = Some(Val {
                                     typ: 6,
-                                    data: Rc::new(RefCell::new(Box::new(self.is_ge(arg1, arg2)))),
+                                    data: Payload::from(self.is_ge(arg1, arg2)),
                                 });
                             }
                             3 => {
                                 main_reg = Some(Val {
                                     typ: 6,
-                                    data: Rc::new(RefCell::new(Box::new(self.is_gee(arg1, arg2)))),
+                                    data: Payload::from(self.is_gee(arg1, arg2)),
                                 });
                             }
                             4 => {
                                 main_reg = Some(Val {
                                     typ: 6,
-                                    data: Rc::new(RefCell::new(Box::new(self.is_le(arg1, arg2)))),
+                                    data: Payload::from(self.is_le(arg1, arg2)),
                                 });
                             }
                             5 => {
                                 main_reg = Some(Val {
                                     typ: 6,
-                                    data: Rc::new(RefCell::new(Box::new(self.is_lee(arg1, arg2)))),
+                                    data: Payload::from(self.is_lee(arg1, arg2)),
                                 });
                             }
                             6 => {
                                 main_reg = Some(Val {
                                     typ: 6,
-                                    data: Rc::new(RefCell::new(Box::new(!self.is_eq(arg1, arg2)))),
+                                    data: Payload::from(!self.is_eq(arg1, arg2)),
                                 });
                             }
                             7 => {
@@ -4413,7 +4508,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::IndexerExtractIndex
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let indexed = regs[0].clone();
                         let index = regs[1].clone();
                         self.registers.pop();
@@ -4426,7 +4521,7 @@ impl Executor {
                                 } else {
                                     main_reg = Some(Val {
                                         typ: 0,
-                                        data: Rc::new(RefCell::new(Box::new(0))),
+                                        data: Payload::Null,
                                     });
                                 }
                             } else {
@@ -4435,7 +4530,7 @@ impl Executor {
                                 );
                                 main_reg = Some(Val {
                                     typ: 0,
-                                    data: Rc::new(RefCell::new(Box::new(0))),
+                                    data: Payload::Null,
                                 });
                             }
                         } else if index.typ >= 1 && index.typ <= 3 {
@@ -4449,7 +4544,7 @@ impl Executor {
                                     } else {
                                         main_reg = Some(Val {
                                             typ: 0,
-                                            data: Rc::new(RefCell::new(Box::new(0))),
+                                            data: Payload::Null,
                                         });
                                     }
                                 } else if index.typ == 2 {
@@ -4460,7 +4555,7 @@ impl Executor {
                                     } else {
                                         main_reg = Some(Val {
                                             typ: 0,
-                                            data: Rc::new(RefCell::new(Box::new(0))),
+                                            data: Payload::Null,
                                         });
                                     }
                                 } else {
@@ -4471,7 +4566,7 @@ impl Executor {
                                     } else {
                                         main_reg = Some(Val {
                                             typ: 0,
-                                            data: Rc::new(RefCell::new(Box::new(0))),
+                                            data: Payload::Null,
                                         });
                                     }
                                 }
@@ -4481,7 +4576,7 @@ impl Executor {
                                 );
                                 main_reg = Some(Val {
                                     typ: 0,
-                                    data: Rc::new(RefCell::new(Box::new(0))),
+                                    data: Payload::Null,
                                 });
                             }
                         } else {
@@ -4490,7 +4585,7 @@ impl Executor {
                         );
                             main_reg = Some(Val {
                                 typ: 0,
-                                data: Rc::new(RefCell::new(Box::new(0))),
+                                data: Payload::Null,
                             });
                         }
                         is_reg_state_final = false;
@@ -4504,7 +4599,7 @@ impl Executor {
                         if val.typ == 6 {
                             main_reg = Some(Val {
                                 typ: 6,
-                                data: Rc::new(RefCell::new(Box::new(!val.as_bool()))),
+                                data: Payload::from(!val.as_bool()),
                             });
                         } else {
                             panic!(
@@ -4516,7 +4611,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::CondBranchFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let condition = regs[0].as_bool();
                         let branch_true_start = regs[1].as_i64() as usize;
                         let branch_false_start = regs[2].as_i64() as usize;
@@ -4531,7 +4626,7 @@ impl Executor {
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::CastOprtFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data().clone();
+                        let regs = self.registers.last().unwrap().borrow().get_data();
                         let data = regs[0].clone();
                         let target_type = regs[1].as_string();
                         if target_type == "i16" {
@@ -4539,54 +4634,54 @@ impl Executor {
                                 1 => {
                                     main_reg = Some(Val {
                                         typ: 1,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i16() as i16))),
+                                        data: Payload::from(data.as_i16() as i16),
                                     });
                                 }
                                 2 => {
                                     main_reg = Some(Val {
                                         typ: 1,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i32() as i16))),
+                                        data: Payload::from(data.as_i32() as i16),
                                     });
                                 }
                                 3 => {
                                     main_reg = Some(Val {
                                         typ: 1,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i64() as i16))),
+                                        data: Payload::from(data.as_i64() as i16),
                                     });
                                 }
                                 4 => {
                                     main_reg = Some(Val {
                                         typ: 1,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f32() as i16))),
+                                        data: Payload::from(data.as_f32() as i16),
                                     });
                                 }
                                 5 => {
                                     main_reg = Some(Val {
                                         typ: 1,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f64() as i16))),
+                                        data: Payload::from(data.as_f64() as i16),
                                     });
                                 }
                                 6 => {
                                     main_reg =
                                         Some(Val {
                                             typ: 1,
-                                            data: Rc::new(RefCell::new(Box::new(
+                                            data: Payload::from(
                                                 if data.as_bool() { 1 } else { 0 } as i16,
-                                            ))),
+                                            ),
                                         });
                                 }
                                 7 => {
                                     main_reg = Some(Val {
                                         typ: 1,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_string().parse::<i16>().unwrap(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 _ => {
                                     main_reg = Some(Val {
                                         typ: 0,
-                                        data: Rc::new(RefCell::new(Box::new(0))),
+                                        data: Payload::Null,
                                     });
                                 }
                             }
@@ -4595,54 +4690,54 @@ impl Executor {
                                 1 => {
                                     main_reg = Some(Val {
                                         typ: 2,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i16() as i32))),
+                                        data: Payload::from(data.as_i16() as i32),
                                     });
                                 }
                                 2 => {
                                     main_reg = Some(Val {
                                         typ: 2,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i32() as i32))),
+                                        data: Payload::from(data.as_i32() as i32),
                                     });
                                 }
                                 3 => {
                                     main_reg = Some(Val {
                                         typ: 2,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i64() as i32))),
+                                        data: Payload::from(data.as_i64() as i32),
                                     });
                                 }
                                 4 => {
                                     main_reg = Some(Val {
                                         typ: 2,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f32() as i32))),
+                                        data: Payload::from(data.as_f32() as i32),
                                     });
                                 }
                                 5 => {
                                     main_reg = Some(Val {
                                         typ: 2,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f64() as i32))),
+                                        data: Payload::from(data.as_f64() as i32),
                                     });
                                 }
                                 6 => {
                                     main_reg =
                                         Some(Val {
                                             typ: 2,
-                                            data: Rc::new(RefCell::new(Box::new(
+                                            data: Payload::from(
                                                 if data.as_bool() { 1 } else { 0 } as i32,
-                                            ))),
+                                            ),
                                         });
                                 }
                                 7 => {
                                     main_reg = Some(Val {
                                         typ: 2,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_string().parse::<i32>().unwrap(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 _ => {
                                     main_reg = Some(Val {
                                         typ: 0,
-                                        data: Rc::new(RefCell::new(Box::new(0))),
+                                        data: Payload::Null,
                                     });
                                 }
                             }
@@ -4651,54 +4746,54 @@ impl Executor {
                                 1 => {
                                     main_reg = Some(Val {
                                         typ: 3,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i16() as i64))),
+                                        data: Payload::from(data.as_i16() as i64),
                                     });
                                 }
                                 2 => {
                                     main_reg = Some(Val {
                                         typ: 3,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i32() as i64))),
+                                        data: Payload::from(data.as_i32() as i64),
                                     });
                                 }
                                 3 => {
                                     main_reg = Some(Val {
                                         typ: 3,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i64() as i64))),
+                                        data: Payload::from(data.as_i64() as i64),
                                     });
                                 }
                                 4 => {
                                     main_reg = Some(Val {
                                         typ: 3,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f32() as i64))),
+                                        data: Payload::from(data.as_f32() as i64),
                                     });
                                 }
                                 5 => {
                                     main_reg = Some(Val {
                                         typ: 3,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f64() as i64))),
+                                        data: Payload::from(data.as_f64() as i64),
                                     });
                                 }
                                 6 => {
                                     main_reg =
                                         Some(Val {
                                             typ: 3,
-                                            data: Rc::new(RefCell::new(Box::new(
+                                            data: Payload::from(
                                                 if data.as_bool() { 1 } else { 0 } as i64,
-                                            ))),
+                                            ),
                                         });
                                 }
                                 7 => {
                                     main_reg = Some(Val {
                                         typ: 3,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_string().parse::<i64>().unwrap(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 _ => {
                                     main_reg = Some(Val {
                                         typ: 0,
-                                        data: Rc::new(RefCell::new(Box::new(0))),
+                                        data: Payload::Null,
                                     });
                                 }
                             }
@@ -4707,54 +4802,54 @@ impl Executor {
                                 1 => {
                                     main_reg = Some(Val {
                                         typ: 4,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i16() as f32))),
+                                        data: Payload::from(data.as_i16() as f32),
                                     });
                                 }
                                 2 => {
                                     main_reg = Some(Val {
                                         typ: 4,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i32() as f32))),
+                                        data: Payload::from(data.as_i32() as f32),
                                     });
                                 }
                                 3 => {
                                     main_reg = Some(Val {
                                         typ: 4,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i64() as f32))),
+                                        data: Payload::from(data.as_i64() as f32),
                                     });
                                 }
                                 4 => {
                                     main_reg = Some(Val {
                                         typ: 4,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f32() as f32))),
+                                        data: Payload::from(data.as_f32() as f32),
                                     });
                                 }
                                 5 => {
                                     main_reg = Some(Val {
                                         typ: 4,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f64() as f32))),
+                                        data: Payload::from(data.as_f64() as f32),
                                     });
                                 }
                                 6 => {
                                     main_reg =
                                         Some(Val {
                                             typ: 4,
-                                            data: Rc::new(RefCell::new(Box::new(
+                                            data: Payload::from(
                                                 if data.as_bool() { 1 } else { 0 } as f32,
-                                            ))),
+                                            ),
                                         });
                                 }
                                 7 => {
                                     main_reg = Some(Val {
                                         typ: 4,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_string().parse::<f32>().unwrap(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 _ => {
                                     main_reg = Some(Val {
                                         typ: 0,
-                                        data: Rc::new(RefCell::new(Box::new(0))),
+                                        data: Payload::Null,
                                     });
                                 }
                             }
@@ -4763,54 +4858,54 @@ impl Executor {
                                 1 => {
                                     main_reg = Some(Val {
                                         typ: 5,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i16() as f64))),
+                                        data: Payload::from(data.as_i16() as f64),
                                     });
                                 }
                                 2 => {
                                     main_reg = Some(Val {
                                         typ: 5,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i32() as f64))),
+                                        data: Payload::from(data.as_i32() as f64),
                                     });
                                 }
                                 3 => {
                                     main_reg = Some(Val {
                                         typ: 5,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i64() as f64))),
+                                        data: Payload::from(data.as_i64() as f64),
                                     });
                                 }
                                 4 => {
                                     main_reg = Some(Val {
                                         typ: 5,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f32() as f64))),
+                                        data: Payload::from(data.as_f32() as f64),
                                     });
                                 }
                                 5 => {
                                     main_reg = Some(Val {
                                         typ: 5,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f64() as f64))),
+                                        data: Payload::from(data.as_f64() as f64),
                                     });
                                 }
                                 6 => {
                                     main_reg =
                                         Some(Val {
                                             typ: 5,
-                                            data: Rc::new(RefCell::new(Box::new(
+                                            data: Payload::from(
                                                 if data.as_bool() { 1 } else { 0 } as f64,
-                                            ))),
+                                            ),
                                         });
                                 }
                                 7 => {
                                     main_reg = Some(Val {
                                         typ: 5,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_string().parse::<f64>().unwrap(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 _ => {
                                     main_reg = Some(Val {
                                         typ: 0,
-                                        data: Rc::new(RefCell::new(Box::new(0))),
+                                        data: Payload::Null,
                                     });
                                 }
                             }
@@ -4819,51 +4914,51 @@ impl Executor {
                                 1 => {
                                     main_reg = Some(Val {
                                         typ: 6,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i16() > 0))),
+                                        data: Payload::from(data.as_i16() > 0),
                                     });
                                 }
                                 2 => {
                                     main_reg = Some(Val {
                                         typ: 6,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i32() > 0))),
+                                        data: Payload::from(data.as_i32() > 0),
                                     });
                                 }
                                 3 => {
                                     main_reg = Some(Val {
                                         typ: 6,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i64() > 0))),
+                                        data: Payload::from(data.as_i64() > 0),
                                     });
                                 }
                                 4 => {
                                     main_reg = Some(Val {
                                         typ: 6,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f32() > 0.0))),
+                                        data: Payload::from(data.as_f32() > 0.0),
                                     });
                                 }
                                 5 => {
                                     main_reg = Some(Val {
                                         typ: 6,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f64() > 0.0))),
+                                        data: Payload::from(data.as_f64() > 0.0),
                                     });
                                 }
                                 6 => {
                                     main_reg = Some(Val {
                                         typ: 6,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_bool()))),
+                                        data: Payload::from(data.as_bool()),
                                     });
                                 }
                                 7 => {
                                     main_reg = Some(Val {
                                         typ: 6,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_string() == "true",
-                                        ))),
+                                        ),
                                     });
                                 }
                                 _ => {
                                     main_reg = Some(Val {
                                         typ: 0,
-                                        data: Rc::new(RefCell::new(Box::new(0))),
+                                        data: Payload::Null,
                                     });
                                 }
                             }
@@ -4872,73 +4967,73 @@ impl Executor {
                                 1 => {
                                     main_reg = Some(Val {
                                         typ: 7,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_i16().to_string(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 2 => {
                                     main_reg = Some(Val {
                                         typ: 7,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_i32().to_string(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 3 => {
                                     main_reg = Some(Val {
                                         typ: 7,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_i64().to_string(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 4 => {
                                     main_reg = Some(Val {
                                         typ: 7,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_f32().to_string(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 5 => {
                                     main_reg = Some(Val {
                                         typ: 7,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_f64().to_string(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 6 => {
                                     main_reg = Some(Val {
                                         typ: 7,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_bool().to_string(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 7 => {
                                     main_reg = Some(Val {
                                         typ: 7,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_string()))),
+                                        data: Payload::from(data.as_string()),
                                     });
                                 }
                                 8 => {
                                     main_reg = Some(Val {
                                         typ: 7,
-                                        data: Rc::new(RefCell::new(Box::new(data.stringify()))),
+                                        data: Payload::from(data.stringify()),
                                     });
                                 }
                                 9 => {
                                     main_reg = Some(Val {
                                         typ: 7,
-                                        data: Rc::new(RefCell::new(Box::new(data.stringify()))),
+                                        data: Payload::from(data.stringify()),
                                     });
                                 }
                                 _ => {
                                     main_reg = Some(Val {
                                         typ: 0,
-                                        data: Rc::new(RefCell::new(Box::new(0))),
+                                        data: Payload::Null,
                                     });
                                 }
                             }
@@ -4981,7 +5076,7 @@ impl Executor {
                             let returned_val = self.pending_func_result_value.clone();
                             self.pending_func_result_value = Val {
                                 typ: 254,
-                                data: Rc::new(RefCell::new(Box::new(0))),
+                                data: Payload::Null,
                             };
                             if !self.registers.is_empty() {
                                 main_reg = Some(returned_val);
@@ -5013,7 +5108,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(1 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(1 as i16));
                 }
                 // ge operator
                 0xf1 => {
@@ -5024,7 +5119,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(2 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(2 as i16));
                 }
                 // gee operator
                 0xf2 => {
@@ -5035,7 +5130,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(3 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(3 as i16));
                 }
                 // le operator
                 0xf3 => {
@@ -5046,7 +5141,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(4 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(4 as i16));
                 }
                 // lee operator
                 0xf4 => {
@@ -5057,7 +5152,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(5 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(5 as i16));
                 }
                 // inequality operator
                 0xf5 => {
@@ -5068,7 +5163,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(6 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(6 as i16));
                 }
                 // sum operator
                 0xf6 => {
@@ -5079,7 +5174,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(7 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(7 as i16));
                 }
                 // subtract operator
                 0xf7 => {
@@ -5090,7 +5185,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(8 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(8 as i16));
                 }
                 // multiply operator
                 0xf8 => {
@@ -5101,7 +5196,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(9 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(9 as i16));
                 }
                 // division operator
                 0xf9 => {
@@ -5112,7 +5207,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(10 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(10 as i16));
                 }
                 // mod operator
                 0xfa => {
@@ -5123,7 +5218,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(11 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(11 as i16));
                 }
                 // power operator
                 0xfb => {
@@ -5134,7 +5229,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, Box::new(12 as i16));
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(12 as i16));
                 }
                 // not operator
                 0xfc => {
@@ -5174,7 +5269,7 @@ impl Executor {
                             .last()
                             .unwrap()
                             .borrow_mut()
-                            .set_state(ExecStates::DefineVarExtractName, Box::new(var_name));
+                            .set_state(ExecStates::DefineVarExtractName, StateData::Str(var_name));
                     }
                 }
                 // assignment statement
@@ -5187,7 +5282,7 @@ impl Executor {
                         let var_name = self.extract_str();
                         self.registers.last().unwrap().borrow_mut().set_state(
                             ExecStates::AssignVarExtractName,
-                            Box::new((var_name, 2 as i16)),
+                            StateData::StrI16(var_name, 2 as i16),
                         );
                     } else if self.program[self.pointer] == 0x0b {
                         self.pointer += 1;
@@ -5197,7 +5292,7 @@ impl Executor {
                         let var_name = self.extract_str();
                         self.registers.last().unwrap().borrow_mut().set_state(
                             ExecStates::AssignVarExtractName,
-                            Box::new((var_name, 1 as i16)),
+                            StateData::StrI16(var_name, 1 as i16),
                         );
                     }
                 }
@@ -5213,18 +5308,18 @@ impl Executor {
                             .last()
                             .unwrap()
                             .borrow_mut()
-                            .set_state(ExecStates::IfStmtIsConditioned, Box::new(has_condition));
+                            .set_state(ExecStates::IfStmtIsConditioned, StateData::Bool(has_condition));
                     } else {
                         self.registers
                             .last()
                             .unwrap()
                             .borrow_mut()
-                            .set_state(ExecStates::IfStmtIsConditioned, Box::new(has_condition));
+                            .set_state(ExecStates::IfStmtIsConditioned, StateData::Bool(has_condition));
                         self.registers.last().unwrap().borrow_mut().set_state(
                             ExecStates::IfStmtFinished,
-                            Box::new(Val {
+                            StateData::Val(Val {
                                 typ: 6,
-                                data: Rc::new(RefCell::new(Box::new(true))),
+                                data: Payload::from(true),
                             }),
                         );
                         main_reg = None;
@@ -5265,9 +5360,9 @@ impl Executor {
                         func_name.clone(),
                         Val {
                             typ: 10,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                            data: Payload::from(Rc::new(RefCell::new(
                                 func.clone(),
-                            ))))),
+                            ))),
                         },
                     );
                     self.pointer = func_end;
@@ -5308,7 +5403,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ObjExprExtractInfo, Box::new((typ, props_len)));
+                        .set_state(ExecStates::ObjExprExtractInfo, StateData::I64I32(typ, props_len));
                     if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::ObjExprFinished
                     {
@@ -5326,7 +5421,7 @@ impl Executor {
                         .last()
                         .unwrap()
                         .borrow_mut()
-                        .set_state(ExecStates::ArrExprExtractInfo, Box::new(arr_len));
+                        .set_state(ExecStates::ArrExprExtractInfo, StateData::I32(arr_len));
                     if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::ArrExprFinished
                     {
@@ -5340,6 +5435,6 @@ impl Executor {
                 _ => {}
             }
         }
-        Val::new(0, Rc::new(RefCell::new(Box::new(0))))
+        Val::new(0, Payload::Null)
     }
 }

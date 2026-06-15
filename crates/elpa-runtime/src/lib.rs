@@ -109,12 +109,19 @@ pub fn frame_from_submit(call: &HostCall) -> Option<Frame> {
     if call.api_name != "gpu.submit" {
         return None;
     }
-    let v: serde_json::Value = serde_json::from_str(&call.payload).ok()?;
-    let frame_value = match v {
-        serde_json::Value::Array(mut items) if !items.is_empty() => items.remove(0),
-        other => other,
-    };
-    serde_json::from_value(frame_value).ok()
+    // Fast path: deserialize the payload *straight into* the typed `Frame`,
+    // skipping the intermediate `serde_json::Value` tree the previous
+    // `from_str::<Value>` + `from_value` built — that tree allocated a `BTreeMap`
+    // (plus owned `String` keys) for every object node in the frame, hundreds per
+    // submit, on the hot per-frame path. The VM wraps `askHost` arguments in a
+    // one-element array, so the payload is normally `[<frame>]`.
+    if let Ok(mut frames) = serde_json::from_str::<Vec<Frame>>(&call.payload) {
+        if !frames.is_empty() {
+            return Some(frames.remove(0));
+        }
+    }
+    // Fallback: a bare (unwrapped) frame object.
+    serde_json::from_str::<Frame>(&call.payload).ok()
 }
 
 /// Unwrap the single argument of an `askHost` payload. The VM wraps call
