@@ -3756,7 +3756,8 @@ impl Executor {
             }
             if main_reg.is_some() {
                 if !self.registers.is_empty() {
-                    if self.registers.last().unwrap().borrow().get_type() == OperationTypes::Dummy {
+                    let op_type = self.registers.last().unwrap().borrow().get_type();
+                    if op_type == OperationTypes::Dummy {
                         // A `DummyOp` is a called-function frame marker. A bare
                         // expression statement inside that body bubbles its value
                         // up to here; statement values are discarded (only an
@@ -3766,7 +3767,7 @@ impl Executor {
                         main_reg = None;
                         continue;
                     }
-                    if self.registers.last().unwrap().borrow().get_type() == OperationTypes::ArrExpr
+                    if op_type == OperationTypes::ArrExpr
                     {
                         if self.registers.last().unwrap().borrow().get_state()
                             == ExecStates::ArrExprExtractInfo
@@ -3783,7 +3784,7 @@ impl Executor {
                                     == ExecStates::ArrExprFinished;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::ObjExpr
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3801,7 +3802,7 @@ impl Executor {
                                     == ExecStates::ObjExprFinished;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::CallFunc
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3832,7 +3833,7 @@ impl Executor {
                                     == ExecStates::CallFuncFinished;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::ReturnVal
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3848,7 +3849,7 @@ impl Executor {
                                     == ExecStates::ReturnValFinished;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::DefineVar
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3864,7 +3865,7 @@ impl Executor {
                                     == ExecStates::DefineVarExtractValue;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::AssignVar
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3906,7 +3907,7 @@ impl Executor {
                                     == ExecStates::AssignVarExtractValue;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::IfStmt
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3922,7 +3923,7 @@ impl Executor {
                                     == ExecStates::IfStmtFinished;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::LoopStmt
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3938,7 +3939,7 @@ impl Executor {
                                     == ExecStates::LoopStmtFinished;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::SwitchStmt
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -3979,7 +3980,7 @@ impl Executor {
                             self.pointer = branch_true_end;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::Arithmetic
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -4007,7 +4008,7 @@ impl Executor {
                                     == ExecStates::ArithmeticExtractArg2;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::Indexer
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -4035,7 +4036,7 @@ impl Executor {
                                     == ExecStates::IndexerExtractIndex;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::NotVal
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -4051,7 +4052,7 @@ impl Executor {
                                     == ExecStates::NotValFinished;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::CondBrch
                     {
                         if self.registers.last().unwrap().borrow().get_state()
@@ -4069,7 +4070,7 @@ impl Executor {
                                     == ExecStates::CondBranchFinished;
                             continue;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_type()
+                    } else if op_type
                         == OperationTypes::CastOprt
                     {
                         if self.registers.last().unwrap().borrow().get_state()
