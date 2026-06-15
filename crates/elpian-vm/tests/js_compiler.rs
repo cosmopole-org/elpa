@@ -280,3 +280,33 @@ fn anonymous_function_expression_is_callable() {
     let js = "let sq = function (x) { return x * x; }; function f() { return sq(9); }";
     assert_eq!(run_js_and_call("js-fnexpr", js, "f"), "81");
 }
+
+#[test]
+fn member_and_index_assignment_mutate_in_place() {
+    // Assigning to `obj.field`, `obj[key]`, and `arr[i]` — the lvalues a widget
+    // framework leans on. Exercises the indexer-assignment path end to end.
+    let js = "
+        function f() {
+            let o = { a: 1 };
+            o.a = 5;            // member assign
+            o[\"b\"] = 7;        // computed string-key assign
+            let arr = [10, 20, 30];
+            arr[1] = 99;        // array element assign
+            return o.a + o.b + arr[1];   // 5 + 7 + 99
+        }";
+    assert_eq!(run_js_and_call("js-member-assign", js, "f"), "111");
+}
+
+#[test]
+fn closure_mutates_shared_object_field() {
+    // A closure stored in a field mutates another field of the same object — the
+    // component-`update` / widget-`onTap` shape.
+    let js = "
+        function f() {
+            let w = { n: 0 };
+            w.bump = () => { w.n = w.n + 1; };
+            w.bump(); w.bump(); w.bump();
+            return w.n;
+        }";
+    assert_eq!(run_js_and_call("js-field-closure", js, "f"), "3");
+}

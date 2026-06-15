@@ -1,109 +1,101 @@
-# Elpa Material Design 3 UI kit (JavaScript)
+# Elpa Material Design 3 framework (JavaScript)
 
-An **interactive Material Design 3 (Material You) UI-kit SDK** for Elpa programs —
-and, like the engine [`examples/sdk`](../sdk), **the kit itself is the app code**,
-not Rust. It ships as **JavaScript** that Elpa compiles and runs directly on its
-VM, and that any Elpa program can pull in at runtime with `vm.import`. An Elpa
-instance is built straight from this source: `Elpa::new_from_js(backend, surface,
-DEMO_JS)`.
+A small **Flutter-style Material Design 3 UI framework** for Elpa — written in
+**JavaScript**, not Rust. Elpa compiles it to its VM and runs it directly. The
+SDK provides widget constructors, a layout engine, an animated theme, and a
+component runtime; an app uses them as a black box and never touches the GPU.
 
 | File | What it is |
 |------|------------|
-| [`assets/elpa-material.js`](assets/elpa-material.js) | **The UI kit.** A JS program whose top-level body registers one `gpu.define` per widget via `askHost`. Importable via `vm.import`. |
-| [`assets/demo.js`](assets/demo.js) | A complete, **interactive** Elpa app in JS: imports the kit, lays widgets out from `gpu.surfaceInfo`, and wires pointer / wheel / keyboard events to widget state. |
-| `src/lib.rs` | Only embeds the JS (`MODULE_JS`, `DEMO_JS`) so host examples can bundle and register it. |
-| `tests/run.rs` | Builds the JS through a headless `Elpa` instance end to end — including real pointer/wheel/keyboard events — and validates the WGSL with `naga`. |
+| [`assets/elpa-material.js`](assets/elpa-material.js) | **The SDK.** The rounded-rect SDF pipeline, the glyph font, the responsive layout coordinator, the M3 colors/sizes, the widget constructors, and the retained-tree component runtime (`Component` / `runApp`, with per-component `update`) whose internals end in `gpu.submit`. |
+| [`assets/demo.js`](assets/demo.js) | **The app.** Declares state, composes a widget tree from the SDK's widgets (including custom components), and calls `runApp`. No `gpu.submit`, no glyphs, no coordinates. |
+| `src/lib.rs` | Embeds the JS (`MODULE_JS`, `DEMO_JS`) and links them with [`program`]. |
+| `tests/run.rs` | Runs the linked program on a headless `Elpa` instance end to end — first paint, tap/key/wheel interaction, animation, resize — and validates the WGSL with `naga`. |
 
-## Widgets
+## Writing an app
 
-`card`, `appBar`, `filledButton`, `outlinedButton`, `fab` (floating action
-button), `switch`, `checkbox`, `radioGroup` (3 radios), `slider`, `chip`,
-`progress` (linear), `divider` and `labels` — every one drawn by **a single
-shared rounded-rectangle SDF pipeline** (M3 shapes are rounded rects, pills and
-circles). A widget definition is just an instanced draw of its rounded-rect
-"layers" from a per-widget instance buffer the app fills each frame.
+```js
+let count = 0; let sw = 0.0;
 
-Two extras keep it looking like M3:
+// A custom widget is a plain function `(props, update) => widget`, React-style.
+// Place it in the tree with `Component(fn, props)` so the runtime owns its
+// identity — then its `update` repaints only it.
+function Counter(props, update) {
+    return Row({ gap: 4.0, children: [
+        FilledButton({ label: "TAP", onTap: () => { count = count + 1; update(); } }),
+        Switch({ id: "wifi", value: sw, onTap: () => { sw = 1.0 - sw; update(); } }),
+    ] });
+}
 
-* **Elevation shadows.** The SDF carries a per-instance *feather* (edge
-  softness); cards, the filled button and the FAB draw a soft, offset dark
-  rounded rect behind them for a real drop shadow.
-* **Captions.** There is no glyph engine, so text (`THEME`, `RESET`, `WI-FI`,
-  `VOLUME`, the radio `A/B/C`, …) is drawn as a **vector stroke font**: each glyph
-  is a few line segments rendered as rounded *capsules* (rotated rounded rects
-  with fully-rounded ends, on the same primitive as every widget). Capsule ends
-  overlap at joints, so strokes connect into smooth, continuous letterforms.
-  Because glyph geometry depends only on layout, it is computed once into a cached
-  buffer (rebuilt on resize), so per-frame cost stays tiny.
+function App(props, update) {
+    return Scaffold({
+        appBar: AppBar({ title: "ELPA UI" }),
+        fab: Fab({ onTap: () => { count = count + 1; update(); } }),
+        body: Card({ child: Component(Counter, {}) }),
+    });
+}
+runApp(App);
+```
 
-## Interaction (all event kinds, all wired in the VM)
+* **Widgets are description objects.** Constructors — `Scaffold`, `AppBar`,
+  `Card`, `Column`, `Row`, `Text`, `FilledButton`, `OutlinedButton`, `Fab`,
+  `Switch`, `Checkbox`, `Radio`, `Slider`, `Chip`, `Progress`, `Divider` — just
+  build them, exactly like Flutter `Widget`s.
+* **Components are plain functions** `(props, update) => widget`, React-style,
+  placed in the tree with `Component(fn, props)` (the React-element analog).
+  Compose your own widgets by nesting components (see `Tile` and `RadioRow`).
+* **`update()` repaints only its component.** The runtime re-runs *just that
+  component's* function, repaints its subtree in place, and reassembles the frame
+  from every other component's cached output — parents and siblings are not
+  re-run. So you scope rebuilds by where you put state: the radios live in their
+  own `RadioRow`, so selecting one repaints only the radios; app-wide state
+  (theme, accent) lives in the root, whose `update` repaints everything.
+* **The app owns its state** as plain variables; a tap/`onChanged`/`onKey`
+  closure mutates state and calls `update()`. Tap callbacks are real arrow
+  closures — the radios build one per `idx` in a loop.
 
-| Event | What it does |
-|-------|--------------|
-| `pointerdown` | press buttons / FAB, toggle switch · checkbox · chip, select a radio, start a slider drag, cycle the FAB accent color |
-| `pointermove` | drag the slider thumb; drive hover "state layers" on buttons / FAB |
-| `pointerup` | release press states; end the slider drag |
-| `wheel` | nudge the slider value |
-| `keydown` | ◀ / ▶ nudge the slider · `d` toggles dark mode · space toggles the switch · `r` resets all controls |
-| `keyup` | release the "key held" indicator |
+## How the runtime works
 
-Toggling the switch, checkbox and chip fills the linear progress bar; the FAB
-cycles the whole palette's accent color; `d` (or the filled button) cross-fades
-the entire UI between light and dark. Every change **animates** — thumbs slide,
-check marks scale in, colors ease — via `onFrame`.
+The SDK keeps a **retained component tree**. A full render mounts it (running
+every component function), then `_measure` computes intrinsic sizes and `_paint`
+lays children out (a real Column/Row/Card layout pass), emits rounded-rect
+instances + hit regions, and **caches each node's output**. `_submit` packs the
+instance list into **one** instanced wgpu draw over the shared SDF pipeline and
+`gpu.submit`s it.
+
+When a component's `update()` fires, only that component's function re-runs and
+its subtree is repainted at its cached box; each ancestor's output is then
+**reassembled by concatenating cached children** (no function re-runs, no sibling
+repaints) up to the root, which is re-submitted. Idle frames (nothing animating)
+skip everything, so the renderer's partial-render cache keeps the GPU idle too.
+
+Every shape — cards, pill buttons, the rounded-square FAB, the M3 switch
+(outlined off-state, growing thumb), checkboxes, radios, the slider, chips,
+progress, and even the vector-stroke text — is the **same** rounded-rect signed
+distance field, fed 16 floats per instance. All M3 color roles (a
+surface-container hierarchy, outline variants, the tonal accent palette the FAB
+cycles) and the animated light/dark theme live in the SDK.
 
 ## How it stays inside the supported JavaScript
 
-The kit is plain JavaScript, compiled by Elpa's in-VM front-end to the same
-Elpian AST a hand-written program would produce. It obeys one structural rule and
-one stylistic one:
-
-* **All shape & anti-aliasing math lives in WGSL** — one rounded-rect *signed
-  distance field* draws crisp pills, circles, cards, bars and (rotated) check
-  marks. The JS side ships only resource objects, instanced draws, and
-  per-instance `f32` data; it never does trigonometry on shapes.
-* **Everything else is ordinary JS** — `function`s, `if`/`for`, objects, arrays,
-  arithmetic, member access, `askHost(api, [args])` host calls, and **arrow
-  functions / closures**. Each tappable widget carries its behaviour as an
-  `onTap` arrow (`() => { dark = 1 - dark; }`), invoked through a function value
-  held in an object field; the radios build one closure per `idx` in a loop.
-  Boolean operators (`&&`/`||`) and ternaries are *not* in the supported subset,
-  so conditions nest plain `if`s.
-
-The whole event model and per-frame layout run as that JavaScript.
-
-> Arrow / `function` *expressions* are lowered by desugaring: Elpa's front-end
-> lifts each one into a synthetic, uniquely-named `functionDefinition` hoisted
-> just before the statement that uses it (so it closes over exactly the locals in
-> scope there), then references it by name. The VM's closure machinery — captured
-> upvalues, calling a function value from any variable or field — does the rest.
-
-## How a program uses it
-
-```text
-askHost("vm.import", ["assets/elpa-material.js"]);  // registers elpa.m3.{card,appBar,...}
-function onEvent(e) {  /* state updates from e.{type,nx,ny,deltaY,key} */ render(); }
-function onFrame(dt) { /* ease animations toward targets */ render(); }
-function render() {                                 // frame references widgets by id:
-  askHost("gpu.submit", [{ resources: [...], commands: [{ op: "renderPass",
-    commands: [
-      { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.globalsBind" },
-      { cmd: "useDefinition", definition: "elpa.m3.card" },   // host splices each
-      { cmd: "useDefinition", definition: "elpa.m3.switch" }, //   widget's draw and
-      // ...                                                  //   feeds its buffer
-    ] }] }]);
-}
-```
+The SDK and app are plain JavaScript that Elpa's in-VM front-end lowers to the
+same Elpian AST a hand-written program would produce. It leans on the subset's
+**arrow functions / closures** (tap callbacks, the component `update`, function
+values stored in widget fields and invoked as `widget.onTap()`), `if`/`for`,
+objects, arrays, member assignment, and `askHost(api, [args])`. The SDK and the
+app run in **one** VM — Elpa's `vm.import` runs a module in a separate, disposed
+VM, so its functions would not be callable; [`program`] therefore links the SDK
+ahead of the app, like `import 'package:flutter/material.dart'`.
 
 ## Live / testing
 
-The [`examples/web`](../web) example loads this demo, so it is testable live on
-GitHub Pages. To exercise it headlessly:
+The [`examples/web`](../web) example runs this app, so it is testable live on
+GitHub Pages. Headless:
 
 ```bash
-cargo test -p elpa-material                       # headless VM run + WGSL validation
+cargo test -p elpa-material    # full program through a real VM + WGSL validation
 ```
 
-Edit the kit and demo directly in [`assets/elpa-material.js`](assets/elpa-material.js)
-and [`assets/demo.js`](assets/demo.js) — there is no generator step; the JS *is*
-the SDK.
+Edit the SDK in [`assets/elpa-material.js`](assets/elpa-material.js) and the app
+in [`assets/demo.js`](assets/demo.js) — there is no generator step; the JS *is*
+the framework.

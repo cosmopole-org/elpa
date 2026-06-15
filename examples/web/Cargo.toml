@@ -10,9 +10,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 elpa = { path = "../../crates/elpa", features = ["wgpu"] }
-# The Material Design 3 UI-kit SDK, shipped as JavaScript; this crate only embeds
-# those assets (`MODULE_JS` / `DEMO_JS`) and builds an Elpa instance from them
-# with `new_from_js`. The interactive demo it carries is what the page renders.
+# The Material Design 3 framework + app, shipped as JavaScript; this crate links
+# them with `elpa_material::program()` and builds an Elpa instance with
+# `new_from_js`. The interactive app it carries is what the page renders.
 elpa-material = { path = "../material" }
 wgpu = { version = "29", features = ["webgl"] }
 serde_json = "1.0"

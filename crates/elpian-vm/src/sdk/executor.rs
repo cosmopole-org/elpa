@@ -200,6 +200,13 @@ impl Operation for AssignVariable {
 
     fn get_data(&self) -> Vec<Val> {
         if self.assign_target_type == 2 {
+            // The index is only known after `AssignVarExtractIndex`; callers that
+            // read `get_data` earlier (e.g. to inspect the target type while still
+            // in `AssignVarExtractName`) get a typed-null placeholder for it.
+            let index = self
+                .index
+                .clone()
+                .unwrap_or_else(|| Val { typ: 0, data: Rc::new(RefCell::new(Box::new(0))) });
             if self.var_value.is_none() {
                 return vec![
                     Val {
@@ -210,7 +217,7 @@ impl Operation for AssignVariable {
                         typ: 6,
                         data: Rc::new(RefCell::new(Box::new(self.assign_target_type))),
                     },
-                    self.index.clone().unwrap(),
+                    index,
                     Val {
                         typ: 0,
                         data: Rc::new(RefCell::new(Box::new(0))),
@@ -226,7 +233,7 @@ impl Operation for AssignVariable {
                         typ: 6,
                         data: Rc::new(RefCell::new(Box::new(self.assign_target_type))),
                     },
-                    self.index.clone().unwrap(),
+                    index,
                     self.var_value.clone().unwrap(),
                 ];
             }
@@ -4175,7 +4182,6 @@ impl Executor {
                             self.assign(var_name.clone(), data);
                         } else if assign_target_type == 2 {
                             let index = regs[2].clone();
-                            self.pointer += 1;
                             let indexed = self.ctx.find_val_globally(var_name);
                             if index.typ == 7 {
                                 if indexed.typ == 8 {

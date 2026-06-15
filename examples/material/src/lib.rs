@@ -1,47 +1,44 @@
 //! # elpa-material
 //!
-//! A **Material Design 3 (Material You) UI-kit SDK** for Elpa — and, like the
-//! engine [`elpa-sdk`](../../sdk), it is **not Rust**. The SDK is the
-//! **JavaScript** in `assets/`, which Elpa compiles to its VM and runs directly:
-//! an Elpa instance is built straight from this source with
-//! [`Elpa::new_from_js`](elpa::Elpa::new_from_js). This crate only *embeds* the
-//! JS so a Rust host (the web example) can bundle and register it.
+//! A **Material Design 3 (Material You) UI framework** for Elpa, written as
+//! **JavaScript** — a small, Flutter-style widget toolkit plus an interactive
+//! demo that uses it. Like the engine [`elpa-sdk`](../../sdk), it is **not Rust**:
+//! Elpa compiles the JS to its VM and runs it directly.
 //!
 //! ## What the kit is
 //!
-//! * [`MODULE_JS`] — the importable UI-kit module. Its top-level body registers
-//!   one reusable drawing definition per **widget** (`card`, `appBar`,
-//!   `filledButton`, `outlinedButton`, `fab`, `switch`, `checkbox`, `radioGroup`,
-//!   `slider`, `chip`, `progress`, `divider`, plus `labels`) via
-//!   `askHost("gpu.define", [def])`. Every widget is drawn by the same shared
-//!   **rounded-rectangle SDF pipeline** (M3 shapes are rounded rects, pills and
-//!   circles), so a widget is just an instanced draw of its rounded-rect
-//!   "layers" from a per-widget instance buffer the app supplies.
-//! * [`DEMO_JS`] — a complete, **interactive** demo app. It `vm.import`s the
-//!   module, lays widgets out responsively from `gpu.surfaceInfo`, and wires real
-//!   interaction in `onEvent`/`onFrame`: pointer press/drag/hover, mouse wheel,
-//!   and keyboard all mutate widget state, which animates and re-renders. Its
-//!   visuals follow the Material 3 specification the way Flutter renders it — a
-//!   tonal color system, surface-container hierarchy, state layers, elevation,
-//!   and an animated light/dark theme.
+//! * [`MODULE_JS`] — **the SDK**. A widget framework: the rounded-rect SDF
+//!   pipeline, a glyph font, a responsive layout coordinator, the per-widget M3
+//!   colors/sizes, widget constructors (`Scaffold`, `AppBar`, `Card`, `Column`,
+//!   `Row`, `FilledButton`, `OutlinedButton`, `Fab`, `Switch`, `Checkbox`,
+//!   `Radio`, `Slider`, `Chip`, `Progress`, `Divider`, `Text`), and a
+//!   retained-tree component runtime — `Component(fn, props)` / `runApp(root)` —
+//!   whose internals end in `gpu.submit`. Apps never touch the GPU.
+//! * [`DEMO_JS`] — **the app**. It uses the SDK as a black box: declares state and
+//!   composes a widget tree. Components are plain functions `(props, update) =>
+//!   widget` (React-style), placed with `Component`; a tap handler mutates state
+//!   and calls `update()`, which repaints **only that component** (parents and
+//!   siblings reuse cached output) — the Flutter `setState` pattern done right.
 //!
-//! ## How it stays inside the JS the VM understands
+//! ## Linking
 //!
-//! * **All geometry / anti-aliasing math lives in WGSL** (the rounded-rect signed
-//!   distance field), exactly as the engine SDK keeps trig in WGSL. The JS side
-//!   only ships resource objects, instanced draws, and per-instance `f32` data.
-//! * **Everything else is plain JavaScript** — `function`s, `if`/`for`, objects,
-//!   arrays, arithmetic, member access, and `askHost(api, [args])` host calls —
-//!   the subset Elpa's in-VM front-end lowers to the same Elpian AST a
-//!   hand-written program would.
+//! The SDK and app run in **one** VM (Elpa's `vm.import` would run a module in a
+//! separate, disposed VM, so its functions would not be callable). [`program`]
+//! concatenates the SDK ahead of the app — exactly like a Flutter app
+//! `import`ing `package:flutter/material.dart` — and the result is handed to
+//! [`Elpa::new_from_js`](elpa::Elpa::new_from_js).
+//!
+//! Arrow functions / closures (tap callbacks, the component `update`) are part of
+//! the JavaScript subset Elpa's in-VM front-end supports.
 
-/// The importable UI-kit module, as JavaScript source. Register it as an asset
-/// and `vm.import` it; see [`Elpa::register_asset`](elpa::Elpa::register_asset).
+/// The Material SDK (the widget framework), as JavaScript source.
 pub const MODULE_JS: &str = include_str!("../assets/elpa-material.js");
 
-/// The interactive demo program (JavaScript) that imports [`MODULE_JS`] and
-/// drives the whole UI kit from pointer / wheel / keyboard events.
+/// The interactive demo application, as JavaScript source. Uses [`MODULE_JS`].
 pub const DEMO_JS: &str = include_str!("../assets/demo.js");
 
-/// The asset source string the demo imports the module under.
-pub const MODULE_SOURCE: &str = "assets/elpa-material.js";
+/// The full program a host runs: the SDK linked ahead of the app, in one VM.
+/// Pass the result to [`Elpa::new_from_js`](elpa::Elpa::new_from_js).
+pub fn program() -> String {
+    format!("{MODULE_JS}\n{DEMO_JS}")
+}

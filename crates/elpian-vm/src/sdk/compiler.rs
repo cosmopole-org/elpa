@@ -464,6 +464,13 @@ pub fn compile_ast(program: serde_json::Value, start_point: usize) -> Vec<u8> {
                     let mut len_bytes = i32::to_be_bytes(str_bytes.len() as i32).to_vec();
                     result.append(&mut len_bytes);
                     result.append(&mut str_bytes);
+                    // The executor reads the index expression *before* the value
+                    // (AssignVarExtractName → AssignVarExtractIndex → ...Value), so
+                    // `a[i] = v` / `a.b = v` must serialize the index here. Without
+                    // it the operands desync and the index stays unset.
+                    result.append(&mut serialize_expr(
+                        operation["data"]["leftSide"]["data"]["index"].clone(),
+                    ));
                     result.append(&mut serialize_expr(operation["data"]["rightSide"].clone()));
                 }
             }
