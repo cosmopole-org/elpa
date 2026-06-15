@@ -310,3 +310,49 @@ fn closure_mutates_shared_object_field() {
         }";
     assert_eq!(run_js_and_call("js-field-closure", js, "f"), "3");
 }
+
+#[test]
+fn statement_after_control_block_does_not_unbalance_in_called_fn() {
+    // Regression: a control-flow body (`if`/`for`/nested `if`) whose body holds a
+    // *call statement* must not pop the enclosing function frame's `DummyOp` when
+    // it ends. Before the fix, a statement following such a block in a CALLED
+    // function leaked its discarded value into the caller's awaiting expression,
+    // corrupting returns (`return a` after conditional pushes came back null) and
+    // mis-aligning later object literals ("array used as object key" traps).
+    let id = "js-ctrl-balance";
+    let js = "
+        function build(node) {
+            let a = [];
+            if (has(node, \"x\")) { push(a, node.x); }   // call-statement in if-body
+            if (has(node, \"y\")) { push(a, node.y); }   // ...followed by another
+            push(a, 99);                                  // ...and a trailing statement
+            return a;                                     // return the built array
+        }
+        function f() {
+            let r = build({ x: 1, y: 2 });
+            // Build an object *after* the call; a leaked frame would desync its
+            // key/value pairing.
+            let o = { len: len(r), first: r[0], last: r[2] };
+            return o.len * 100 + o.first * 10 + o.last;   // 3*100 + 1*10 + 99 = 409
+        }";
+    assert!(api::create_vm_from_js(id.to_string(), js.to_string()));
+    let _ = api::execute_vm(id.to_string());
+    assert_eq!(api::execute_vm_func(id.to_string(), "f".into(), 1).result_value, "409");
+
+    // The same shape with a `for` loop body and an in-loop conditional value.
+    let id2 = "js-ctrl-balance-loop";
+    let js2 = "
+        function build() {
+            let a = [];
+            for (let i = 0; i < 3; i++) {
+                let tag = \"lo\";
+                if (i == 2) { tag = \"hi\"; }
+                push(a, { i: i, tag: tag });   // object literal after let+if in a loop
+            }
+            return a;
+        }
+        function f() { let a = build(); return concat(a[2].tag, str(len(a))); }";
+    assert!(api::create_vm_from_js(id2.to_string(), js2.to_string()));
+    let _ = api::execute_vm(id2.to_string());
+    assert_eq!(api::execute_vm_func(id2.to_string(), "f".into(), 1).result_value, "\"hi3\"");
+}

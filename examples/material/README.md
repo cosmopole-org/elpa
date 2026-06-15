@@ -164,23 +164,25 @@ enough. The two gaps are both *additive host calls* on the existing
 `elpa-protocol`/`HostEnv` seam — no change to the VM or the SDK's widget model —
 which is the natural next step on the roadmap.
 
-## Known limitations (Elpa JS front-end)
+## VM fix shipped with this work
 
-Extending the SDK surfaced a few rough edges in the **VM's JavaScript front-end**
-(`crates/elpian-vm/src/sdk/compiler.rs`) that only appear once a *large* program
-(this SDK plus an app) is compiled. They are codegen bugs, not language-design
-limits, and each has a clean workaround the SDK/gallery already follow:
+Extending the SDK surfaced one real bug in the **VM's executor**
+(`crates/elpian-vm/src/sdk/executor.rs`) that only appeared once a *large*
+program (this SDK plus an app) ran. It manifested three ways — a `return` of a
+conditionally-built array coming back `null`, "array used as object key" traps in
+later object literals, and corrupted values after control blocks — but all three
+were **one** root cause:
 
-* **Returning a `push`-built local array** can yield `null`; build arrays with
-  `concat` when you must `return` one (storing a `push`-built array in an object
-  field and using it — the common `children: kids` case — is fine).
-* **Very large / deeply-nested function bodies** can mis-compile object literals
-  (manifesting as an "array used as object key" trap). Keep builders **small** —
-  one widget or group per function — and assemble sections from calls. The
-  gallery is structured exactly this way.
-* **`let x; if (…) { x = … }` immediately before an object-literal call inside a
-  loop body** can mis-align that object; compute such conditional values through
-  a helper call instead (see `galCellRole` in `gallery.js`).
+> When a control-flow body (`if` / `for` / `switch`) contained a *call statement*
+> and was followed by another statement **inside a called function**, the body's
+> scope teardown wrongly popped the enclosing function frame's `DummyOp` marker.
+> The register stack then sat one frame short, so the next statement leaked its
+> discarded value into the caller's awaiting expression.
 
-These are good candidates for a follow-up fix in the front-end; until then the
-guidance above keeps SDK and app code on the supported path.
+The fix pops that marker **only** when tearing down a true `funcBody` scope, not
+an `ifBody`/`loopBody`/`switchBody`. It's covered by a regression test
+(`statement_after_control_block_does_not_unbalance_in_called_fn` in
+`crates/elpian-vm/tests/js_compiler.rs`). With it, ordinary Flutter-shaped code —
+conditional `push` loops, `let`+`if` before object literals, large builder
+functions — compiles and runs correctly; the gallery's small-function structure
+is now kept purely for readability, not correctness.

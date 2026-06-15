@@ -9,11 +9,11 @@
 // the platform-service wrappers (storage, clock, network). It composes a widget
 // tree and calls `runApp`; it never touches the GPU.
 //
-// Style note: every showcased widget is built by its own *small* top-level
-// function. Elpa's current JS front-end mis-compiles very large/deeply-nested
-// function bodies (see the example README "Known limitations"), so the gallery
-// keeps each builder tiny and assembles sections from calls — the same idiom the
-// SDK itself uses.
+// Style note: every showcased widget is built by its own small top-level
+// function and sections are assembled from calls — the same idiom the SDK uses.
+// (This was once also a workaround for a VM front-end codegen bug with large
+// function bodies; that bug is now fixed in `elpian-vm`, so the structure here is
+// kept purely for readability.)
 
 // --- application state --------------------------------------------------------
 let dark = 0.0; let accent = 0;
@@ -62,10 +62,12 @@ function galStackDemo() {
         Positioned({ right: 3.0, bottom: 2.0, child: Badge({ count: likes, child: Icon({ icon: "bell", size: 5.0 }) }) }),
     ] }) });
 }
-function galCellRole(i) { if (i % 3 == 0) { return "primary"; } return "surfaceHigh"; }
 function galGridDemo() {
     let cells = [];
-    for (let i = 0; i < 9; i++) { push(cells, Container({ color: galCellRole(i), radius: 2.0 })); }
+    for (let i = 0; i < 9; i++) {
+        let role = "surfaceHigh"; if (i % 3 == 0) { role = "primary"; }
+        push(cells, Container({ color: role, radius: 2.0 }));
+    }
     return Labeled({ label: "GRIDVIEW (3 COLS)", child: GridView({ id: "grid1", cols: 3, width: 88.0, height: 30.0, gap: 2.0, cellHeight: 13.0, children: cells }) });
 }
 function galLayout(update) {

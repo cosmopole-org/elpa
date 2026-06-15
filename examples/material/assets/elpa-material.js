@@ -615,21 +615,20 @@ function _mkUpdate(node) { return () => { _partial(node); }; }
 // Structural children of any node, in z-order — the single place that knows a
 // widget's child layout, used by both `_mount` and tree reassembly. `comp` is
 // handled separately (it runs its function to produce `_sub`).
-function _scaffoldKids(node) {
-    let a = [];
-    if (has(node, "appBar")) { a = concat(a, [node.appBar]); }
-    if (has(node, "body")) { a = concat(a, [node.body]); }
-    if (has(node, "bottomBar")) { a = concat(a, [node.bottomBar]); }
-    if (has(node, "fab")) { a = concat(a, [node.fab]); }
-    if (has(node, "drawer")) { a = concat(a, [node.drawer]); }
-    if (has(node, "snackbar")) { a = concat(a, [node.snackbar]); }
-    if (has(node, "dialog")) { a = concat(a, [node.dialog]); }
-    return a;
-}
 function _structKids(node) {
-    if (node.kind == "scaffold") { return _scaffoldKids(node); }
+    if (node.kind == "scaffold") {
+        let a = [];
+        if (has(node, "appBar")) { if (!isNull(node.appBar)) { push(a, node.appBar); } }
+        if (has(node, "body")) { if (!isNull(node.body)) { push(a, node.body); } }
+        if (has(node, "bottomBar")) { if (!isNull(node.bottomBar)) { push(a, node.bottomBar); } }
+        if (has(node, "fab")) { if (!isNull(node.fab)) { push(a, node.fab); } }
+        if (has(node, "drawer")) { if (!isNull(node.drawer)) { push(a, node.drawer); } }
+        if (has(node, "snackbar")) { if (!isNull(node.snackbar)) { push(a, node.snackbar); } }
+        if (has(node, "dialog")) { if (!isNull(node.dialog)) { push(a, node.dialog); } }
+        return a;
+    }
     if (has(node, "children")) { return node.children; }
-    if (has(node, "child")) { return [node.child]; }
+    if (has(node, "child")) { if (!isNull(node.child)) { return [node.child]; } }
     return [];
 }
 function _mount(node, parent) {

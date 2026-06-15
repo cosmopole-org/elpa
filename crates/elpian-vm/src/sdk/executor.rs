@@ -5053,11 +5053,21 @@ impl Executor {
                         terminate = true;
                         break;
                     }
+                    // Only a *function-body* frame owns a `DummyOp` register (pushed
+                    // at call dispatch). Control-flow bodies (`ifBody`/`loopBody`/
+                    // `switchBody`) are plain scopes with no register of their own, so
+                    // their teardown must NOT pop the enclosing function's `DummyOp`
+                    // — doing so would unbalance the register stack and let a
+                    // statement after the block leak its value into the caller's
+                    // awaiting expression (the bug behind "array used as object key"
+                    // traps and corrupted returns in larger programs).
+                    let popped_tag = self.ctx.memory.last().unwrap().borrow().tag.clone();
                     self.pop_scope_governed();
                     if is_partial_exec && (self.ctx.memory.len() == 1) {
                         return self.pending_func_result_value.clone();
                     }
-                    if !self.registers.is_empty()
+                    if popped_tag == "funcBody"
+                        && !self.registers.is_empty()
                         && self.registers.last().unwrap().borrow().get_type()
                             == OperationTypes::Dummy
                     {
