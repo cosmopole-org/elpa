@@ -3775,7 +3775,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::ArrExprExtractItem,
-                                StateData::Val(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3793,7 +3793,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::ObjExprExtractProp,
-                                StateData::Val(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3810,7 +3810,7 @@ impl Executor {
                             let arg_count = self.extract_i32() as usize;
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::CallFuncExtractFunc,
-                                StateData::ValUsize(main_reg.clone().unwrap(), arg_count),
+                                StateData::ValUsize(main_reg.take().unwrap(), arg_count),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3824,7 +3824,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::CallFuncExtractParam,
-                                StateData::Val(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3840,7 +3840,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::ReturnValFinished,
-                                StateData::Val(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3856,7 +3856,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::DefineVarExtractValue,
-                                StateData::Val(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3873,7 +3873,7 @@ impl Executor {
                             if self.registers.last().unwrap().borrow().get_data()[1].as_i16() == 1 {
                                 self.registers.last().unwrap().borrow_mut().set_state(
                                     ExecStates::AssignVarExtractValue,
-                                    StateData::Val(main_reg.clone().unwrap()),
+                                    StateData::Val(main_reg.take().unwrap()),
                                 );
                                 main_reg = None;
                                 is_reg_state_final =
@@ -3885,7 +3885,7 @@ impl Executor {
                             {
                                 self.registers.last().unwrap().borrow_mut().set_state(
                                     ExecStates::AssignVarExtractIndex,
-                                    StateData::Val(main_reg.clone().unwrap()),
+                                    StateData::Val(main_reg.take().unwrap()),
                                 );
                                 main_reg = None;
                                 is_reg_state_final =
@@ -3898,7 +3898,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::AssignVarExtractValue,
-                                StateData::Val(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3914,7 +3914,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::IfStmtFinished,
-                                StateData::Val(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3930,7 +3930,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::LoopStmtFinished,
-                                StateData::Val(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3948,7 +3948,7 @@ impl Executor {
                             let case_count = self.extract_i64() as usize;
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::SwitchStmtExtractVal,
-                                StateData::ValUsize2(main_reg.clone().unwrap(), branch_after_start, case_count),
+                                StateData::ValUsize2(main_reg.take().unwrap(), branch_after_start, case_count),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3964,7 +3964,7 @@ impl Executor {
                             let branch_true_end = self.extract_i64() as usize;
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::SwitchStmtExtractCase,
-                                StateData::ValUsize2(main_reg.clone().unwrap(), branch_true_start, branch_true_end),
+                                StateData::ValUsize2(main_reg.take().unwrap(), branch_true_start, branch_true_end),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3987,7 +3987,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::ArithmeticExtractArg1,
-                                StateData::Val(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3999,7 +3999,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::ArithmeticExtractArg2,
-                                StateData::Val(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -4015,7 +4015,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::IndexerExtractVarName,
-                                StateData::Val(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -4027,7 +4027,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::IndexerExtractIndex,
-                                StateData::Val(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -4043,7 +4043,7 @@ impl Executor {
                         {
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::NotValFinished,
-                                StateData::Val(main_reg.clone().unwrap()),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -4061,7 +4061,7 @@ impl Executor {
                             let fb = self.extract_i64();
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::CondBranchFinished,
-                                StateData::ValI64x2(main_reg.clone().unwrap(), tb, fb),
+                                StateData::ValI64x2(main_reg.take().unwrap(), tb, fb),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -4078,7 +4078,7 @@ impl Executor {
                             let tt = self.extract_str();
                             self.registers.last().unwrap().borrow_mut().set_state(
                                 ExecStates::CastOprtFinished,
-                                StateData::ValStr(main_reg.clone().unwrap(), tt),
+                                StateData::ValStr(main_reg.take().unwrap(), tt),
                             );
                             main_reg = None;
                             is_reg_state_final =
