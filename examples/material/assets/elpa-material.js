@@ -2,27 +2,27 @@
 //
 // This file is the SDK. It is *linked ahead of* an app (see `demo.js`) into one
 // program, exactly like a Flutter app `import`s `package:flutter/material.dart`:
-// the app calls the widget constructors and `runApp` defined here and never
-// touches the GPU. Everything below — the rounded-rect SDF pipeline, the glyph
-// font, the responsive layout coordinator, the per-widget colors/sizes, the
-// component runtime, and the event plumbing that ends in `gpu.submit` — lives in
-// the SDK as a black box.
+// the app calls the widget constructors, `Component`, and `runApp` defined here
+// and never touches the GPU. Everything below — the rounded-rect SDF pipeline,
+// the glyph font, the responsive layout coordinator, the per-widget M3
+// colors/sizes, the retained component runtime, and the event plumbing that ends
+// in `gpu.submit` — lives in the SDK as a black box.
 //
 // Architecture
 // ------------
 // * Widgets are immutable description objects (`{ kind, ...props }`), like
 //   Flutter `Widget`s. Constructors (`FilledButton`, `Switch`, `Column`, ...)
 //   just build them.
-// * Components are plain functions `(update) => widget`, React-style: you call
-//   them to get a subtree. `update` re-runs the app and re-submits its graphics,
-//   so a tap handler calls `update()` to repaint — the only "setState" you need.
-//   `runApp(root)` mounts the root component function and re-invokes it every
-//   render, so nested component functions re-run too (no `createComponent`, no
-//   reconciler — the tree the root returns is already concrete).
-// * The runtime walks that tree each frame: `_measure` computes intrinsic sizes,
-//   `_paint` lays children out and emits rounded-rect instances + hit regions.
-//   `_submit` turns the instance list into one wgpu frame. The app supplies no
-//   coordinates and no draw calls.
+// * A *component* is a plain function `(props, update) => widget`, React-style.
+//   You place one in the tree with `Component(fn, props)` (the React-element
+//   analog) so the runtime owns its identity. Each mounted component gets its
+//   own `update`; calling it re-runs **only that component** and re-submits.
+// * The runtime keeps a retained tree. A full render mounts it (running every
+//   component fn), measures, paints, and caches each node's painted output
+//   (`_out`, plus hit regions). `update()` re-runs just its component's fn,
+//   repaints that subtree at its cached box, and reassembles the frame from the
+//   *cached* output of every other component (no parents, no siblings re-run) —
+//   then `gpu.submit`s. The app supplies no coordinates and no draw calls.
 //
 // Per-instance data (16 floats): center.xy, halfSize.xy, cornerRadius,
 // borderWidth, rotation, feather, fill rgba, border rgba.
@@ -90,8 +90,6 @@ fn fs(o: Out) -> @location(0) vec4<f32> {
 }
 ";
 
-// The shared resource set (one shader + pipeline). The "bgra8unorm" token is
-// rewritten by the web host to the live surface format.
 function _pipelineResources() {
     return [
         { kind: "shader", id: "elpa.m3.shader", wgsl: _WGSL },
@@ -141,13 +139,14 @@ let _GLYPHS = {
 
 // ----------------------------------------------------------- runtime state ----
 let _vw = 1.0; let _vh = 1.0; let _u = 1.0;   // viewport + 1% unit
-let _root = 0;                                 // root component
-let _inst = [];                                // per-frame instance floats
-let _taps = []; let _drags = [];               // per-frame hit regions
+let _root = 0;                                 // root component node
+let _NULL = { kind: "null" };                  // tree-root sentinel parent
+let _curOut = []; let _curTaps = []; let _curDrags = [];  // paint targets
+let _inst = []; let _taps = []; let _drags = [];          // current frame (root)
 let _dragging = 0.0; let _activeDrag = 0;      // active slider drag
 let _hx = -1000.0; let _hy = -1000.0;          // hover pointer
-let _keyHandler = 0; let _hasKey = 0.0;        // app key handler (per frame)
-let _wheelFn = 0; let _hasWheel = 0.0;         // app wheel handler (per frame)
+let _keyHandler = 0; let _hasKey = 0.0;        // app key handler (per render)
+let _wheelFn = 0; let _hasWheel = 0.0;         // app wheel handler (per render)
 let _darkTarget = 0.0; let _darkAnim = 0.0;    // theme
 let _accent = 0;                               // accent index
 let _anim = {}; let _target = {};              // eased 0..1 values by key
@@ -165,15 +164,13 @@ let _accDark  = [[0.816,0.737,1.000],[0.306,0.847,0.859],[0.616,0.839,0.490],[1.
 // build, like reading ThemeData from MaterialApp).
 function setTheme(darkTarget, accent) { _darkTarget = darkTarget; _accent = accent; }
 
-// Repaint: re-run the app's component tree and re-submit its wgpu frame. This is
-// the `update` passed to every component, so a handler can request a repaint —
-// the only "setState" you need.
-function _repaint() { _renderApp(); }
+// Place a component function in the tree (the React-element analog). `fn` is a
+// plain function `(props, update) => widget`; the runtime owns its identity, so
+// its `update` repaints only it.
+function Component(fn, props) { return { kind: "comp", fn: fn, props: props }; }
 
-// Mount the root component — a plain function `(update) => widget`, React-style —
-// and paint the first frame. Custom widgets are just such functions; call them
-// (passing `update` if they need it) and return their widget tree.
-function runApp(root) { _root = root; _renderApp(); }
+// Mount a root component function and paint the first frame.
+function runApp(rootFn) { _root = Component(rootFn, {}); _renderApp(); }
 
 function clamp01(v) { if (v < 0.0) { return 0.0; } if (v > 1.0) { return 1.0; } return v; }
 function sel(a, b) { if (a == b) { return 1.0; } return 0.0; }
@@ -213,17 +210,18 @@ function _mixCol(c0, c1, t) {
 function _brighten(col, amt) { return [col[0]+amt, col[1]+amt, col[2]+amt, col[3]]; }
 
 // --------------------------------------------------------- primitive emit -----
+// Emit into the current node's buffers (_curOut/_curTaps/_curDrags).
 function _rect(cx, cy, hw, hh, r, border, rot, fill, bcol) {
-    push(_inst, cx); push(_inst, cy); push(_inst, hw); push(_inst, hh);
-    push(_inst, r); push(_inst, border); push(_inst, rot); push(_inst, 1.0);
-    push(_inst, fill[0]); push(_inst, fill[1]); push(_inst, fill[2]); push(_inst, fill[3]);
-    push(_inst, bcol[0]); push(_inst, bcol[1]); push(_inst, bcol[2]); push(_inst, bcol[3]);
+    push(_curOut, cx); push(_curOut, cy); push(_curOut, hw); push(_curOut, hh);
+    push(_curOut, r); push(_curOut, border); push(_curOut, rot); push(_curOut, 1.0);
+    push(_curOut, fill[0]); push(_curOut, fill[1]); push(_curOut, fill[2]); push(_curOut, fill[3]);
+    push(_curOut, bcol[0]); push(_curOut, bcol[1]); push(_curOut, bcol[2]); push(_curOut, bcol[3]);
 }
 function _shadow(cx, cy, hw, hh, r, grow, drop, blur) {
-    push(_inst, cx); push(_inst, cy + drop); push(_inst, hw + grow); push(_inst, hh + grow);
-    push(_inst, r + grow); push(_inst, 0.0); push(_inst, 0.0); push(_inst, blur);
-    push(_inst, 0.0); push(_inst, 0.0); push(_inst, 0.0); push(_inst, 0.28);
-    push(_inst, 0.0); push(_inst, 0.0); push(_inst, 0.0); push(_inst, 0.0);
+    push(_curOut, cx); push(_curOut, cy + drop); push(_curOut, hw + grow); push(_curOut, hh + grow);
+    push(_curOut, r + grow); push(_curOut, 0.0); push(_curOut, 0.0); push(_curOut, blur);
+    push(_curOut, 0.0); push(_curOut, 0.0); push(_curOut, 0.0); push(_curOut, 0.28);
+    push(_curOut, 0.0); push(_curOut, 0.0); push(_curOut, 0.0); push(_curOut, 0.0);
 }
 function _paintText(str, cx, cy, cell, col) {
     let nch = len(str); let adv = 5.0; let th = 0.92;
@@ -243,6 +241,12 @@ function _paintText(str, cx, cy, cell, col) {
         }
     }
 }
+function _addTap(cx, cy, hw, hh, id, onTap) { push(_curTaps, { cx: cx, cy: cy, hw: hw, hh: hh, id: id, onTap: onTap }); }
+function _addDrag(cx, cy, hw, hh, onChanged, left, width) {
+    push(_curDrags, { cx: cx, cy: cy, hw: hw, hh: hh,
+        onDrag: (px) => { onChanged(clamp01((px - left) / width)); } });
+}
+function _registerWheel(onChanged, val) { _wheelFn = (dy) => { onChanged(clamp01(val + dy * (-0.0015))); }; _hasWheel = 1.0; }
 
 // ---------------------------------------------------------- sizing / cells ----
 function _cell(size) {
@@ -263,7 +267,6 @@ function _ease(key, target) {
     if (has(_anim, key)) { return _anim[key]; }
     _anim[key] = target; return target;
 }
-function _addTap(cx, cy, hw, hh, id, onTap) { push(_taps, { cx: cx, cy: cy, hw: hw, hh: hh, id: id, onTap: onTap }); }
 function _inRect(px, py, cx, cy, hw, hh) {
     if (px >= cx - hw) { if (px <= cx + hw) { if (py >= cy - hh) { if (py <= cy + hh) { return true; } } } }
     return false;
@@ -272,6 +275,7 @@ function _inRect(px, py, cx, cy, hw, hh) {
 // ------------------------------------------------------------- measure --------
 function _measure(node) {
     let k = node.kind;
+    if (k == "comp") { return _measure(node._sub); }
     if (k == "text") { let c = _cell(node.size); return { w: _textW(node.text, c), h: 6.0 * c }; }
     if (k == "filledButton") { return { w: _btnW(node.label), h: _u * 5.5 }; }
     if (k == "outlinedButton") { return { w: _btnW(node.label), h: _u * 5.5 }; }
@@ -302,14 +306,46 @@ function _measureRow(node) {
     return { w: w, h: mh };
 }
 
-// --------------------------------------------------------------- paint --------
-function _paint(node, cx, cy) {
+// --------------------------------------------------------------- mount --------
+// Build the retained tree: run every component fn, wire parents. Re-runnable on
+// any subtree (partial update re-mounts just one component).
+function _mkUpdate(node) { return () => { _partial(node); }; }
+function _mount(node, parent) {
+    node._parent = parent;
     let k = node.kind;
+    if (k == "comp") {
+        if (!has(node, "_update")) { node._update = _mkUpdate(node); }
+        node._sub = node.fn(node.props, node._update);
+        _mount(node._sub, node);
+        return 0;
+    }
+    if (k == "column") { for (let i = 0; i < len(node.children); i++) { _mount(node.children[i], node); } return 0; }
+    if (k == "row") { for (let i = 0; i < len(node.children); i++) { _mount(node.children[i], node); } return 0; }
+    if (k == "card") { _mount(node.child, node); return 0; }
+    if (k == "scaffold") { _mount(node.appBar, node); _mount(node.body, node); _mount(node.fab, node); return 0; }
+    return 0;
+}
+
+// --------------------------------------------------------------- paint --------
+// Each node ends up with `_out` (its subtree's instances), `_taps`, `_drags`,
+// and `_cx`/`_cy` (its center), so a later partial update can repaint it in place.
+function _paint(node, cx, cy) {
+    node._cx = cx; node._cy = cy;
+    let k = node.kind;
+    if (k == "comp") {
+        _paint(node._sub, cx, cy);
+        node._out = node._sub._out; node._taps = node._sub._taps; node._drags = node._sub._drags;
+        return 0;
+    }
     if (k == "column") { _paintColumn(node, cx, cy); return 0; }
     if (k == "row") { _paintRow(node, cx, cy); return 0; }
     if (k == "card") { _paintCard(node, cx, cy); return 0; }
     if (k == "scaffold") { _paintScaffold(node); return 0; }
+    // Leaf: emit straight into this node's fresh buffers.
+    node._out = []; node._taps = []; node._drags = [];
+    _curOut = node._out; _curTaps = node._taps; _curDrags = node._drags;
     if (k == "text") { _paintText(node.text, cx, cy, _cell(node.size), _textInk(node)); return 0; }
+    if (k == "appBar") { _paintAppBar(node, cx, cy); return 0; }
     if (k == "filledButton") { _paintFilled(node, cx, cy); return 0; }
     if (k == "outlinedButton") { _paintOutlined(node, cx, cy); return 0; }
     if (k == "fab") { _paintFab(node, cx, cy); return 0; }
@@ -331,32 +367,43 @@ function _textInk(node) {
 }
 function _paintColumn(node, cx, cy) {
     let mz = _measure(node); let gap = _gapPx(node); let top = cy - mz.h / 2.0; let nc = len(node.children);
+    let o = []; let t = []; let d = [];
     for (let i = 0; i < nc; i++) {
         let ch = _measure(node.children[i]); _paint(node.children[i], cx, top + ch.h / 2.0); top = top + ch.h + gap;
+        o = concat(o, node.children[i]._out); t = concat(t, node.children[i]._taps); d = concat(d, node.children[i]._drags);
     }
+    node._out = o; node._taps = t; node._drags = d;
 }
 function _paintRow(node, cx, cy) {
     let mz = _measure(node); let gap = _gapPx(node); let left = cx - mz.w / 2.0; let nc = len(node.children);
+    let o = []; let t = []; let d = [];
     for (let i = 0; i < nc; i++) {
         let cw = _measure(node.children[i]); _paint(node.children[i], left + cw.w / 2.0, cy); left = left + cw.w + gap;
+        o = concat(o, node.children[i]._out); t = concat(t, node.children[i]._taps); d = concat(d, node.children[i]._drags);
     }
+    node._out = o; node._taps = t; node._drags = d;
 }
 function _paintCard(node, cx, cy) {
     let mz = _measure(node); let hw = mz.w / 2.0; let hh = mz.h / 2.0; let r = _u * 1.6;
+    node._chrome = []; _curOut = node._chrome; _curTaps = []; _curDrags = [];
     _shadow(cx, cy, hw, hh, r, _u * 0.4, _u * 1.0, _u * 2.8);
     _rect(cx, cy, hw, hh, r, 0.0, 0.0, _surfaceContainer(1.0), _CLEAR);
     _paint(node.child, cx, cy);
+    node._out = concat(node._chrome, node.child._out);
+    node._taps = node.child._taps; node._drags = node.child._drags;
 }
 function _paintScaffold(node) {
     let aH = _u * 10.0;
     if (has(node, "onKey")) { _keyHandler = node.onKey; _hasKey = 1.0; }
-    if (has(node, "appBar")) { _paintAppBar(node.appBar, aH); }
-    if (has(node, "body")) { _paint(node.body, _vw / 2.0, aH + (_vh - aH) / 2.0); }
-    if (has(node, "fab")) { _paint(node.fab, _vw - _u * 9.0, _vh - _u * 9.0); }
+    _paint(node.appBar, _vw / 2.0, aH / 2.0);
+    _paint(node.body, _vw / 2.0, aH + (_vh - aH) / 2.0);
+    _paint(node.fab, _vw - _u * 9.0, _vh - _u * 9.0);
+    node._out = concat(concat(node.appBar._out, node.body._out), node.fab._out);
+    node._taps = concat(concat(node.appBar._taps, node.body._taps), node.fab._taps);
+    node._drags = concat(concat(node.appBar._drags, node.body._drags), node.fab._drags);
 }
-function _paintAppBar(node, aH) {
-    let cy = aH / 2.0;
-    _rect(_vw / 2.0, cy, _vw / 2.0, aH / 2.0, 0.0, 0.0, 0.0, _acc(1.0), _CLEAR);
+function _paintAppBar(node, cx, cy) {
+    _rect(_vw / 2.0, cy, _vw / 2.0, cy, 0.0, 0.0, 0.0, _acc(1.0), _CLEAR);
     let lineCx = _u * 6.0; let lw = _u * 2.0; let lh = _u * 0.4; let sp = _u * 1.3;
     _rect(lineCx, cy - sp, lw, lh, lh, 0.0, 0.0, _onAcc(0.95), _CLEAR);
     _rect(lineCx, cy, lw, lh, lh, 0.0, 0.0, _onAcc(0.95), _CLEAR);
@@ -445,27 +492,55 @@ function _paintProgress(node, cx, cy) {
 function _paintDivider(node, cx, cy) {
     _rect(cx, cy, _u * 31.0, _u * 0.18, 0.0, 0.0, 0.0, _outlineVar(1.0), _CLEAR);
 }
-function _addDrag(cx, cy, hw, hh, onChanged, left, width) {
-    push(_drags, { cx: cx, cy: cy, hw: hw, hh: hh,
-        onDrag: (px) => { onChanged(clamp01((px - left) / width)); } });
+
+// ---------------------------------------------------- partial reassembly ------
+// Recompute a node's cached output from its children's *cached* output (no fn
+// re-run, no re-paint) — used to bubble a single component's update to the root.
+function _reassemble(node) {
+    let k = node.kind;
+    if (k == "comp") { node._out = node._sub._out; node._taps = node._sub._taps; node._drags = node._sub._drags; return 0; }
+    if (k == "card") { node._out = concat(node._chrome, node.child._out); node._taps = node.child._taps; node._drags = node.child._drags; return 0; }
+    if (k == "column") { _join(node, node.children); return 0; }
+    if (k == "row") { _join(node, node.children); return 0; }
+    if (k == "scaffold") {
+        node._out = concat(concat(node.appBar._out, node.body._out), node.fab._out);
+        node._taps = concat(concat(node.appBar._taps, node.body._taps), node.fab._taps);
+        node._drags = concat(concat(node.appBar._drags, node.body._drags), node.fab._drags);
+        return 0;
+    }
+    return 0;
 }
-function _registerWheel(onChanged, val) {
-    _wheelFn = (dy) => { onChanged(clamp01(val + dy * (-0.0015))); };
-    _hasWheel = 1.0;
+function _join(node, children) {
+    let o = []; let t = []; let d = []; let nc = len(children);
+    for (let i = 0; i < nc; i++) { o = concat(o, children[i]._out); t = concat(t, children[i]._taps); d = concat(d, children[i]._drags); }
+    node._out = o; node._taps = t; node._drags = d;
+}
+
+// Re-run just this component, repaint it in its cached box, then reassemble the
+// frame from every other component's cached output. Only this subtree's fn runs.
+function _partial(node) {
+    _mount(node, node._parent);
+    _paint(node, node._cx, node._cy);
+    let a = node._parent;
+    for (let guard = 0; guard < 64; guard++) {
+        if (a.kind == "null") { guard = 99; } else { _reassemble(a); a = a._parent; }
+    }
+    _inst = _root._out; _taps = _root._taps; _drags = _root._drags;
+    _submit();
 }
 
 // --------------------------------------------------------------- render -------
-// Custom components are plain functions invoked eagerly (React-style), so the
-// tree the root returns is already concrete widget objects — no expansion pass.
 function _bufF32(id, usage, data) { return { kind: "buffer", id: id, size: len(data) * 4, usage: usage, data_f32: data }; }
 function _renderApp() {
     let si = askHost("gpu.surfaceInfo", []);
     _vw = num(si.width); _vh = num(si.height); _u = _vh * 0.01;
-    _inst = []; _taps = []; _drags = [];
     _hasKey = 0.0; _hasWheel = 0.0;
-    _paint(_root(_repaint), _vw * 0.5, _vh * 0.5);
+    _mount(_root, _NULL);
+    _paint(_root, _vw * 0.5, _vh * 0.5);
+    _inst = _root._out; _taps = _root._taps; _drags = _root._drags;
     _submit();
 }
+function _repaint() { _renderApp(); }
 function _submit() {
     let bg = _colorBg();
     let res = concat(_pipelineResources(), [
@@ -493,29 +568,28 @@ function onEvent(e) {
     let et = e.type; let px = e.nx * _vw; let py = e.ny * _vh;
     if (et == "pointermove") { _hx = px; _hy = py; }
     if (et == "pointerdown") {
+        let hit = 0.0;
         for (let i = 0; i < len(_taps); i++) {
             let t = _taps[i];
-            if (_inRect(px, py, t.cx, t.cy, t.hw, t.hh)) { _press[t.id] = 1.0; t.onTap(); }
+            if (_inRect(px, py, t.cx, t.cy, t.hw, t.hh)) { _press[t.id] = 1.0; t.onTap(); hit = 1.0; }
         }
         for (let i = 0; i < len(_drags); i++) {
             let d = _drags[i];
-            if (_inRect(px, py, d.cx, d.cy, d.hw, d.hh)) { _dragging = 1.0; _activeDrag = d; d.onDrag(px); }
+            if (_inRect(px, py, d.cx, d.cy, d.hw, d.hh)) { _dragging = 1.0; _activeDrag = d; d.onDrag(px); hit = 1.0; }
         }
-        _renderApp();
+        if (hit < 0.5) { _repaint(); }
     }
     if (et == "pointermove") {
-        if (_dragging > 0.5) { _activeDrag.onDrag(px); }
-        _renderApp();
+        if (_dragging > 0.5) { _activeDrag.onDrag(px); } else { _repaint(); }
     }
-    if (et == "pointerup") { _dragging = 0.0; _renderApp(); }
-    if (et == "wheel") { if (_hasWheel > 0.5) { _wheelFn(e.deltaY); } _renderApp(); }
-    if (et == "keydown") { if (_hasKey > 0.5) { _keyHandler(e.key); } _renderApp(); }
-    if (et == "keyup") { _renderApp(); }
+    if (et == "pointerup") { _dragging = 0.0; _repaint(); }
+    if (et == "wheel") { if (_hasWheel > 0.5) { _wheelFn(e.deltaY); } }
+    if (et == "keydown") { if (_hasKey > 0.5) { _keyHandler(e.key); } }
+    if (et == "keyup") { _repaint(); }
 }
 function onFrame(dt) {
-    // Advance every animation toward its target; only repaint when something is
-    // actually still moving, so idle frames cost nothing (no tree rebuild, no
-    // submit — the partial-render cache then keeps the GPU idle too).
+    // Advance every animation toward its target; repaint (full) only while
+    // something is still moving, so idle frames cost nothing.
     let active = 0.0;
     let nd = _darkAnim + (_darkTarget - _darkAnim) * 0.18;
     if (abs(nd - _darkAnim) > 0.0005) { active = 1.0; }

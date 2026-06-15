@@ -179,6 +179,27 @@ fn tapping_the_fab_cycles_the_accent() {
 }
 
 #[test]
+fn tapping_a_radio_updates_only_that_component() {
+    // The radios live in their own `RadioRow` component, so a radio tap routes
+    // through that component's `update` — exercising the scoped partial update and
+    // the reassembly bubble up to the root. Selecting one then eases its dot in.
+    let mut app = instance();
+    app.start();
+    let _ = app.take_log();
+    let before = instances(&app);
+
+    // Middle radio "B" center ≈ (450, 999) on 900×1400 (computed from the layout).
+    app.send_event(&InputEvent::PointerDown { x: 450.0, y: 999.0, button: 0 });
+    for _ in 0..8 {
+        app.animate(16.0);
+    }
+    let after = instances(&app);
+    assert!(after != before, "selecting a radio changed the render");
+    assert!(app.trap_reason().is_none(), "no trap on a scoped component update");
+    assert!(app.take_log().is_empty(), "no host errors on a scoped component update");
+}
+
+#[test]
 fn animates_and_resizes_like_the_web_host() {
     let mut app = instance();
     app.start();
