@@ -74,23 +74,27 @@ fn gallery_starts_and_draws_one_instanced_pass() {
 
     let frame = app.last_frame().expect("a frame");
     assert!(frame.resources.iter().any(|r| r.id() == "elpa.m3.pipe"), "pipeline created");
-    match &frame.commands[0] {
-        EncoderCommand::RenderPass(rp) => {
-            let draws: Vec<&RenderCommand> = rp
-                .commands
-                .iter()
-                .filter(|c| matches!(c, RenderCommand::Draw { .. }))
-                .collect();
-            assert_eq!(draws.len(), 1, "one instanced draw for the whole gallery");
-            match draws[0] {
-                RenderCommand::Draw { instance_count, vertex_count, .. } => {
-                    assert_eq!(*vertex_count, 6);
-                    assert!(*instance_count > 50, "many widget + glyph instances");
-                }
-                _ => unreachable!(),
-            }
+    // The frame may carry a one-time font-atlas upload before the render pass.
+    let rp = frame
+        .commands
+        .iter()
+        .find_map(|c| match c {
+            EncoderCommand::RenderPass(rp) => Some(rp),
+            _ => None,
+        })
+        .expect("expected a render pass");
+    let draws: Vec<&RenderCommand> = rp
+        .commands
+        .iter()
+        .filter(|c| matches!(c, RenderCommand::Draw { .. }))
+        .collect();
+    assert_eq!(draws.len(), 1, "one instanced draw for the whole gallery");
+    match draws[0] {
+        RenderCommand::Draw { instance_count, vertex_count, .. } => {
+            assert_eq!(*vertex_count, 6);
+            assert!(*instance_count > 50, "many widget + glyph instances");
         }
-        _ => panic!("expected a render pass"),
+        _ => unreachable!(),
     }
     assert_eq!(instances(&app).len() % 16, 0, "whole instances");
 }

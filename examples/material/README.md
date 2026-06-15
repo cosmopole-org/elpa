@@ -119,12 +119,15 @@ in [`assets/demo.js`](assets/demo.js) / [`assets/gallery.js`](assets/gallery.js)
 
 ## Widget catalog
 
-Everything below is built from the **one** rounded-rect SDF instance (16 floats:
+Everything below is built from the **one** instanced primitive (16 floats:
 center, half-size, corner radius, border, rotation, feather, fill rgba, border
-rgba). Text is vector-stroke capsules; icons, charts, the pie's wedges and the
-video chrome are all the same instance with different parameters. So the entire
-catalog still renders as a **single instanced draw** over **one** shader — the
-gallery test asserts exactly that.
+rgba). Icons, charts, the pie's wedges and the video chrome are all the rounded-
+rect SDF with different parameters. **Text is real** — glyphs from a TrueType font
+the host rasterises into a coverage atlas; a glyph instance repurposes the spare
+per-instance fields as an atlas UV rect and the *same* shader samples the atlas
+(branching on a flag) instead of computing the SDF. So the entire catalog still
+renders as a **single instanced draw** over **one** shader — the gallery test
+asserts exactly that — while text is anti-aliased and proportional like a browser.
 
 * **Layout** — `Container` (color/border/radius/padding/size), `Padding`,
   `Center`, `Align`, `SizedBox`, `Spacer`, `Row`/`Column` (with `cross`
@@ -139,10 +142,11 @@ gallery test asserts exactly that.
   caret + keyboard input), `Tabs`, `NavigationBar`, `SegmentedButton`,
   `ExpansionTile`, `Banner`, `Snackbar`, `Dialog` (modal scrim), `Drawer`
   (sliding, animated).
-* **Content** — `Text` (digits/symbols, the `headline`…`micro` roles **plus**
-  explicit sizing — `px` for a pixel font size, a numeric `size` in layout units —
-  a `weight` (`thin`/`light`/`regular`/`medium`/`semibold`/`bold` or a numeric
-  100–900), and a custom `font` glyph map), `DataTable`.
+* **Content** — `Text` (real font glyphs; full ASCII incl. lower-case; the
+  `headline`…`micro` roles **plus** explicit sizing — `px` for a pixel font size,
+  a numeric `size` in layout units — and a `weight` (`regular`/`medium`/`bold`,
+  the named aliases, or a numeric 100–900; ≥ semibold uses the bold face)),
+  `DataTable`.
 
 ### Responsive layout, typography & SVG icons
 
@@ -150,9 +154,12 @@ gallery test asserts exactly that.
   same tree fits both phone-portrait and desktop-landscape without overflowing;
   a `ListView`/`GridView` used as the scaffold `body` fills the body region so its
   viewport adapts to the screen.
-* **Typography** — `Text("HELLO", { px: 22.0, weight: "bold" })`,
-  `Text("...", { size: "title", weight: "medium" })`, or pass `font:` a custom
-  stroke-glyph map (same format as the built-in font; may carry lower-case).
+* **Typography** — `Text("Hello", { px: 22.0, weight: "bold" })`,
+  `Text("...", { size: "title", weight: "medium" })`. Glyphs come from a real
+  TrueType font (Liberation Sans, regular + bold) that the host rasterises **once**
+  into a coverage atlas via the `text.atlas` host call; the SDK uploads it to a
+  texture and samples it, so text is smooth and proportional at any size. (A host
+  without `text.atlas` transparently falls back to the built-in stroke font.)
 * **SVG icons** — `Icon({ svg: "M4 12 L10 18 L20 6", viewBox: 24 })` or register a
   named one with `registerIcon(name, d, viewBox)` (then use it anywhere a name
   works). The path grammar covers `M/L/H/V/C/Q/Z` (absolute + relative), with

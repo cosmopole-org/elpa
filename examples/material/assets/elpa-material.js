@@ -47,16 +47,26 @@ struct Out {
     @location(3) @interpolate(flat) fill: vec4<f32>,
     @location(4) @interpolate(flat) bcol: vec4<f32>,
     @location(5) @interpolate(flat) feather: f32,
+    @location(6) uv: vec2<f32>,
+    @location(7) @interpolate(flat) glyph: f32,
 };
+
+// One pipeline draws everything. A 'glyph' instance (flagged by bcol.x > 1.5)
+// repurposes the b vector as an atlas UV rect (u0,v0,u1,v1) and samples the font
+// coverage atlas; every other instance is the rounded-rect SDF as before.
+@group(0) @binding(1) var atlas: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
 
 @vertex
 fn vs(@builtin(vertex_index) vi: u32, in: In) -> Out {
     var corners = array<vec2<f32>, 6>(
         vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
         vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0));
+    let isGlyph = in.bcol.x > 1.5;
     let half = in.a.zw;
     let local = corners[vi] * half;
-    let rot = in.b.z;
+    var rot = 0.0;
+    if (!isGlyph) { rot = in.b.z; }
     let cr = cos(rot);
     let sr = sin(rot);
     let rotated = vec2<f32>(local.x * cr - local.y * sr, local.x * sr + local.y * cr);
@@ -70,6 +80,9 @@ fn vs(@builtin(vertex_index) vi: u32, in: In) -> Out {
     o.fill = in.fill;
     o.bcol = in.bcol;
     o.feather = in.b.w;
+    let cuv = corners[vi] * 0.5 + vec2<f32>(0.5, 0.5);
+    o.uv = mix(in.b.xy, in.b.zw, cuv);
+    o.glyph = select(0.0, 1.0, isGlyph);
     return o;
 }
 
@@ -80,6 +93,11 @@ fn sd_round_box(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
 
 @fragment
 fn fs(o: Out) -> @location(0) vec4<f32> {
+    // Sampled in uniform control flow (WGSL requirement), used only for glyphs.
+    let tex = textureSample(atlas, samp, o.uv).r;
+    if (o.glyph > 0.5) {
+        return vec4<f32>(o.fill.rgb, o.fill.a * tex);
+    }
     let r = min(o.params.x, min(o.half.x, o.half.y));
     let d = sd_round_box(o.p, o.half, r);
     let f = max(o.feather, 0.75);
@@ -95,7 +113,10 @@ function _pipelineResources() {
     return [
         { kind: "shader", id: "elpa.m3.shader", wgsl: _WGSL },
         { kind: "bindGroupLayout", id: "elpa.m3.bgl",
-          entries: [{ binding: 0, visibility: ["VERTEX"], ty: "uniform" }] },
+          entries: [
+              { binding: 0, visibility: ["VERTEX"], ty: "uniform" },
+              { binding: 1, visibility: ["FRAGMENT"], ty: "texture" },
+              { binding: 2, visibility: ["FRAGMENT"], ty: "sampler" }] },
         { kind: "pipelineLayout", id: "elpa.m3.layout", bind_group_layouts: ["elpa.m3.bgl"] },
         { kind: "renderPipeline", id: "elpa.m3.pipe", layout: "elpa.m3.layout",
           vertex: { module: "elpa.m3.shader", entry_point: "vs", buffers: [{
@@ -181,6 +202,7 @@ let _listRegions = {};                         // last painted scroll viewport p
 let _scrollDragOn = 0.0; let _scrollDragId = ""; let _scrollDragY = 0.0;  // touch scroll
 let _scrollVel = 0.0;                          // smoothed drag velocity (px/frame)
 let _flingId = ""; let _flingV = 0.0;          // active momentum fling (id + velocity)
+let _atlas = 0; let _atlasUp = 0.0;            // font atlas reply (host) + upload-once flag
 let _darkTarget = 0.0; let _darkAnim = 0.0;    // theme
 let _accent = 0;                               // accent index
 let _anim = {}; let _target = {};              // eased 0..1 values by key
@@ -375,12 +397,51 @@ function _shadow(cx, cy, hw, hh, r, grow, drop, blur) {
     push(_curOut, 0.0); push(_curOut, 0.0); push(_curOut, 0.0); push(_curOut, 0.28);
     push(_curOut, 0.0); push(_curOut, 0.0); push(_curOut, 0.0); push(_curOut, 0.0);
 }
-// Core text rasteriser. `thick` is the stroke weight (capsule thickness as a
-// fraction of the cell — the type-weight knob), and `font` an optional custom
-// glyph map in the same stroke format as `_GLYPHS` (segments [x0,y0,x1,y1] in a
-// 4×6 cell). The built-in font is caps-only, so it is upper-cased; a supplied
-// custom font is rendered verbatim (it may carry lower-case glyphs).
+// Pixel→screen scale for a glyph cell: the atlas is rasterised once at a fixed px
+// size; this maps it to the requested cell so a glyph's on-screen size tracks the
+// kit's vertical rhythm. (Tuned so text height ≈ the old 6·cell box.)
+function _textScale(cell) { if (_atlas == 0) { return cell * 0.2; } return cell * 6.6 / _atlas.pxSize; }
+// The glyph map for a weight — the atlas carries regular + bold; `thick` (the
+// resolved weight) ≥ ~1.1 selects bold.
+function _glyphMap(thick) { if (thick > 1.1) { return _atlas.bold; } return _atlas.regular; }
+// Emit one textured glyph quad. b = atlas UV rect (u0,v0,u1,v1); bcol.x = 2 marks
+// the instance a glyph so the shader samples the atlas instead of the SDF.
+function _glyph(cx, cy, hw, hh, u0, v0, u1, v1, col) {
+    push(_curOut, cx); push(_curOut, cy); push(_curOut, hw); push(_curOut, hh);
+    push(_curOut, u0); push(_curOut, v0); push(_curOut, u1); push(_curOut, v1);
+    push(_curOut, col[0]); push(_curOut, col[1]); push(_curOut, col[2]); push(_curOut, col[3]);
+    push(_curOut, 2.0); push(_curOut, 0.0); push(_curOut, 0.0); push(_curOut, 0.0);
+}
+// Real text: lay glyphs out from the font atlas with proportional advances and
+// anti-aliased coverage — the same way a browser/native UI draws text. Centred on
+// (cx,cy). Falls back to the stroke font only if no atlas is available.
 function _paintTextStyled(str, cx, cy, cell, col, thick, font) {
+    if (_atlas == 0) { _paintTextCapsules(str, cx, cy, cell, col, thick, font); return 0; }
+    let g = _glyphMap(thick); let sc = _textScale(cell);
+    let aw = _atlas.width; let ah = _atlas.height; let n = len(str);
+    let tw = 0.0;
+    for (let i = 0; i < n; i++) { let ch = charAt(str, i); if (has(g, ch)) { tw = tw + g[ch].adv * sc; } }
+    let penX = cx - tw / 2.0;
+    let baseline = cy + (_atlas.ascent + _atlas.descent) * sc / 2.0;
+    for (let i = 0; i < n; i++) {
+        let ch = charAt(str, i);
+        if (has(g, ch)) {
+            let gg = g[ch];
+            if (gg.w > 0.0) {
+                let gw = gg.w * sc; let gh = gg.h * sc;
+                let glx = penX + gg.bx * sc;
+                let gtop = baseline - (gg.by + gg.h) * sc;
+                _glyph(glx + gw / 2.0, gtop + gh / 2.0, gw / 2.0, gh / 2.0,
+                       gg.x / aw, gg.y / ah, (gg.x + gg.w) / aw, (gg.y + gg.h) / ah, col);
+            }
+            penX = penX + gg.adv * sc;
+        }
+    }
+}
+// Fallback stroke-font rasteriser (only when no atlas is available, e.g. a host
+// without the `text.atlas` call). `thick` is the capsule weight; `font` an
+// optional custom stroke-glyph map.
+function _paintTextCapsules(str, cx, cy, cell, col, thick, font) {
     let glyphs = _GLYPHS;
     if (font != 0) { glyphs = font; } else { str = upper(str); }
     let nch = len(str); let adv = 5.0; let th = thick;
@@ -401,6 +462,13 @@ function _paintTextStyled(str, cx, cy, cell, col, thick, font) {
     }
 }
 function _paintText(str, cx, cy, cell, col) { _paintTextStyled(str, cx, cy, cell, col, 0.92, 0); }
+// Load the host-rasterised font atlas once (regular + bold + metrics).
+function _loadAtlas() {
+    let r = askHost("text.atlas", [{ size: 48.0 }]);
+    if (isNull(r)) { return 0; }
+    if (!has(r, "ok")) { return 0; }
+    _atlas = r; _atlasUp = 0.0; return 0;
+}
 function _addTap(cx, cy, hw, hh, id, onTap) { push(_curTaps, { cx: cx, cy: cy, hw: hw, hh: hh, id: id, onTap: onTap }); }
 function _addDrag(cx, cy, hw, hh, onChanged, left, width) {
     push(_curDrags, { cx: cx, cy: cy, hw: hw, hh: hh,
@@ -607,7 +675,14 @@ function _weightThick(node) {
     if (w == "bold") { return 1.32; }
     return 0.92;
 }
-function _textW(str, cell) { return len(str) * 5.0 * cell; }
+// Proportional text width from the atlas advances (falls back to a monospace
+// estimate before the atlas loads). Uses the regular weight for measurement.
+function _textW(str, cell) {
+    if (_atlas == 0) { return len(str) * 5.0 * cell; }
+    let g = _atlas.regular; let sc = _textScale(cell); let w = 0.0;
+    for (let i = 0; i < len(str); i++) { let ch = charAt(str, i); if (has(g, ch)) { w = w + g[ch].adv * sc; } }
+    return w;
+}
 function _btnW(label) { return _textW(label, _cell("label")) + _u * 8.0; }
 function _chipW(label) { return _textW(label, _cell("caption")) + _u * 7.0; }
 function _gapPx(node) { if (has(node, "gap")) { return node.gap * _u; } return _u * 2.0; }
@@ -1676,6 +1751,7 @@ function _bufF32(id, usage, data) { return { kind: "buffer", id: id, size: len(d
 // horizontally), on a wide desktop the height governs (the prior behaviour).
 function _unit() { return min(_vw, _vh) * 0.01; }
 function _renderApp() {
+    if (_atlas == 0) { _loadAtlas(); }
     let si = askHost("gpu.surfaceInfo", []);
     _vw = num(si.width); _vh = num(si.height); _u = _unit();
     _hasKey = 0.0; _hasWheel = 0.0; _hasFocusInput = 0.0;
@@ -1685,31 +1761,54 @@ function _renderApp() {
     _submit();
 }
 function _repaint() { _renderApp(); }
+// The font-atlas texture + sampler (linear, for smooth scaling) that back the
+// glyph instances. Sized to the loaded atlas (a 1×1 stand-in before it loads).
+function _atlasTexRes() {
+    let w = 1; let h = 1; if (_atlas != 0) { w = _atlas.width; h = _atlas.height; }
+    return [
+        { kind: "texture", id: "elpa.m3.atlas", size: { width: w, height: h }, format: "r8unorm", usage: ["TEXTURE_BINDING", "COPY_DST"] },
+        { kind: "sampler", id: "elpa.m3.samp", mag_filter: "linear", min_filter: "linear", mipmap_filter: "linear" },
+    ];
+}
+// Globals uniform + the shared bind group (uniform + atlas texture + sampler).
+function _frameBindings() {
+    return [
+        _bufF32("elpa.m3.globals", ["UNIFORM", "COPY_DST"], [_vw, _vh, 0.0, 0.0]),
+        { kind: "bindGroup", id: "elpa.m3.gb", layout: "elpa.m3.bgl", entries: [
+            { binding: 0, resource: { type: "buffer", buffer: "elpa.m3.globals" } },
+            { binding: 1, resource: { type: "textureView", texture: "elpa.m3.atlas" } },
+            { binding: 2, resource: { type: "sampler", sampler: "elpa.m3.samp" } } ] },
+    ];
+}
+// Upload the atlas pixels exactly once (the texture keeps its contents across
+// frames); returns the encoder command list to prepend to the frame.
+function _atlasUploadCmds() {
+    if (_atlas == 0) { return []; }
+    if (_atlasUp > 0.5) { return []; }
+    _atlasUp = 1.0;
+    return [{ op: "writeTexture", texture: "elpa.m3.atlas", origin: { x: 0, y: 0, z: 0 },
+        size: { width: _atlas.width, height: _atlas.height }, data_b64: _atlas.data }];
+}
 function _submit() {
     let bg = _colorBg();
-    let res = concat(_pipelineResources(), [
-        _bufF32("elpa.m3.globals", ["UNIFORM", "COPY_DST"], [_vw, _vh, 0.0, 0.0]),
-        { kind: "bindGroup", id: "elpa.m3.gb", layout: "elpa.m3.bgl",
-          entries: [{ binding: 0, resource: { type: "buffer", buffer: "elpa.m3.globals" } }] },
+    let res = concat(concat(_pipelineResources(), _atlasTexRes()), concat(_frameBindings(), [
         // The instance buffer is re-declared every frame with fresh geometry.
         // Marking it COPY_DST lets the renderer's resource cache refill the same
         // GPU allocation in place (a queue write) whenever the instance *count*
         // is unchanged — the steady state while animating — instead of freeing
         // and reallocating a buffer each frame.
         _bufF32("elpa.m3.inst", ["VERTEX", "COPY_DST"], _inst),
-    ]);
-    askHost("gpu.submit", [{
-        resources: res,
-        commands: [{ op: "renderPass", id: "elpa.m3.pass",
-            color_attachments: [{ view: { kind: "surface" }, load: "clear",
-                clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
-            commands: [
-                { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" },
-                { cmd: "setPipeline", pipeline: "elpa.m3.pipe" },
-                { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst", offset: 0 },
-                { cmd: "draw", vertex_count: 6, instance_count: len(_inst) / 16, first_vertex: 0, first_instance: 0 },
-            ] }],
-    }]);
+    ]));
+    let pass = { op: "renderPass", id: "elpa.m3.pass",
+        color_attachments: [{ view: { kind: "surface" }, load: "clear",
+            clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
+        commands: [
+            { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" },
+            { cmd: "setPipeline", pipeline: "elpa.m3.pipe" },
+            { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst", offset: 0 },
+            { cmd: "draw", vertex_count: 6, instance_count: len(_inst) / 16, first_vertex: 0, first_instance: 0 },
+        ] };
+    askHost("gpu.submit", [{ resources: res, commands: concat(_atlasUploadCmds(), [pass]) }]);
 }
 
 // Submit a layered frame: a cached "static" buffer (non-animating widgets, whose
@@ -1724,27 +1823,22 @@ function _submitLayered(animating) {
     if (len(dyn) < 1) { _submit(); return 0; }
 
     let bg = _colorBg();
-    let res = concat(_pipelineResources(), [
-        _bufF32("elpa.m3.globals", ["UNIFORM", "COPY_DST"], [_vw, _vh, 0.0, 0.0]),
-        { kind: "bindGroup", id: "elpa.m3.gb", layout: "elpa.m3.bgl",
-          entries: [{ binding: 0, resource: { type: "buffer", buffer: "elpa.m3.globals" } }] },
+    let res = concat(concat(_pipelineResources(), _atlasTexRes()), concat(_frameBindings(), [
         _bufF32("elpa.m3.inst.static", ["VERTEX", "COPY_DST"], stat),
         _bufF32("elpa.m3.inst.dyn", ["VERTEX", "COPY_DST"], dyn),
-    ]);
-    askHost("gpu.submit", [{
-        resources: res,
-        commands: [{ op: "renderPass", id: "elpa.m3.pass",
-            color_attachments: [{ view: { kind: "surface" }, load: "clear",
-                clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
-            commands: [
-                { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" },
-                { cmd: "setPipeline", pipeline: "elpa.m3.pipe" },
-                { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst.static", offset: 0 },
-                { cmd: "draw", vertex_count: 6, instance_count: len(stat) / 16, first_vertex: 0, first_instance: 0 },
-                { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst.dyn", offset: 0 },
-                { cmd: "draw", vertex_count: 6, instance_count: len(dyn) / 16, first_vertex: 0, first_instance: 0 },
-            ] }],
-    }]);
+    ]));
+    let pass = { op: "renderPass", id: "elpa.m3.pass",
+        color_attachments: [{ view: { kind: "surface" }, load: "clear",
+            clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
+        commands: [
+            { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" },
+            { cmd: "setPipeline", pipeline: "elpa.m3.pipe" },
+            { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst.static", offset: 0 },
+            { cmd: "draw", vertex_count: 6, instance_count: len(stat) / 16, first_vertex: 0, first_instance: 0 },
+            { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst.dyn", offset: 0 },
+            { cmd: "draw", vertex_count: 6, instance_count: len(dyn) / 16, first_vertex: 0, first_instance: 0 },
+        ] };
+    askHost("gpu.submit", [{ resources: res, commands: concat(_atlasUploadCmds(), [pass]) }]);
     return 0;
 }
 

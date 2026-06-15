@@ -36,5 +36,5 @@ fn svg_icon_and_text_styles_render() {
     assert!(app.trap_reason().is_none(), "no trap: {:?}", app.trap_reason());
     let n = inst(&app).len() / 16;
     println!("instances={}", n);
-    assert!(n > 30, "svg path + styled text emitted instances (got {n})");
+    assert!(n > 20, "svg path + styled text emitted instances (got {n})");
 }
