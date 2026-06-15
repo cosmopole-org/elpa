@@ -1186,7 +1186,7 @@ impl Executor {
                     let arr = payload.as_array();
                     let func_name = arr.borrow().data[0].as_string();
                     let input = arr.borrow().data[1].clone();
-                    let val = self.ctx.find_val_in_first_scope(func_name);
+                    let val = self.ctx.find_val_in_first_scope(&func_name);
                     if !val.is_empty() {
                         let func = val.as_func();
                         let mut m = ValMap::default();
@@ -1468,7 +1468,7 @@ impl Executor {
                         data: Payload::Null,
                     };
                 }
-                let bound = self.ctx.find_val_globally(id.clone());
+                let bound = self.ctx.find_val_globally(&id);
                 if !bound.is_empty() {
                     return bound;
                 }
@@ -4180,7 +4180,7 @@ impl Executor {
                             self.assign(var_name.clone(), data);
                         } else if assign_target_type == 2 {
                             let index = regs[2].clone();
-                            let indexed = self.ctx.find_val_globally(var_name);
+                            let indexed = self.ctx.find_val_globally(&var_name);
                             if index.typ == 7 {
                                 if indexed.typ == 8 {
                                     let obj = indexed.as_object();
