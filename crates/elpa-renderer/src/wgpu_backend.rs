@@ -390,6 +390,14 @@ impl<'s> GpuBackend for WgpuBackend<'s> {
         }
     }
 
+    fn update_buffer(&mut self, id: &str, offset: u64, bytes: &[u8]) {
+        // Reuse the resident allocation; the cache only routes here when the
+        // buffer exists at this size and declares COPY_DST.
+        if let Some(buffer) = self.buffers.get(id) {
+            self.queue.write_buffer(buffer, offset, bytes);
+        }
+    }
+
     fn destroy_resource(&mut self, id: &str) {
         self.buffers.remove(id);
         self.textures.remove(id);

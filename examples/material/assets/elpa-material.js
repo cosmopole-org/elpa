@@ -613,7 +613,12 @@ function _submit() {
         _bufF32("elpa.m3.globals", ["UNIFORM", "COPY_DST"], [_vw, _vh, 0.0, 0.0]),
         { kind: "bindGroup", id: "elpa.m3.gb", layout: "elpa.m3.bgl",
           entries: [{ binding: 0, resource: { type: "buffer", buffer: "elpa.m3.globals" } }] },
-        _bufF32("elpa.m3.inst", ["VERTEX"], _inst),
+        // The instance buffer is re-declared every frame with fresh geometry.
+        // Marking it COPY_DST lets the renderer's resource cache refill the same
+        // GPU allocation in place (a queue write) whenever the instance *count*
+        // is unchanged — the steady state while animating — instead of freeing
+        // and reallocating a buffer each frame.
+        _bufF32("elpa.m3.inst", ["VERTEX", "COPY_DST"], _inst),
     ]);
     askHost("gpu.submit", [{
         resources: res,

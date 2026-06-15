@@ -20,10 +20,14 @@ use crate::cache::{content_hash, PassCache, ResourceCache};
 use crate::dirty::DirtyTracker;
 
 /// Per-frame work report. The steady-state goal is
-/// `resources_created == 0 && passes_recorded == 0 && !presented`.
+/// `resources_created == 0 && passes_recorded == 0 && !presented`. A frame that
+/// only animates a dynamic buffer reports `resources_updated > 0` with
+/// `resources_created == 0` — the buffer's GPU allocation was reused.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FrameStats {
     pub resources_created: usize,
+    /// Buffers refilled in place (queue write) rather than recreated.
+    pub resources_updated: usize,
     pub passes_recorded: usize,
     pub passes_cached: usize,
     pub presented: bool,
@@ -79,7 +83,9 @@ impl<B: GpuBackend> Renderer<B> {
         self.dirty.clear();
 
         // 1. Resource reconciliation.
-        stats.resources_created = self.resources.sync(&frame.resources, &mut self.backend);
+        let sync = self.resources.sync(&frame.resources, &mut self.backend);
+        stats.resources_created = sync.created;
+        stats.resources_updated = sync.updated;
 
         // 2. Plan each command; decide dirtiness and pass cache hits.
         let mut plan: Vec<Plan> = Vec::with_capacity(frame.commands.len());
@@ -236,6 +242,7 @@ mod tests {
     #[derive(Default)]
     struct Mock {
         created: usize,
+        updated: usize,
         destroyed: usize,
         render_recorded: usize,
         compute_recorded: usize,
@@ -247,6 +254,9 @@ mod tests {
     impl GpuBackend for Mock {
         fn create_resource(&mut self, _d: &ResourceDesc) {
             self.created += 1;
+        }
+        fn update_buffer(&mut self, _id: &str, _offset: u64, _bytes: &[u8]) {
+            self.updated += 1;
         }
         fn destroy_resource(&mut self, _id: &str) {
             self.destroyed += 1;

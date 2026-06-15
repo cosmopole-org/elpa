@@ -110,6 +110,35 @@ fn app_starts_and_draws_one_instanced_pass() {
 }
 
 #[test]
+fn animation_refills_the_instance_buffer_in_place() {
+    // While a widget eases (here the switch thumb), the *number* of rounded-rect
+    // instances is unchanged frame to frame — only their floats move. The
+    // renderer must therefore refill the same GPU buffer with a queue write
+    // (`resources_updated`) rather than reallocate one (`resources_created`),
+    // which is what keeps a busy, fully-repainting frame cheap.
+    let mut app = instance();
+    app.start();
+    let _ = app.take_log();
+
+    // Toggle the switch, then ease it; the eased frames repaint the whole UI.
+    app.send_event(&InputEvent::KeyDown { key: " ".into() });
+    let mut saw_in_place = false;
+    for _ in 0..8 {
+        app.animate(16.0);
+        let s = app.last_stats();
+        if s.presented && s.resources_updated >= 1 {
+            saw_in_place = true;
+            assert_eq!(
+                s.resources_created, 0,
+                "a steady-count animation frame reuses every GPU allocation"
+            );
+        }
+    }
+    assert!(saw_in_place, "the instance buffer was refilled in place while animating");
+    assert!(app.take_log().is_empty());
+}
+
+#[test]
 fn theme_key_cross_fades_the_background() {
     // The `d` key runs the app's onKey closure → toggles dark → update() repaints.
     let mut app = instance();

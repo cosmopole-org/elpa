@@ -10,6 +10,7 @@ use elpa_renderer::GpuBackend;
 #[derive(Debug, Default, Clone)]
 pub struct HeadlessBackend {
     pub resources_created: usize,
+    pub resources_updated: usize,
     pub resources_destroyed: usize,
     pub render_passes: usize,
     pub compute_passes: usize,
@@ -20,6 +21,9 @@ pub struct HeadlessBackend {
 impl GpuBackend for HeadlessBackend {
     fn create_resource(&mut self, _desc: &ResourceDesc) {
         self.resources_created += 1;
+    }
+    fn update_buffer(&mut self, _id: &str, _offset: u64, _bytes: &[u8]) {
+        self.resources_updated += 1;
     }
     fn destroy_resource(&mut self, _id: &str) {
         self.resources_destroyed += 1;

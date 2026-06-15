@@ -7,6 +7,7 @@
 //! | `GpuBackend` method     | wgpu realization                                   |
 //! |-------------------------|----------------------------------------------------|
 //! | `create_resource`       | `device.create_buffer/texture/sampler/shader_module/bind_group_layout/bind_group/pipeline_layout/render_pipeline/compute_pipeline` (dispatch on `ResourceDesc`). |
+//! | `update_buffer`         | `queue.write_buffer` into the existing allocation (data-only change). |
 //! | `destroy_resource`      | drop the cached wgpu handle.                       |
 //! | `begin_frame`           | `surface.get_current_texture` + `device.create_command_encoder`. |
 //! | `record_render_pass`    | `encoder.begin_render_pass` + replay each `RenderCommand` (`set_pipeline`, `set_bind_group`, `set_vertex_buffer`, `draw_indexed`, `set_scissor_rect`, …). |
@@ -23,6 +24,12 @@ use elpa_protocol::{ComputePass, EncoderCommand, Rect, RenderPass, ResourceDesc}
 pub trait GpuBackend {
     /// Create or replace the GPU object for `desc` (dispatch on its variant).
     fn create_resource(&mut self, desc: &ResourceDesc);
+
+    /// Refill an existing buffer's contents in place via a queue write, reusing
+    /// its GPU allocation. Called by the cache when a buffer is re-declared with
+    /// new data but an unchanged size/usage (and `COPY_DST`), so an app that
+    /// rebuilds a dynamic buffer every frame does not churn GPU allocations.
+    fn update_buffer(&mut self, id: &str, offset: u64, bytes: &[u8]);
 
     /// Release the GPU object previously created for `id`.
     fn destroy_resource(&mut self, id: &str);
