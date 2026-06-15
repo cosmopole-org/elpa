@@ -21,19 +21,25 @@ fn instances(app: &Elpa<HeadlessBackend>) -> Vec<f32> {
 
 #[test]
 fn momentum_keeps_a_list_scrolling_after_release() {
+    // A landscape surface: the body list fills the (short) height, so its content
+    // overflows and is scrollable — the case momentum applies to.
     let mut app = Elpa::new_from_js(
         HeadlessBackend::default(),
-        SurfaceInfo::new(900, 1400, 1.0),
+        SurfaceInfo::new(1400, 600, 1.0),
         &elpa_material::gallery_program(),
     )
     .expect("SDK + gallery program compiles");
     app.start();
+    // Go to the CHARTS section: a non-interactive list, so a drag anywhere in it
+    // pans the viewport (no widget swallows the gesture as a tap).
+    app.send_event(&InputEvent::KeyDown { key: "t".into() });
+    app.send_event(&InputEvent::KeyDown { key: "t".into() });
     let _ = app.take_log();
 
-    // Fast upward flick over the body's scrollable list (centred at x≈450).
-    let cx = 450.0;
-    app.send_event(&InputEvent::PointerDown { x: cx, y: 800.0, button: 0 });
-    let mut y = 800.0;
+    // Fast upward flick over the body's scrollable list (centred at x≈700).
+    let cx = 700.0;
+    app.send_event(&InputEvent::PointerDown { x: cx, y: 450.0, button: 0 });
+    let mut y = 450.0;
     for _ in 0..6 {
         y -= 40.0;
         app.send_event(&InputEvent::PointerMove { x: cx, y });
@@ -62,8 +68,8 @@ fn momentum_keeps_a_list_scrolling_after_release() {
 
     // A second touch halts the momentum immediately (catch-to-stop): tapping then
     // animating leaves the render unchanged.
-    app.send_event(&InputEvent::PointerDown { x: cx, y: 700.0, button: 0 });
-    app.send_event(&InputEvent::PointerUp { x: cx, y: 700.0, button: 0 });
+    app.send_event(&InputEvent::PointerDown { x: cx, y: 300.0, button: 0 });
+    app.send_event(&InputEvent::PointerUp { x: cx, y: 300.0, button: 0 });
     let settled = instances(&app);
     for _ in 0..5 {
         app.animate(16.0);

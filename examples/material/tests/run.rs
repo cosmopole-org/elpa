@@ -288,8 +288,8 @@ fn tapping_the_fab_cycles_the_accent() {
     let _ = app.take_log();
     let before = instances(&app);
 
-    // FAB center ≈ (vw - u*9, vh - u*9) with u = vh/100 → (774, 1274) on 900×1400.
-    app.send_event(&InputEvent::PointerDown { x: 774.0, y: 1274.0, button: 0 });
+    // FAB center ≈ (vw - u*9, vh - u*9) with u = min(vw,vh)/100 = 9 → (819, 1319).
+    app.send_event(&InputEvent::PointerDown { x: 819.0, y: 1319.0, button: 0 });
     let after = instances(&app);
     assert!(after != before, "tapping the FAB recolored the UI (accent cycled)");
     assert!(app.take_log().is_empty(), "no host errors on tap");
@@ -305,8 +305,8 @@ fn tapping_a_radio_updates_only_that_component() {
     let _ = app.take_log();
     let before = instances(&app);
 
-    // Middle radio "B" center ≈ (450, 999) on 900×1400 (computed from the layout).
-    app.send_event(&InputEvent::PointerDown { x: 450.0, y: 999.0, button: 0 });
+    // Middle radio "B" center ≈ (450, 892) on 900×1400 (u = min(vw,vh)/100 = 9).
+    app.send_event(&InputEvent::PointerDown { x: 450.0, y: 892.0, button: 0 });
     for _ in 0..8 {
         app.animate(16.0);
     }

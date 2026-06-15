@@ -142,10 +142,10 @@ fn typing_into_the_text_field_updates_it() {
     app.send_event(&InputEvent::KeyDown { key: "t".into() });
     let before = instances(&app);
 
-    // The field is the first control under the "WIDGETS" title; tap near it. The
-    // ListView is centered, width 88u (u=14px) → spans ~x in [186,714]; the field
-    // row is high in the list. Tap at a representative point inside it.
-    app.send_event(&InputEvent::PointerDown { x: 300.0, y: 330.0, button: 0 });
+    // The field is the first control under the "WIDGETS" title; tap its centre.
+    // With u = min(vw,vh)/100 = 9 the body ListView fills from under the app bar,
+    // so the field row sits near the top at y ≈ 180.
+    app.send_event(&InputEvent::PointerDown { x: 450.0, y: 180.0, button: 0 });
     // Type a few characters.
     for ch in ["A", "D", "A"] {
         app.send_event(&InputEvent::KeyDown { key: ch.into() });
@@ -159,14 +159,21 @@ fn typing_into_the_text_field_updates_it() {
 #[test]
 fn scrolling_a_list_changes_the_render() {
     // A wheel tick over the layout section's ListView pans it, changing which
-    // items are visible (item-level culling) and thus the instances.
-    let mut app = instance();
+    // items are visible (item-level culling) and thus the instances. Use a
+    // landscape surface so the body list overflows its (short) height and is
+    // actually scrollable.
+    let mut app = Elpa::new_from_js(
+        HeadlessBackend::default(),
+        SurfaceInfo::new(1400, 600, 1.0),
+        &elpa_material::gallery_program(),
+    )
+    .expect("SDK + gallery program compiles");
     app.start();
     let _ = app.take_log();
 
     let before = instances(&app);
     // Wheel over the centre of the body (the ListView viewport).
-    app.send_event(&InputEvent::Wheel { x: 450.0, y: 700.0, delta_y: 400.0 });
+    app.send_event(&InputEvent::Wheel { x: 700.0, y: 300.0, delta_y: 400.0 });
     let after = instances(&app);
     assert!(after != before, "scrolling the list changed the render");
     assert!(app.trap_reason().is_none(), "no trap on scroll");
@@ -204,8 +211,8 @@ fn drawer_opens_and_animates() {
     let _ = app.take_log();
     let before = instances(&app);
 
-    // The hamburger sits top-left (~x=6u, y=5u → (84,70) on 900x1400).
-    app.send_event(&InputEvent::PointerDown { x: 84.0, y: 70.0, button: 0 });
+    // The hamburger sits top-left (x=6u, y=5u → (54,45) with u = min(vw,vh)/100 = 9).
+    app.send_event(&InputEvent::PointerDown { x: 54.0, y: 45.0, button: 0 });
     let mut moved = false;
     for _ in 0..8 {
         app.animate(16.0);
@@ -248,8 +255,8 @@ fn fab_cycles_accent_and_resizes_cleanly() {
     let _ = app.take_log();
     let before = instances(&app);
 
-    // FAB bottom-right ≈ (vw - u*9, vh - u*9) = (774, 1274) on 900x1400.
-    app.send_event(&InputEvent::PointerDown { x: 774.0, y: 1274.0, button: 0 });
+    // FAB bottom-right ≈ (vw - u*9, vh - u*9) = (819, 1319) (u = min(vw,vh)/100 = 9).
+    app.send_event(&InputEvent::PointerDown { x: 819.0, y: 1319.0, button: 0 });
     assert!(instances(&app) != before, "tapping the FAB recolored the UI");
 
     app.resize(1200, 2000, 1.0);

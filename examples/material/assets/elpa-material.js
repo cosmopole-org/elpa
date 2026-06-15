@@ -842,6 +842,13 @@ function _paintScaffold(node) {
     if (has(node, "body")) { if (!isNull(node.body)) {
         let bodyTop = aH; let bodyH = _vh - aH;
         if (has(node, "bottomBar")) { bodyH = bodyH - _u * 11.0; }
+        // A scrollable body fills the whole body region (tight vertical constraint)
+        // so its viewport adapts to the screen — no fixed-height list stranded in a
+        // sea of whitespace on tall phones, no overflow on short ones. Other body
+        // widgets (e.g. a Card) keep their intrinsic size and are centred.
+        let bk = node.body.kind;
+        if (bk == "listView") { let bn = node.body; bn._fh = bodyH; }
+        if (bk == "gridView") { let bn = node.body; bn._fh = bodyH; }
         _paint(node.body, _vw / 2.0, bodyTop + bodyH / 2.0); push(kids, node.body);
     } }
     if (has(node, "appBar")) { if (!isNull(node.appBar)) { _paint(node.appBar, _vw / 2.0, aH / 2.0); push(kids, node.appBar); } }
@@ -1490,9 +1497,15 @@ function _repaintAll() {
 
 // --------------------------------------------------------------- render -------
 function _bufF32(id, usage, data) { return { kind: "buffer", id: id, size: len(data) * 4, usage: usage, data_f32: data }; }
+// The responsive layout unit (1% of the *shorter* viewport side). Widgets are
+// sized in these units, and the apps lay content out to roughly 90 of them wide;
+// deriving the unit from the shorter side keeps that content inside the screen in
+// *both* orientations — on a tall phone the width governs (so nothing overflows
+// horizontally), on a wide desktop the height governs (the prior behaviour).
+function _unit() { return min(_vw, _vh) * 0.01; }
 function _renderApp() {
     let si = askHost("gpu.surfaceInfo", []);
-    _vw = num(si.width); _vh = num(si.height); _u = _vh * 0.01;
+    _vw = num(si.width); _vh = num(si.height); _u = _unit();
     _hasKey = 0.0; _hasWheel = 0.0; _hasFocusInput = 0.0;
     _mount(_root, _NULL);
     _paint(_root, _vw * 0.5, _vh * 0.5);
@@ -1693,6 +1706,6 @@ function onFrame(dt) {
     if (len(dirty) > 0) { _repaintComps(dirty); }
 }
 function onResize(info) {
-    _vw = num(info.width); _vh = num(info.height); _u = _vh * 0.01;
+    _vw = num(info.width); _vh = num(info.height); _u = _unit();
     _renderApp();
 }

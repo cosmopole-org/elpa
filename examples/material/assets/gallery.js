@@ -246,7 +246,7 @@ let App = defineComponent(function(props, update) {
             onAction: () => { dark = 1.0 - dark; update(); } }),
         fab: Fab({ onTap: () => { accent = (accent + 1) % 4; update(); } }),
         bottomBar: NavigationBar({ index: tab, items: items, onChange: (i) => { tab = i; update(); } }),
-        body: Center({ child: galBody(update) }),
+        body: galBody(update),
         drawer: Drawer({ open: menuOpen, header: "SECTIONS", index: tab, items: items,
             onSelect: (i) => { tab = i; menuOpen = 0.0; update(); },
             onClose: () => { menuOpen = 0.0; update(); } }),
