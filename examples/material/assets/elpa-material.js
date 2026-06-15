@@ -2,8 +2,8 @@
 //
 // This file is the SDK. It is *linked ahead of* an app (see `demo.js`) into one
 // program, exactly like a Flutter app `import`s `package:flutter/material.dart`:
-// the app calls the widget constructors, `Component`, and `runApp` defined here
-// and never touches the GPU. Everything below — the rounded-rect SDF pipeline,
+// the app calls the widget constructors, `defineComponent`, and `runApp` defined
+// here and never touches the GPU. Everything below — the rounded-rect SDF pipeline,
 // the glyph font, the responsive layout coordinator, the per-widget M3
 // colors/sizes, the retained component runtime, and the event plumbing that ends
 // in `gpu.submit` — lives in the SDK as a black box.
@@ -14,8 +14,9 @@
 //   Flutter `Widget`s. Constructors (`FilledButton`, `Switch`, `Column`, ...)
 //   just build them.
 // * A *component* is a plain function `(props, update) => widget`, React-style.
-//   You place one in the tree with `Component(fn, props)` (the React-element
-//   analog) so the runtime owns its identity. Each mounted component gets its
+//   You turn one into a widget constructor with `defineComponent(fn)` and then
+//   instantiate it in the tree like a Flutter widget — `Tile({ ... })`, no
+//   wrapper — so the runtime owns its identity. Each mounted component gets its
 //   own `update`; calling it re-runs **only that component** and re-submits.
 // * The runtime keeps a retained tree. A full render mounts it (running every
 //   component fn), measures, paints, and caches each node's painted output
@@ -166,13 +167,27 @@ let _accDark  = [[0.816,0.737,1.000],[0.306,0.847,0.859],[0.616,0.839,0.490],[1.
 // build, like reading ThemeData from MaterialApp).
 function setTheme(darkTarget, accent) { _darkTarget = darkTarget; _accent = accent; }
 
-// Place a component function in the tree (the React-element analog). `fn` is a
+// Place a component function in the tree (the runtime's element node). `fn` is a
 // plain function `(props, update) => widget`; the runtime owns its identity, so
-// its `update` repaints only it.
+// its `update` repaints only it. This is an internal detail: app code never
+// calls it — it wraps its component functions with `defineComponent` and then
+// instantiates them like Flutter widgets (see below).
 function Component(fn, props) { return { kind: "comp", fn: fn, props: props }; }
 
-// Mount a root component function and paint the first frame.
-function runApp(rootFn) { _root = Component(rootFn, {}); _renderApp(); }
+// Turn a component function `(props, update) => widget` into a widget
+// constructor — the Flutter analog of declaring a `StatelessWidget` /
+// `StatefulWidget` class. The result is called like any built-in widget,
+// `Tile({ label: "WI-FI", child: ... })`, and yields a tree node the runtime
+// mounts with its own identity and `update`. No `Component(...)` wrapper is
+// needed at the call site: a defined component nests in another component's tree
+// exactly like `Switch`, `Row`, or `Card` do, so custom widgets compose just
+// like the built-ins. Each call captures its own `fn`, so distinct components
+// stay distinct.
+function defineComponent(fn) { return (props) => Component(fn, props); }
+
+// Mount the root component (a `defineComponent` constructor) and paint the first
+// frame — the analog of Flutter's `runApp(MyApp())`.
+function runApp(root) { _root = root({}); _renderApp(); }
 
 function clamp01(v) { if (v < 0.0) { return 0.0; } if (v > 1.0) { return 1.0; } return v; }
 function sel(a, b) { if (a == b) { return 1.0; } return 0.0; }

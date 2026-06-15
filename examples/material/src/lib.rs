@@ -12,13 +12,14 @@
 //!   colors/sizes, widget constructors (`Scaffold`, `AppBar`, `Card`, `Column`,
 //!   `Row`, `FilledButton`, `OutlinedButton`, `Fab`, `Switch`, `Checkbox`,
 //!   `Radio`, `Slider`, `Chip`, `Progress`, `Divider`, `Text`), and a
-//!   retained-tree component runtime — `Component(fn, props)` / `runApp(root)` —
+//!   retained-tree component runtime — `defineComponent(fn)` / `runApp(root)` —
 //!   whose internals end in `gpu.submit`. Apps never touch the GPU.
 //! * [`DEMO_JS`] — **the app**. It uses the SDK as a black box: declares state and
 //!   composes a widget tree. Components are plain functions `(props, update) =>
-//!   widget` (React-style), placed with `Component`; a tap handler mutates state
-//!   and calls `update()`, which repaints **only that component** (parents and
-//!   siblings reuse cached output) — the Flutter `setState` pattern done right.
+//!   widget`, wrapped with `defineComponent` and then instantiated like Flutter
+//!   widgets (`Tile({ ... })`, no wrapper); a tap handler mutates state and calls
+//!   `update()`, which repaints **only that component** (parents and siblings
+//!   reuse cached output) — the Flutter `setState` pattern done right.
 //!
 //! ## Linking
 //!
