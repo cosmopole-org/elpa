@@ -66,8 +66,16 @@ instance list into **one** instanced wgpu draw over the shared SDF pipeline and
 When a component's `update()` fires, only that component's function re-runs and
 its subtree is repainted at its cached box; each ancestor's output is then
 **reassembled by concatenating cached children** (no function re-runs, no sibling
-repaints) up to the root, which is re-submitted. Idle frames (nothing animating)
-skip everything, so the renderer's partial-render cache keeps the GPU idle too.
+repaints) up to the root, which is re-submitted.
+
+The animation clock is partial too. While painting, each component records which
+animation keys it reads (eased values, press layers). On every frame the SDK
+advances the animations and repaints **only the components whose keys are still
+moving** — a toggle eases just its tile and the progress bar, not the rest — then
+reassembles. The light/dark cross-fade is the one global case (it recolors
+everything, so it re-emits the whole tree, but without re-running any component
+function). Idle frames (nothing moving) skip everything, so the renderer's
+partial-render cache keeps the GPU idle too.
 
 Every shape — cards, pill buttons, the rounded-square FAB, the M3 switch
 (outlined off-state, growing thumb), checkboxes, radios, the slider, chips,
