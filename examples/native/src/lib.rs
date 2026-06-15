@@ -17,6 +17,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use elpa::{Elpa, InputEvent, SurfaceInfo, WgpuBackend};
 use winit::application::ApplicationHandler;
@@ -28,6 +29,8 @@ use winit::window::{Window, WindowId};
 /// A live app instance over a window-backed wgpu surface (`'static`, since the
 /// surface is built from an `Arc<Window>` we keep alive alongside it).
 type App = Elpa<WgpuBackend<'static>>;
+
+const TARGET_FRAME_TIME: Duration = Duration::from_nanos(16_666_667);
 
 /// Map a wgpu surface format to the protocol's format token so the app's
 /// pipeline target matches the surface.
@@ -60,6 +63,38 @@ struct State {
     window: Arc<Window>,
     app: Rc<RefCell<App>>,
     cursor_pos: (f64, f64),
+    last_frame: Option<Instant>,
+    next_frame: Instant,
+    redraw_pending: bool,
+    pending_events: Vec<InputEvent>,
+}
+
+impl State {
+    fn request_redraw(&mut self) {
+        if !self.redraw_pending {
+            self.redraw_pending = true;
+            self.window.request_redraw();
+        }
+    }
+
+    fn queue_event(&mut self, event: InputEvent) {
+        // Pointer/touch move events can arrive faster than Android can render.
+        // Keep only the newest contiguous move so input delivery remains cheap
+        // and the frame uses the freshest position, mirroring browser event
+        // coalescing before requestAnimationFrame. Press/release, wheel, and key
+        // events are kept in order because they carry discrete state changes.
+        if matches!(event, InputEvent::PointerMove { .. })
+            && matches!(
+                self.pending_events.last(),
+                Some(InputEvent::PointerMove { .. })
+            )
+        {
+            *self.pending_events.last_mut().unwrap() = event;
+        } else {
+            self.pending_events.push(event);
+        }
+        self.request_redraw();
+    }
 }
 
 #[derive(Default)]
@@ -99,13 +134,23 @@ impl ElpaApp {
             window,
             app: Rc::new(RefCell::new(app)),
             cursor_pos: (0.0, 0.0),
+            last_frame: None,
+            next_frame: Instant::now(),
+            redraw_pending: false,
+            pending_events: Vec::new(),
         });
     }
 }
 
 impl ApplicationHandler for ElpaApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        event_loop.set_control_flow(ControlFlow::Poll);
+        // Let the platform sleep between redraws. The old native loop used
+        // `Poll`, and requesting another redraw from every `about_to_wait`
+        // iteration can still flood Android with redraw work while input is
+        // queued. The web example has exactly one requestAnimationFrame pending
+        // at a time, so the native host tracks pending redraws and schedules the
+        // next animation tick for the target frame time.
+        event_loop.set_control_flow(ControlFlow::Wait);
         if self.state.is_none() {
             self.init(event_loop);
         }
@@ -132,7 +177,7 @@ impl ApplicationHandler for ElpaApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let scale = state.window.scale_factor();
                 state.cursor_pos = (position.x / scale, position.y / scale);
-                state.app.borrow_mut().send_event(&InputEvent::PointerMove {
+                state.queue_event(InputEvent::PointerMove {
                     x: state.cursor_pos.0,
                     y: state.cursor_pos.1,
                 });
@@ -162,7 +207,7 @@ impl ApplicationHandler for ElpaApp {
                         button,
                     },
                 };
-                state.app.borrow_mut().send_event(&event);
+                state.queue_event(event);
             }
             WindowEvent::Touch(touch) => {
                 let scale = state.window.scale_factor();
@@ -178,14 +223,14 @@ impl ApplicationHandler for ElpaApp {
                         InputEvent::PointerUp { x, y, button: 0 }
                     }
                 };
-                state.app.borrow_mut().send_event(&event);
+                state.queue_event(event);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let delta_y = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(y) * 40.0,
                     MouseScrollDelta::PixelDelta(pos) => pos.y,
                 };
-                state.app.borrow_mut().send_event(&InputEvent::Wheel {
+                state.queue_event(InputEvent::Wheel {
                     x: state.cursor_pos.0,
                     y: state.cursor_pos.1,
                     delta_y,
@@ -202,19 +247,40 @@ impl ApplicationHandler for ElpaApp {
                     ElementState::Pressed => InputEvent::KeyDown { key },
                     ElementState::Released => InputEvent::KeyUp { key },
                 };
-                state.app.borrow_mut().send_event(&event);
+                state.queue_event(event);
             }
             WindowEvent::RedrawRequested => {
-                // Drive animation and present a frame.
-                state.app.borrow_mut().animate(16.0);
+                state.redraw_pending = false;
+                // Drive animation and present a frame using wall-clock deltas,
+                // matching the web example's requestAnimationFrame timestamp
+                // loop instead of assuming every native frame is exactly 16 ms.
+                let events = std::mem::take(&mut state.pending_events);
+                for event in events {
+                    state.app.borrow_mut().send_event(&event);
+                }
+
+                let now = Instant::now();
+                let dt = state
+                    .last_frame
+                    .map(|last| now.duration_since(last).as_secs_f64() * 1_000.0)
+                    .unwrap_or(16.0);
+                state.last_frame = Some(now);
+                state.app.borrow_mut().animate(dt);
+                state.next_frame = now + TARGET_FRAME_TIME;
             }
             _ => {}
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(state) = self.state.as_ref() {
-            state.window.request_redraw();
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(state) = self.state.as_mut() {
+            let now = Instant::now();
+            if now >= state.next_frame {
+                state.request_redraw();
+                event_loop.set_control_flow(ControlFlow::Wait);
+            } else {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(state.next_frame));
+            }
         }
     }
 }
