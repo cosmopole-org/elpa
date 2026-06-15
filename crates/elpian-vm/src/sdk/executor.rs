@@ -3,7 +3,7 @@
 use crate::sdk::{
     capabilities::CapabilitySet,
     context::Context,
-    data::{Array, Function, Object, Val, ValGroup},
+    data::{Array, Function, Object, Payload, Val, ValGroup, ValMap},
     lifecycle::ExecControl,
     limits::{Governor, ResourceLimits},
     stdlib,
@@ -143,7 +143,7 @@ impl Operation for DefineVariable {
         vec![
             Val {
                 typ: 7,
-                data: Rc::new(RefCell::new(Box::new(self.var_name.clone().unwrap()))),
+                data: Payload::from(self.var_name.clone().unwrap()),
             },
             self.var_value.clone().unwrap(),
         ]
@@ -206,32 +206,32 @@ impl Operation for AssignVariable {
             let index = self
                 .index
                 .clone()
-                .unwrap_or_else(|| Val { typ: 0, data: Rc::new(RefCell::new(Box::new(0))) });
+                .unwrap_or_else(|| Val { typ: 0, data: Payload::Null });
             if self.var_value.is_none() {
                 return vec![
                     Val {
                         typ: 7,
-                        data: Rc::new(RefCell::new(Box::new(self.var_name.clone().unwrap()))),
+                        data: Payload::from(self.var_name.clone().unwrap()),
                     },
                     Val {
                         typ: 6,
-                        data: Rc::new(RefCell::new(Box::new(self.assign_target_type))),
+                        data: Payload::from(self.assign_target_type),
                     },
                     index,
                     Val {
                         typ: 0,
-                        data: Rc::new(RefCell::new(Box::new(0))),
+                        data: Payload::Null,
                     },
                 ];
             } else {
                 return vec![
                     Val {
                         typ: 7,
-                        data: Rc::new(RefCell::new(Box::new(self.var_name.clone().unwrap()))),
+                        data: Payload::from(self.var_name.clone().unwrap()),
                     },
                     Val {
                         typ: 6,
-                        data: Rc::new(RefCell::new(Box::new(self.assign_target_type))),
+                        data: Payload::from(self.assign_target_type),
                     },
                     index,
                     self.var_value.clone().unwrap(),
@@ -242,34 +242,34 @@ impl Operation for AssignVariable {
                 return vec![
                     Val {
                         typ: 7,
-                        data: Rc::new(RefCell::new(Box::new(self.var_name.clone().unwrap()))),
+                        data: Payload::from(self.var_name.clone().unwrap()),
                     },
                     Val {
                         typ: 6,
-                        data: Rc::new(RefCell::new(Box::new(self.assign_target_type))),
+                        data: Payload::from(self.assign_target_type),
                     },
                     Val {
                         typ: 0,
-                        data: Rc::new(RefCell::new(Box::new(0))),
+                        data: Payload::Null,
                     },
                     Val {
                         typ: 0,
-                        data: Rc::new(RefCell::new(Box::new(0))),
+                        data: Payload::Null,
                     },
                 ];
             } else {
                 return vec![
                     Val {
                         typ: 7,
-                        data: Rc::new(RefCell::new(Box::new(self.var_name.clone().unwrap()))),
+                        data: Payload::from(self.var_name.clone().unwrap()),
                     },
                     Val {
                         typ: 6,
-                        data: Rc::new(RefCell::new(Box::new(self.assign_target_type))),
+                        data: Payload::from(self.assign_target_type),
                     },
                     Val {
                         typ: 0,
-                        data: Rc::new(RefCell::new(Box::new(0))),
+                        data: Payload::Null,
                     },
                     self.var_value.clone().unwrap(),
                 ];
@@ -353,21 +353,21 @@ impl Operation for CallFunction {
         vec![
             Val {
                 typ: 10,
-                data: Rc::new(RefCell::new(Box::new(self.func.clone().unwrap()))),
+                data: Payload::from(self.func.clone().unwrap()),
             },
             Val {
                 typ: 6,
-                data: Rc::new(RefCell::new(Box::new(self.is_native))),
+                data: Payload::from(self.is_native),
             },
             Val {
                 typ: 2,
-                data: Rc::new(RefCell::new(Box::new(self.param_count))),
+                data: Payload::from(self.param_count),
             },
             Val {
                 typ: 9,
-                data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(Array::new(
+                data: Payload::from(Rc::new(RefCell::new(Array::new(
                     self.params.clone(),
-                )))))),
+                )))),
             },
         ]
     }
@@ -454,7 +454,7 @@ impl Operation for IfStmt {
         vec![
             Val {
                 typ: 6,
-                data: Rc::new(RefCell::new(Box::new(self.has_condition))),
+                data: Payload::from(self.has_condition),
             },
             self.condition.clone().unwrap(),
         ]
@@ -551,28 +551,28 @@ impl Operation for SwitchStmt {
             .cases
             .iter()
             .map(|item| {
-                let mut case_info = HashMap::new();
+                let mut case_info = ValMap::default();
                 case_info.insert("val".to_string(), item.0.clone());
                 case_info.insert(
                     "start".to_string(),
                     Val {
                         typ: 3,
-                        data: Rc::new(RefCell::new(Box::new(item.1 as i64))),
+                        data: Payload::from(item.1 as i64),
                     },
                 );
                 case_info.insert(
                     "end".to_string(),
                     Val {
                         typ: 3,
-                        data: Rc::new(RefCell::new(Box::new(item.2 as i64))),
+                        data: Payload::from(item.2 as i64),
                     },
                 );
                 Val {
                     typ: 8,
-                    data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(Object::new(
+                    data: Payload::from(Rc::new(RefCell::new(Object::new(
                         -1,
                         ValGroup::new(case_info),
-                    )))))),
+                    )))),
                 }
             })
             .collect();
@@ -580,17 +580,17 @@ impl Operation for SwitchStmt {
             self.comparing_value.clone().unwrap(),
             Val {
                 typ: 3,
-                data: Rc::new(RefCell::new(Box::new(self.branch_after_start as i64))),
+                data: Payload::from(self.branch_after_start as i64),
             },
             Val {
                 typ: 3,
-                data: Rc::new(RefCell::new(Box::new(self.case_count as i64))),
+                data: Payload::from(self.case_count as i64),
             },
             Val {
                 typ: 9,
-                data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(Array::new(
+                data: Payload::from(Rc::new(RefCell::new(Array::new(
                     case_items,
-                )))))),
+                )))),
             },
         ]
     }
@@ -640,7 +640,7 @@ impl Operation for Arithmetic {
         vec![
             Val {
                 typ: 1,
-                data: Rc::new(RefCell::new(Box::new(self.op))),
+                data: Payload::from(self.op),
             },
             self.arg1.clone().unwrap(),
             self.arg2.clone().unwrap(),
@@ -774,17 +774,17 @@ impl Operation for ObjectExpr {
         vec![
             Val {
                 typ: 3,
-                data: Rc::new(RefCell::new(Box::new(self.object_typ_id))),
+                data: Payload::from(self.object_typ_id),
             },
             Val {
                 typ: 2,
-                data: Rc::new(RefCell::new(Box::new(self.prop_count))),
+                data: Payload::from(self.prop_count),
             },
             Val {
                 typ: 9,
-                data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(Array::new(
+                data: Payload::from(Rc::new(RefCell::new(Array::new(
                     self.props.clone(),
-                )))))),
+                )))),
             },
         ]
     }
@@ -834,13 +834,13 @@ impl Operation for ArrayExpr {
         vec![
             Val {
                 typ: 2,
-                data: Rc::new(RefCell::new(Box::new(self.item_count))),
+                data: Payload::from(self.item_count),
             },
             Val {
                 typ: 9,
-                data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(Array::new(
+                data: Payload::from(Rc::new(RefCell::new(Array::new(
                     self.items.clone(),
-                )))))),
+                )))),
             },
         ]
     }
@@ -890,11 +890,11 @@ impl Operation for CondBranch {
             self.condition.clone().unwrap(),
             Val {
                 typ: 3,
-                data: Rc::new(RefCell::new(Box::new(self.true_branch))),
+                data: Payload::from(self.true_branch),
             },
             Val {
                 typ: 3,
-                data: Rc::new(RefCell::new(Box::new(self.false_branch))),
+                data: Payload::from(self.false_branch),
             },
         ]
     }
@@ -941,7 +941,7 @@ impl Operation for CastOp {
             self.data.clone().unwrap(),
             Val {
                 typ: 7,
-                data: Rc::new(RefCell::new(Box::new(self.target_type.clone()))),
+                data: Payload::from(self.target_type.clone()),
             },
         ]
     }
@@ -1025,7 +1025,7 @@ impl Executor {
             ctx: Context::new(),
             program,
             cb_counter: 0,
-            pending_func_result_value: Val::new(254, Rc::new(RefCell::new(Box::new(0)))),
+            pending_func_result_value: Val::new(254, Payload::Null),
             registers: vec![],
             run_cb_id: 0,
             exec_globally: false,
@@ -1115,12 +1115,12 @@ impl Executor {
             // Status 0x06 = terminated/trapped; payload is the reason string
             // (empty for a clean host-ordered terminate).
             let msg = self.trap.clone().unwrap_or_default();
-            return Some((0x06, cb_id, Val::new(7, Rc::new(RefCell::new(Box::new(msg))))));
+            return Some((0x06, cb_id, Val::new(7, Payload::from(msg))));
         }
         if self.paused_out {
             self.processing = false;
             // Status 0x05 = paused; the continuation is preserved for `resume`.
-            return Some((0x05, cb_id, Val::new(253, Rc::new(RefCell::new(Box::new(0))))));
+            return Some((0x05, cb_id, Val::new(253, Payload::Null)));
         }
         None
     }
@@ -1140,11 +1140,11 @@ impl Executor {
                 // any sentinel a previous call may have left behind so a function
                 // that falls off its end without an explicit `return` yields "no
                 // value" instead of leaking the last returned result.
-                self.pending_func_result_value = Val::new(254, Rc::new(RefCell::new(Box::new(0))));
+                self.pending_func_result_value = Val::new(254, Payload::Null);
                 if self.control.is_terminated() {
-                    return (0x06, cb_id, Val::new(7, Rc::new(RefCell::new(Box::new(
+                    return (0x06, cb_id, Val::new(7, Payload::from(
                         self.trap.clone().unwrap_or_default(),
-                    )))));
+                    )));
                 }
                 if payload.typ != 9 {
                     self.exec_globally = true;
@@ -1155,7 +1155,7 @@ impl Executor {
                         false,
                         Val {
                             typ: 0,
-                            data: Rc::new(RefCell::new(Box::new(0))),
+                            data: Payload::Null,
                         },
                         false,
                     );
@@ -1176,7 +1176,7 @@ impl Executor {
                             0,
                             Val {
                                 typ: 0,
-                                data: Rc::new(RefCell::new(Box::new(0))),
+                                data: Payload::Null,
                             },
                         );
                     }
@@ -1189,7 +1189,7 @@ impl Executor {
                     let val = self.ctx.find_val_in_first_scope(func_name);
                     if !val.is_empty() {
                         let func = val.as_func();
-                        let mut m = HashMap::new();
+                        let mut m = ValMap::default();
                         if !func.borrow().params.is_empty() {
                             m.insert(func.borrow().params[0].clone(), input);
                         }
@@ -1206,7 +1206,7 @@ impl Executor {
                             false,
                             Val {
                                 typ: 0,
-                                data: Rc::new(RefCell::new(Box::new(0))),
+                                data: Payload::Null,
                             },
                             true,
                         );
@@ -1227,7 +1227,7 @@ impl Executor {
                                 0,
                                 Val {
                                     typ: 0,
-                                    data: Rc::new(RefCell::new(Box::new(0))),
+                                    data: Payload::Null,
                                 },
                             );
                         }
@@ -1254,7 +1254,7 @@ impl Executor {
                     0,
                     Val {
                         typ: 0,
-                        data: Rc::new(RefCell::new(Box::new(0))),
+                        data: Payload::Null,
                     },
                 );
             }
@@ -1266,9 +1266,9 @@ impl Executor {
                 self.governor.begin_turn();
                 self.paused_out = false;
                 if self.control.is_terminated() {
-                    return (0x06, cb_id, Val::new(7, Rc::new(RefCell::new(Box::new(
+                    return (0x06, cb_id, Val::new(7, Payload::from(
                         self.trap.clone().unwrap_or_default(),
-                    )))));
+                    )));
                 }
                 self.processing = true;
                 let result = self.run_from(
@@ -1299,7 +1299,7 @@ impl Executor {
                                 0,
                                 Val {
                                     typ: 0,
-                                    data: Rc::new(RefCell::new(Box::new(0))),
+                                    data: Payload::Null,
                                 },
                             );
                         }
@@ -1318,7 +1318,7 @@ impl Executor {
                                 0,
                                 Val {
                                     typ: 0,
-                                    data: Rc::new(RefCell::new(Box::new(0))),
+                                    data: Payload::Null,
                                 },
                             );
                         }
@@ -1330,7 +1330,7 @@ impl Executor {
                         0,
                         Val {
                             typ: 0,
-                            data: Rc::new(RefCell::new(Box::new(0))),
+                            data: Payload::Null,
                         },
                     );
                 }
@@ -1342,7 +1342,7 @@ impl Executor {
                     0,
                     Val {
                         typ: 0,
-                        data: Rc::new(RefCell::new(Box::new(0))),
+                        data: Payload::Null,
                     },
                 );
             }
@@ -1426,46 +1426,46 @@ impl Executor {
         match p {
             0x01 => Val {
                 typ: 1,
-                data: Rc::new(RefCell::new(Box::new(self.extract_i16()))),
+                data: Payload::from(self.extract_i16()),
             },
             0x02 => Val {
                 typ: 2,
-                data: Rc::new(RefCell::new(Box::new(self.extract_i32()))),
+                data: Payload::from(self.extract_i32()),
             },
             0x03 => Val {
                 typ: 3,
-                data: Rc::new(RefCell::new(Box::new(self.extract_i64()))),
+                data: Payload::from(self.extract_i64()),
             },
             0x04 => Val {
                 typ: 4,
-                data: Rc::new(RefCell::new(Box::new(self.extract_f32()))),
+                data: Payload::from(self.extract_f32()),
             },
             0x05 => Val {
                 typ: 5,
-                data: Rc::new(RefCell::new(Box::new(self.extract_f64()))),
+                data: Payload::from(self.extract_f64()),
             },
             0x06 => Val {
                 typ: 6,
-                data: Rc::new(RefCell::new(Box::new(self.extract_bool()))),
+                data: Payload::from(self.extract_bool()),
             },
             0x07 => Val {
                 typ: 7,
-                data: Rc::new(RefCell::new(Box::new(self.extract_str()))),
+                data: Payload::from(self.extract_str()),
             },
             0x09 => Val {
                 typ: 9,
-                data: Rc::new(RefCell::new(Box::new(self.extract_arr()))),
+                data: Payload::from(self.extract_arr()),
             },
             0x0a => Val {
                 typ: 10,
-                data: Rc::new(RefCell::new(Box::new(self.extract_func()))),
+                data: Payload::from(self.extract_func()),
             },
             0x0b => {
                 let id = self.extract_str();
                 if id == "askHost" {
                     return Val {
                         typ: 255,
-                        data: Rc::new(RefCell::new(Box::new(0))),
+                        data: Payload::Null,
                     };
                 }
                 let bound = self.ctx.find_val_globally(id.clone());
@@ -1478,14 +1478,14 @@ impl Executor {
                 if stdlib::is_builtin(&id) {
                     return Val {
                         typ: 252,
-                        data: Rc::new(RefCell::new(Box::new(id))),
+                        data: Payload::from(id),
                     };
                 }
                 bound
             }
             _ => Val {
                 typ: 0,
-                data: Rc::new(RefCell::new(Box::new(0))),
+                data: Payload::Null,
             },
         }
     }
@@ -1493,12 +1493,12 @@ impl Executor {
         if num < f32::MAX.into() {
             return Val {
                 typ: 4,
-                data: Rc::new(RefCell::new(Box::new(num as f32))),
+                data: Payload::from(num as f32),
             };
         } else {
             return Val {
                 typ: 5,
-                data: Rc::new(RefCell::new(Box::new(num))),
+                data: Payload::from(num),
             };
         }
     }
@@ -1506,17 +1506,17 @@ impl Executor {
         if num < i16::MAX.into() {
             return Val {
                 typ: 1,
-                data: Rc::new(RefCell::new(Box::new(num as i16))),
+                data: Payload::from(num as i16),
             };
         } else if num < i32::MAX.into() {
             return Val {
                 typ: 2,
-                data: Rc::new(RefCell::new(Box::new(num as i32))),
+                data: Payload::from(num as i32),
             };
         } else {
             return Val {
                 typ: 3,
-                data: Rc::new(RefCell::new(Box::new(num))),
+                data: Payload::from(num),
             };
         }
     }
@@ -1560,7 +1560,7 @@ impl Executor {
                         let val1_temp = val1.to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1_temp, val2)))),
+                            data: Payload::from(format!("{}{}", val1_temp, val2)),
                         }
                     }
                     8 => {
@@ -1571,7 +1571,7 @@ impl Executor {
                         val2.data.insert(0, arg1);
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(val2))))),
+                            data: Payload::from(Rc::new(RefCell::new(val2))),
                         }
                     }
                     10 => {
@@ -1617,7 +1617,7 @@ impl Executor {
                         let val1_temp = val1.to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1_temp, val2)))),
+                            data: Payload::from(format!("{}{}", val1_temp, val2)),
                         }
                     }
                     8 => {
@@ -1628,7 +1628,7 @@ impl Executor {
                         val2.data.insert(0, arg1);
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(val2))))),
+                            data: Payload::from(Rc::new(RefCell::new(val2))),
                         }
                     }
                     10 => {
@@ -1661,7 +1661,7 @@ impl Executor {
                         let val2 = arg2.as_bool();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1 ^ val2))),
+                            data: Payload::from(val1 ^ val2),
                         }
                     }
                     7 => {
@@ -1669,7 +1669,7 @@ impl Executor {
                         let val1_temp = val1.to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1_temp, val2)))),
+                            data: Payload::from(format!("{}{}", val1_temp, val2)),
                         }
                     }
                     8 => {
@@ -1680,7 +1680,7 @@ impl Executor {
                         val2.data.insert(0, arg1);
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(val2))))),
+                            data: Payload::from(Rc::new(RefCell::new(val2))),
                         }
                     }
                     10 => {
@@ -1698,63 +1698,63 @@ impl Executor {
                         let val2 = arg2.as_i16().to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1, val2)))),
+                            data: Payload::from(format!("{}{}", val1, val2)),
                         }
                     }
                     2 => {
                         let val2 = arg2.as_i32().to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1, val2)))),
+                            data: Payload::from(format!("{}{}", val1, val2)),
                         }
                     }
                     3 => {
                         let val2 = arg2.as_i64().to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1, val2)))),
+                            data: Payload::from(format!("{}{}", val1, val2)),
                         }
                     }
                     4 => {
                         let val2 = arg2.as_f32().to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1, val2)))),
+                            data: Payload::from(format!("{}{}", val1, val2)),
                         }
                     }
                     5 => {
                         let val2 = arg2.as_f64().to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1, val2)))),
+                            data: Payload::from(format!("{}{}", val1, val2)),
                         }
                     }
                     6 => {
                         let val2 = arg2.as_bool().to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1, val2)))),
+                            data: Payload::from(format!("{}{}", val1, val2)),
                         }
                     }
                     7 => {
                         let val2 = arg2.as_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1, val2)))),
+                            data: Payload::from(format!("{}{}", val1, val2)),
                         }
                     }
                     8 => {
                         let val2 = arg2.as_object().borrow().stringify();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1, val2)))),
+                            data: Payload::from(format!("{}{}", val1, val2)),
                         }
                     }
                     9 => {
                         let val2 = arg2.as_array().borrow().stringify();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1, val2)))),
+                            data: Payload::from(format!("{}{}", val1, val2)),
                         }
                     }
                     10 => {
@@ -1791,7 +1791,7 @@ impl Executor {
                         let val2 = arg2.as_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1_temp, val2)))),
+                            data: Payload::from(format!("{}{}", val1_temp, val2)),
                         }
                     }
                     8 => {
@@ -1801,7 +1801,7 @@ impl Executor {
                         });
                         Val {
                             typ: 8,
-                            data: Rc::new(RefCell::new(Box::new(val2))),
+                            data: Payload::from(val2),
                         }
                     }
                     9 => {
@@ -1809,7 +1809,7 @@ impl Executor {
                         val2.data.insert(0, arg1);
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(val2))))),
+                            data: Payload::from(Rc::new(RefCell::new(val2))),
                         }
                     }
                     10 => {
@@ -1827,7 +1827,7 @@ impl Executor {
                         val1.borrow_mut().data.push(arg2);
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     7 => {
@@ -1835,7 +1835,7 @@ impl Executor {
                         let val2 = arg2.as_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1_temp, val2)))),
+                            data: Payload::from(format!("{}{}", val1_temp, val2)),
                         }
                     }
                     9 => {
@@ -1843,7 +1843,7 @@ impl Executor {
                         val1.data.append(&mut arg2.as_array().borrow().data.clone());
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(val1))))),
+                            data: Payload::from(Rc::new(RefCell::new(val1))),
                         }
                     }
                     _ => {
@@ -1902,7 +1902,7 @@ impl Executor {
                         }
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(res))),
+                            data: Payload::from(res),
                         }
                     }
                     8 => {
@@ -1916,9 +1916,9 @@ impl Executor {
                         }
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                            data: Payload::from(Rc::new(RefCell::new(
                                 Array::new(res),
-                            ))))),
+                            ))),
                         }
                     }
                     10 => {
@@ -1964,7 +1964,7 @@ impl Executor {
                         let val1_temp = val1.to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1_temp, val2)))),
+                            data: Payload::from(format!("{}{}", val1_temp, val2)),
                         }
                     }
                     8 => {
@@ -2003,7 +2003,7 @@ impl Executor {
                         let val2 = arg2.as_bool();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1 & val2))),
+                            data: Payload::from(val1 & val2),
                         }
                     }
                     7 => {
@@ -2011,7 +2011,7 @@ impl Executor {
                         let val1_temp = val1.to_string();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(format!("{}{}", val1_temp, val2)))),
+                            data: Payload::from(format!("{}{}", val1_temp, val2)),
                         }
                     }
                     8 => {
@@ -2020,9 +2020,9 @@ impl Executor {
                         } else {
                             return Val {
                                 typ: 8,
-                                data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                                data: Payload::from(Rc::new(RefCell::new(
                                     Object::new(-2, ValGroup::new_empty()),
-                                ))))),
+                                ))),
                             };
                         }
                     }
@@ -2032,9 +2032,9 @@ impl Executor {
                         } else {
                             return Val {
                                 typ: 9,
-                                data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                                data: Payload::from(Rc::new(RefCell::new(
                                     Array::new_empty(),
-                                ))))),
+                                ))),
                             };
                         }
                     }
@@ -2056,7 +2056,7 @@ impl Executor {
                         }
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(res))),
+                            data: Payload::from(res),
                         }
                     }
                     2 => {
@@ -2066,7 +2066,7 @@ impl Executor {
                         }
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(res))),
+                            data: Payload::from(res),
                         }
                     }
                     3 => {
@@ -2076,7 +2076,7 @@ impl Executor {
                         }
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(res))),
+                            data: Payload::from(res),
                         }
                     }
                     4 => {
@@ -2118,9 +2118,9 @@ impl Executor {
                         }
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                            data: Payload::from(Rc::new(RefCell::new(
                                 Array::new(res),
-                            ))))),
+                            ))),
                         }
                     }
                     2 => {
@@ -2130,9 +2130,9 @@ impl Executor {
                         }
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                            data: Payload::from(Rc::new(RefCell::new(
                                 Array::new(res),
-                            ))))),
+                            ))),
                         }
                     }
                     3 => {
@@ -2142,9 +2142,9 @@ impl Executor {
                         }
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                            data: Payload::from(Rc::new(RefCell::new(
                                 Array::new(res),
-                            ))))),
+                            ))),
                         }
                     }
                     4 | 5 => {
@@ -2156,9 +2156,9 @@ impl Executor {
                         } else {
                             return Val {
                                 typ: 9,
-                                data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                                data: Payload::from(Rc::new(RefCell::new(
                                     Array::new_empty(),
-                                ))))),
+                                ))),
                             };
                         }
                     }
@@ -2305,7 +2305,7 @@ impl Executor {
                         let val2 = arg2.as_bool();
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1 ^ val2))),
+                            data: Payload::from(val1 ^ val2),
                         }
                     }
                     7 => {
@@ -2319,7 +2319,7 @@ impl Executor {
                         val2.borrow_mut().data.insert(0, arg1);
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(val2))),
+                            data: Payload::from(val2),
                         }
                     }
                     10 => {
@@ -2338,7 +2338,7 @@ impl Executor {
                         val1 = val1.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     2 => {
@@ -2346,7 +2346,7 @@ impl Executor {
                         val1 = val1.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     3 => {
@@ -2354,7 +2354,7 @@ impl Executor {
                         val1 = val1.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     4 => {
@@ -2362,7 +2362,7 @@ impl Executor {
                         val1 = val1.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     5 => {
@@ -2370,7 +2370,7 @@ impl Executor {
                         val1 = val1.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     6 => {
@@ -2378,7 +2378,7 @@ impl Executor {
                         val1 = val1.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     7 => {
@@ -2386,7 +2386,7 @@ impl Executor {
                         val1 = val1.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     8 => {
@@ -2394,7 +2394,7 @@ impl Executor {
                         val1 = val1.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     9 => {
@@ -2402,7 +2402,7 @@ impl Executor {
                         val1 = val1.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     10 => {
@@ -2440,7 +2440,7 @@ impl Executor {
                         val1_temp = val1_temp.replace(&val2, "");
                         Val {
                             typ: 7,
-                            data: Rc::new(RefCell::new(Box::new(val1_temp))),
+                            data: Payload::from(val1_temp),
                         }
                     }
                     8 => {
@@ -2460,7 +2460,7 @@ impl Executor {
                         });
                         Val {
                             typ: 8,
-                            data: Rc::new(RefCell::new(Box::new(val2))),
+                            data: Payload::from(val2),
                         }
                     }
                     9 => {
@@ -2492,7 +2492,7 @@ impl Executor {
                             .collect();
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     9 => {
@@ -2512,7 +2512,7 @@ impl Executor {
                             .collect();
                         Val {
                             typ: 9,
-                            data: Rc::new(RefCell::new(Box::new(val1))),
+                            data: Payload::from(val1),
                         }
                     }
                     _ => {
@@ -3578,7 +3578,7 @@ impl Executor {
         if self.ctx.memory.len() <= 1 {
             return None;
         }
-        let mut map: HashMap<String, Val> = HashMap::new();
+        let mut map: ValMap = ValMap::default();
         for scope in self.ctx.memory[1..].iter() {
             for (k, v) in scope.borrow().memory.borrow().data.iter() {
                 map.insert(k.clone(), v.clone());
@@ -3615,7 +3615,7 @@ impl Executor {
                 let returned_val = self.pending_func_result_value.clone();
                 self.pending_func_result_value = Val {
                     typ: 254,
-                    data: Rc::new(RefCell::new(Box::new(0))),
+                    data: Payload::Null,
                 };
                 if !self.registers.is_empty() {
                     main_reg = Some(returned_val);
@@ -4011,7 +4011,7 @@ impl Executor {
                         let regs = self.registers.last().unwrap().borrow().get_data().clone();
                         let typ_id = regs[0].as_i64();
                         let props_vec = regs[2].as_array();
-                        let mut props_map = HashMap::new();
+                        let mut props_map = ValMap::default();
                         for i in (0..props_vec.borrow().data.len()).step_by(2) {
                             props_map.insert(
                                 props_vec.borrow().data[i].as_string(),
@@ -4020,9 +4020,9 @@ impl Executor {
                         }
                         let result = Val {
                             typ: 8,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                            data: Payload::from(Rc::new(RefCell::new(
                                 Object::new(typ_id, ValGroup::new(props_map)),
-                            ))))),
+                            ))),
                         };
                         self.registers.pop();
                         main_reg = Some(result);
@@ -4043,7 +4043,7 @@ impl Executor {
                             }
                             let expected_params = func.borrow().params.clone();
                             let provided_args = regs[3].as_array().borrow().data.clone();
-                            let mut args = HashMap::new();
+                            let mut args = ValMap::default();
                             // Seed the frame with the closure's captured upvalues
                             // first, so explicit parameters override them.
                             if let Some(captured) = func.borrow().captured.clone() {
@@ -4053,7 +4053,7 @@ impl Executor {
                             }
                             for (i, param_name) in expected_params.iter().enumerate() {
                                 let arg = provided_args.get(i).cloned().unwrap_or_else(|| {
-                                    Val::new(0, Rc::new(RefCell::new(Box::new(0))))
+                                    Val::new(0, Payload::Null)
                                 });
                                 args.insert(param_name.clone(), arg);
                             }
@@ -4105,7 +4105,7 @@ impl Executor {
                             // keeps running deterministically.
                             if !self.capabilities.allows_api(&api_name) {
                                 self.registers.pop();
-                                main_reg = Some(Val::new(0, Rc::new(RefCell::new(Box::new(0)))));
+                                main_reg = Some(Val::new(0, Payload::Null));
                                 is_reg_state_final = false;
                                 continue;
                             }
@@ -4118,18 +4118,16 @@ impl Executor {
                                 cb_id,
                                 Val {
                                     typ: 9,
-                                    data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                                    data: Payload::from(Rc::new(RefCell::new(
                                         Array::new(vec![
                                             arg1,
                                             Val {
                                                 typ: 1,
-                                                data: Rc::new(RefCell::new(Box::new(
-                                                    self.executor_id,
-                                                ))),
+                                                data: Payload::from(self.executor_id),
                                             },
                                             arg2,
                                         ]),
-                                    ))))),
+                                    ))),
                                 },
                             ));
                             break;
@@ -4355,37 +4353,37 @@ impl Executor {
                             1 => {
                                 main_reg = Some(Val {
                                     typ: 6,
-                                    data: Rc::new(RefCell::new(Box::new(self.is_eq(arg1, arg2)))),
+                                    data: Payload::from(self.is_eq(arg1, arg2)),
                                 });
                             }
                             2 => {
                                 main_reg = Some(Val {
                                     typ: 6,
-                                    data: Rc::new(RefCell::new(Box::new(self.is_ge(arg1, arg2)))),
+                                    data: Payload::from(self.is_ge(arg1, arg2)),
                                 });
                             }
                             3 => {
                                 main_reg = Some(Val {
                                     typ: 6,
-                                    data: Rc::new(RefCell::new(Box::new(self.is_gee(arg1, arg2)))),
+                                    data: Payload::from(self.is_gee(arg1, arg2)),
                                 });
                             }
                             4 => {
                                 main_reg = Some(Val {
                                     typ: 6,
-                                    data: Rc::new(RefCell::new(Box::new(self.is_le(arg1, arg2)))),
+                                    data: Payload::from(self.is_le(arg1, arg2)),
                                 });
                             }
                             5 => {
                                 main_reg = Some(Val {
                                     typ: 6,
-                                    data: Rc::new(RefCell::new(Box::new(self.is_lee(arg1, arg2)))),
+                                    data: Payload::from(self.is_lee(arg1, arg2)),
                                 });
                             }
                             6 => {
                                 main_reg = Some(Val {
                                     typ: 6,
-                                    data: Rc::new(RefCell::new(Box::new(!self.is_eq(arg1, arg2)))),
+                                    data: Payload::from(!self.is_eq(arg1, arg2)),
                                 });
                             }
                             7 => {
@@ -4426,7 +4424,7 @@ impl Executor {
                                 } else {
                                     main_reg = Some(Val {
                                         typ: 0,
-                                        data: Rc::new(RefCell::new(Box::new(0))),
+                                        data: Payload::Null,
                                     });
                                 }
                             } else {
@@ -4435,7 +4433,7 @@ impl Executor {
                                 );
                                 main_reg = Some(Val {
                                     typ: 0,
-                                    data: Rc::new(RefCell::new(Box::new(0))),
+                                    data: Payload::Null,
                                 });
                             }
                         } else if index.typ >= 1 && index.typ <= 3 {
@@ -4449,7 +4447,7 @@ impl Executor {
                                     } else {
                                         main_reg = Some(Val {
                                             typ: 0,
-                                            data: Rc::new(RefCell::new(Box::new(0))),
+                                            data: Payload::Null,
                                         });
                                     }
                                 } else if index.typ == 2 {
@@ -4460,7 +4458,7 @@ impl Executor {
                                     } else {
                                         main_reg = Some(Val {
                                             typ: 0,
-                                            data: Rc::new(RefCell::new(Box::new(0))),
+                                            data: Payload::Null,
                                         });
                                     }
                                 } else {
@@ -4471,7 +4469,7 @@ impl Executor {
                                     } else {
                                         main_reg = Some(Val {
                                             typ: 0,
-                                            data: Rc::new(RefCell::new(Box::new(0))),
+                                            data: Payload::Null,
                                         });
                                     }
                                 }
@@ -4481,7 +4479,7 @@ impl Executor {
                                 );
                                 main_reg = Some(Val {
                                     typ: 0,
-                                    data: Rc::new(RefCell::new(Box::new(0))),
+                                    data: Payload::Null,
                                 });
                             }
                         } else {
@@ -4490,7 +4488,7 @@ impl Executor {
                         );
                             main_reg = Some(Val {
                                 typ: 0,
-                                data: Rc::new(RefCell::new(Box::new(0))),
+                                data: Payload::Null,
                             });
                         }
                         is_reg_state_final = false;
@@ -4504,7 +4502,7 @@ impl Executor {
                         if val.typ == 6 {
                             main_reg = Some(Val {
                                 typ: 6,
-                                data: Rc::new(RefCell::new(Box::new(!val.as_bool()))),
+                                data: Payload::from(!val.as_bool()),
                             });
                         } else {
                             panic!(
@@ -4539,54 +4537,54 @@ impl Executor {
                                 1 => {
                                     main_reg = Some(Val {
                                         typ: 1,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i16() as i16))),
+                                        data: Payload::from(data.as_i16() as i16),
                                     });
                                 }
                                 2 => {
                                     main_reg = Some(Val {
                                         typ: 1,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i32() as i16))),
+                                        data: Payload::from(data.as_i32() as i16),
                                     });
                                 }
                                 3 => {
                                     main_reg = Some(Val {
                                         typ: 1,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i64() as i16))),
+                                        data: Payload::from(data.as_i64() as i16),
                                     });
                                 }
                                 4 => {
                                     main_reg = Some(Val {
                                         typ: 1,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f32() as i16))),
+                                        data: Payload::from(data.as_f32() as i16),
                                     });
                                 }
                                 5 => {
                                     main_reg = Some(Val {
                                         typ: 1,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f64() as i16))),
+                                        data: Payload::from(data.as_f64() as i16),
                                     });
                                 }
                                 6 => {
                                     main_reg =
                                         Some(Val {
                                             typ: 1,
-                                            data: Rc::new(RefCell::new(Box::new(
+                                            data: Payload::from(
                                                 if data.as_bool() { 1 } else { 0 } as i16,
-                                            ))),
+                                            ),
                                         });
                                 }
                                 7 => {
                                     main_reg = Some(Val {
                                         typ: 1,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_string().parse::<i16>().unwrap(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 _ => {
                                     main_reg = Some(Val {
                                         typ: 0,
-                                        data: Rc::new(RefCell::new(Box::new(0))),
+                                        data: Payload::Null,
                                     });
                                 }
                             }
@@ -4595,54 +4593,54 @@ impl Executor {
                                 1 => {
                                     main_reg = Some(Val {
                                         typ: 2,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i16() as i32))),
+                                        data: Payload::from(data.as_i16() as i32),
                                     });
                                 }
                                 2 => {
                                     main_reg = Some(Val {
                                         typ: 2,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i32() as i32))),
+                                        data: Payload::from(data.as_i32() as i32),
                                     });
                                 }
                                 3 => {
                                     main_reg = Some(Val {
                                         typ: 2,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i64() as i32))),
+                                        data: Payload::from(data.as_i64() as i32),
                                     });
                                 }
                                 4 => {
                                     main_reg = Some(Val {
                                         typ: 2,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f32() as i32))),
+                                        data: Payload::from(data.as_f32() as i32),
                                     });
                                 }
                                 5 => {
                                     main_reg = Some(Val {
                                         typ: 2,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f64() as i32))),
+                                        data: Payload::from(data.as_f64() as i32),
                                     });
                                 }
                                 6 => {
                                     main_reg =
                                         Some(Val {
                                             typ: 2,
-                                            data: Rc::new(RefCell::new(Box::new(
+                                            data: Payload::from(
                                                 if data.as_bool() { 1 } else { 0 } as i32,
-                                            ))),
+                                            ),
                                         });
                                 }
                                 7 => {
                                     main_reg = Some(Val {
                                         typ: 2,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_string().parse::<i32>().unwrap(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 _ => {
                                     main_reg = Some(Val {
                                         typ: 0,
-                                        data: Rc::new(RefCell::new(Box::new(0))),
+                                        data: Payload::Null,
                                     });
                                 }
                             }
@@ -4651,54 +4649,54 @@ impl Executor {
                                 1 => {
                                     main_reg = Some(Val {
                                         typ: 3,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i16() as i64))),
+                                        data: Payload::from(data.as_i16() as i64),
                                     });
                                 }
                                 2 => {
                                     main_reg = Some(Val {
                                         typ: 3,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i32() as i64))),
+                                        data: Payload::from(data.as_i32() as i64),
                                     });
                                 }
                                 3 => {
                                     main_reg = Some(Val {
                                         typ: 3,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i64() as i64))),
+                                        data: Payload::from(data.as_i64() as i64),
                                     });
                                 }
                                 4 => {
                                     main_reg = Some(Val {
                                         typ: 3,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f32() as i64))),
+                                        data: Payload::from(data.as_f32() as i64),
                                     });
                                 }
                                 5 => {
                                     main_reg = Some(Val {
                                         typ: 3,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f64() as i64))),
+                                        data: Payload::from(data.as_f64() as i64),
                                     });
                                 }
                                 6 => {
                                     main_reg =
                                         Some(Val {
                                             typ: 3,
-                                            data: Rc::new(RefCell::new(Box::new(
+                                            data: Payload::from(
                                                 if data.as_bool() { 1 } else { 0 } as i64,
-                                            ))),
+                                            ),
                                         });
                                 }
                                 7 => {
                                     main_reg = Some(Val {
                                         typ: 3,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_string().parse::<i64>().unwrap(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 _ => {
                                     main_reg = Some(Val {
                                         typ: 0,
-                                        data: Rc::new(RefCell::new(Box::new(0))),
+                                        data: Payload::Null,
                                     });
                                 }
                             }
@@ -4707,54 +4705,54 @@ impl Executor {
                                 1 => {
                                     main_reg = Some(Val {
                                         typ: 4,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i16() as f32))),
+                                        data: Payload::from(data.as_i16() as f32),
                                     });
                                 }
                                 2 => {
                                     main_reg = Some(Val {
                                         typ: 4,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i32() as f32))),
+                                        data: Payload::from(data.as_i32() as f32),
                                     });
                                 }
                                 3 => {
                                     main_reg = Some(Val {
                                         typ: 4,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i64() as f32))),
+                                        data: Payload::from(data.as_i64() as f32),
                                     });
                                 }
                                 4 => {
                                     main_reg = Some(Val {
                                         typ: 4,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f32() as f32))),
+                                        data: Payload::from(data.as_f32() as f32),
                                     });
                                 }
                                 5 => {
                                     main_reg = Some(Val {
                                         typ: 4,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f64() as f32))),
+                                        data: Payload::from(data.as_f64() as f32),
                                     });
                                 }
                                 6 => {
                                     main_reg =
                                         Some(Val {
                                             typ: 4,
-                                            data: Rc::new(RefCell::new(Box::new(
+                                            data: Payload::from(
                                                 if data.as_bool() { 1 } else { 0 } as f32,
-                                            ))),
+                                            ),
                                         });
                                 }
                                 7 => {
                                     main_reg = Some(Val {
                                         typ: 4,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_string().parse::<f32>().unwrap(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 _ => {
                                     main_reg = Some(Val {
                                         typ: 0,
-                                        data: Rc::new(RefCell::new(Box::new(0))),
+                                        data: Payload::Null,
                                     });
                                 }
                             }
@@ -4763,54 +4761,54 @@ impl Executor {
                                 1 => {
                                     main_reg = Some(Val {
                                         typ: 5,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i16() as f64))),
+                                        data: Payload::from(data.as_i16() as f64),
                                     });
                                 }
                                 2 => {
                                     main_reg = Some(Val {
                                         typ: 5,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i32() as f64))),
+                                        data: Payload::from(data.as_i32() as f64),
                                     });
                                 }
                                 3 => {
                                     main_reg = Some(Val {
                                         typ: 5,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i64() as f64))),
+                                        data: Payload::from(data.as_i64() as f64),
                                     });
                                 }
                                 4 => {
                                     main_reg = Some(Val {
                                         typ: 5,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f32() as f64))),
+                                        data: Payload::from(data.as_f32() as f64),
                                     });
                                 }
                                 5 => {
                                     main_reg = Some(Val {
                                         typ: 5,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f64() as f64))),
+                                        data: Payload::from(data.as_f64() as f64),
                                     });
                                 }
                                 6 => {
                                     main_reg =
                                         Some(Val {
                                             typ: 5,
-                                            data: Rc::new(RefCell::new(Box::new(
+                                            data: Payload::from(
                                                 if data.as_bool() { 1 } else { 0 } as f64,
-                                            ))),
+                                            ),
                                         });
                                 }
                                 7 => {
                                     main_reg = Some(Val {
                                         typ: 5,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_string().parse::<f64>().unwrap(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 _ => {
                                     main_reg = Some(Val {
                                         typ: 0,
-                                        data: Rc::new(RefCell::new(Box::new(0))),
+                                        data: Payload::Null,
                                     });
                                 }
                             }
@@ -4819,51 +4817,51 @@ impl Executor {
                                 1 => {
                                     main_reg = Some(Val {
                                         typ: 6,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i16() > 0))),
+                                        data: Payload::from(data.as_i16() > 0),
                                     });
                                 }
                                 2 => {
                                     main_reg = Some(Val {
                                         typ: 6,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i32() > 0))),
+                                        data: Payload::from(data.as_i32() > 0),
                                     });
                                 }
                                 3 => {
                                     main_reg = Some(Val {
                                         typ: 6,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_i64() > 0))),
+                                        data: Payload::from(data.as_i64() > 0),
                                     });
                                 }
                                 4 => {
                                     main_reg = Some(Val {
                                         typ: 6,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f32() > 0.0))),
+                                        data: Payload::from(data.as_f32() > 0.0),
                                     });
                                 }
                                 5 => {
                                     main_reg = Some(Val {
                                         typ: 6,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_f64() > 0.0))),
+                                        data: Payload::from(data.as_f64() > 0.0),
                                     });
                                 }
                                 6 => {
                                     main_reg = Some(Val {
                                         typ: 6,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_bool()))),
+                                        data: Payload::from(data.as_bool()),
                                     });
                                 }
                                 7 => {
                                     main_reg = Some(Val {
                                         typ: 6,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_string() == "true",
-                                        ))),
+                                        ),
                                     });
                                 }
                                 _ => {
                                     main_reg = Some(Val {
                                         typ: 0,
-                                        data: Rc::new(RefCell::new(Box::new(0))),
+                                        data: Payload::Null,
                                     });
                                 }
                             }
@@ -4872,73 +4870,73 @@ impl Executor {
                                 1 => {
                                     main_reg = Some(Val {
                                         typ: 7,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_i16().to_string(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 2 => {
                                     main_reg = Some(Val {
                                         typ: 7,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_i32().to_string(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 3 => {
                                     main_reg = Some(Val {
                                         typ: 7,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_i64().to_string(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 4 => {
                                     main_reg = Some(Val {
                                         typ: 7,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_f32().to_string(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 5 => {
                                     main_reg = Some(Val {
                                         typ: 7,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_f64().to_string(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 6 => {
                                     main_reg = Some(Val {
                                         typ: 7,
-                                        data: Rc::new(RefCell::new(Box::new(
+                                        data: Payload::from(
                                             data.as_bool().to_string(),
-                                        ))),
+                                        ),
                                     });
                                 }
                                 7 => {
                                     main_reg = Some(Val {
                                         typ: 7,
-                                        data: Rc::new(RefCell::new(Box::new(data.as_string()))),
+                                        data: Payload::from(data.as_string()),
                                     });
                                 }
                                 8 => {
                                     main_reg = Some(Val {
                                         typ: 7,
-                                        data: Rc::new(RefCell::new(Box::new(data.stringify()))),
+                                        data: Payload::from(data.stringify()),
                                     });
                                 }
                                 9 => {
                                     main_reg = Some(Val {
                                         typ: 7,
-                                        data: Rc::new(RefCell::new(Box::new(data.stringify()))),
+                                        data: Payload::from(data.stringify()),
                                     });
                                 }
                                 _ => {
                                     main_reg = Some(Val {
                                         typ: 0,
-                                        data: Rc::new(RefCell::new(Box::new(0))),
+                                        data: Payload::Null,
                                     });
                                 }
                             }
@@ -4981,7 +4979,7 @@ impl Executor {
                             let returned_val = self.pending_func_result_value.clone();
                             self.pending_func_result_value = Val {
                                 typ: 254,
-                                data: Rc::new(RefCell::new(Box::new(0))),
+                                data: Payload::Null,
                             };
                             if !self.registers.is_empty() {
                                 main_reg = Some(returned_val);
@@ -5224,7 +5222,7 @@ impl Executor {
                             ExecStates::IfStmtFinished,
                             Box::new(Val {
                                 typ: 6,
-                                data: Rc::new(RefCell::new(Box::new(true))),
+                                data: Payload::from(true),
                             }),
                         );
                         main_reg = None;
@@ -5265,9 +5263,9 @@ impl Executor {
                         func_name.clone(),
                         Val {
                             typ: 10,
-                            data: Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(
+                            data: Payload::from(Rc::new(RefCell::new(
                                 func.clone(),
-                            ))))),
+                            ))),
                         },
                     );
                     self.pointer = func_end;
@@ -5340,6 +5338,6 @@ impl Executor {
                 _ => {}
             }
         }
-        Val::new(0, Rc::new(RefCell::new(Box::new(0))))
+        Val::new(0, Payload::Null)
     }
 }

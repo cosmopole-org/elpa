@@ -1,6 +1,6 @@
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
-use crate::sdk::data::{Val, ValGroup};
+use crate::sdk::data::{Payload, Val, ValGroup, ValMap};
 
 pub struct Scope {
     pub tag: String,
@@ -29,7 +29,7 @@ impl Scope {
         initial_pointer: usize,
         frozen_start: usize,
         frozen_end: usize,
-        args: HashMap<String, Val>,
+        args: ValMap,
     ) -> Self {
         Scope {
             tag,
@@ -56,7 +56,7 @@ impl Scope {
         let v = self.memory.borrow();
         let val = v.data.get(&name);
         if val.is_none() {
-            return Val::new(0, Rc::new(RefCell::new(Box::new(0))));
+            return Val::new(0, Payload::Null);
         } else {
             return val.unwrap().clone();
         }
@@ -103,7 +103,7 @@ impl Context {
         inital_pointer: usize,
         frozen_start: usize,
         frozen_end: usize,
-        args: HashMap<String, Val>,
+        args: ValMap,
     ) {
         self.memory.push(Rc::new(RefCell::new(Scope::new_with_args(
             tag,
@@ -126,7 +126,7 @@ impl Context {
                 return val;
             }
         }
-        Val::new(0, Rc::new(RefCell::new(Box::new(0))))
+        Val::new(0, Payload::Null)
     }
     pub fn define_val_globally(&mut self, name: String, val: Val) {
         self.memory

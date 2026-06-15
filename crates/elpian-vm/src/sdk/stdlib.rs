@@ -23,10 +23,9 @@
 //! always define their own `len` or `map` and win.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::sdk::data::{Array, Object, Val, ValGroup};
+use crate::sdk::data::{Array, Object, Payload, Val, ValGroup, ValMap};
 
 /// Object `typ` tag for a class descriptor produced by `class` / `extend`.
 pub const CLASS_TYPE: i64 = -100;
@@ -40,33 +39,33 @@ pub const CELL_TYPE: i64 = -102;
 // ----------------------------------------------------------------------------
 
 fn vnull() -> Val {
-    Val::new(0, Rc::new(RefCell::new(Box::new(0))))
+    Val::new(0, Payload::Null)
 }
 fn vbool(b: bool) -> Val {
-    Val::new(6, Rc::new(RefCell::new(Box::new(b))))
+    Val::new(6, Payload::from(b))
 }
 fn vi64(n: i64) -> Val {
-    Val::new(3, Rc::new(RefCell::new(Box::new(n))))
+    Val::new(3, Payload::from(n))
 }
 fn vf64(n: f64) -> Val {
-    Val::new(5, Rc::new(RefCell::new(Box::new(n))))
+    Val::new(5, Payload::from(n))
 }
 fn vstr(s: String) -> Val {
-    Val::new(7, Rc::new(RefCell::new(Box::new(s))))
+    Val::new(7, Payload::from(s))
 }
 fn varr(items: Vec<Val>) -> Val {
     Val::new(
         9,
-        Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(Array::new(items)))))),
+        Payload::from(Rc::new(RefCell::new(Array::new(items)))),
     )
 }
-fn vobj(typ: i64, map: HashMap<String, Val>) -> Val {
+fn vobj(typ: i64, map: ValMap) -> Val {
     Val::new(
         8,
-        Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(Object::new(
+        Payload::from(Rc::new(RefCell::new(Object::new(
             typ,
             ValGroup::new(map),
-        )))))),
+        )))),
     )
 }
 
@@ -180,7 +179,7 @@ pub fn json_to_val(j: &serde_json::Value) -> Val {
         J::String(s) => vstr(s.clone()),
         J::Array(items) => varr(items.iter().map(json_to_val).collect()),
         J::Object(map) => {
-            let mut m = HashMap::new();
+            let mut m = ValMap::default();
             for (k, v) in map.iter() {
                 m.insert(k.clone(), json_to_val(v));
             }
@@ -483,7 +482,7 @@ pub fn invoke(name: &str, args: &[Val]) -> Result<Val, String> {
             arity(name, args, 2)?;
             let a = expect_object(name, &args[0])?;
             let b = expect_object(name, &args[1])?;
-            let mut m: HashMap<String, Val> = a.borrow().data.data.clone();
+            let mut m: ValMap = a.borrow().data.data.clone();
             for (k, v) in b.borrow().data.data.iter() {
                 m.insert(k.clone(), v.clone());
             }
@@ -776,7 +775,7 @@ pub fn invoke(name: &str, args: &[Val]) -> Result<Val, String> {
         // ---- closures -------------------------------------------------------
         "cell" => {
             at_least(name, args, 0)?;
-            let mut m = HashMap::new();
+            let mut m = ValMap::default();
             m.insert("value".to_string(), args.first().cloned().unwrap_or_else(vnull));
             Ok(vobj(CELL_TYPE, m))
         }
@@ -930,7 +929,7 @@ fn oop_class(args: &[Val]) -> Result<Val, String> {
     let name = expect_string("class", &args[0])?;
     let defaults = args.get(1).cloned().unwrap_or_else(vnull);
     let methods = args.get(2).cloned().unwrap_or_else(vnull);
-    let mut m = HashMap::new();
+    let mut m = ValMap::default();
     m.insert("__class_name".to_string(), vstr(name));
     m.insert("__defaults".to_string(), normalize_object(defaults));
     m.insert("__methods".to_string(), normalize_object(methods));
@@ -953,7 +952,7 @@ fn oop_extend(args: &[Val]) -> Result<Val, String> {
     let merged_defaults = merge_objects(class_field(&parent, "__defaults"), normalize_object(defaults));
     let merged_methods = merge_objects(class_field(&parent, "__methods"), normalize_object(methods));
 
-    let mut m = HashMap::new();
+    let mut m = ValMap::default();
     m.insert("__class_name".to_string(), vstr(name));
     m.insert("__defaults".to_string(), merged_defaults);
     m.insert("__methods".to_string(), merged_methods);
@@ -971,7 +970,7 @@ fn oop_new(args: &[Val]) -> Result<Val, String> {
         return Err("new expects a class".to_string());
     }
     let defaults = class_field(&class, "__defaults");
-    let mut fields: HashMap<String, Val> = if defaults.typ == 8 {
+    let mut fields: ValMap = if defaults.typ == 8 {
         // Deep-ish copy of defaults so instances don't share mutable default
         // containers; scalars are cheap clones, containers get fresh copies.
         defaults
@@ -983,7 +982,7 @@ fn oop_new(args: &[Val]) -> Result<Val, String> {
             .map(|(k, v)| (k.clone(), copy_value(v)))
             .collect()
     } else {
-        HashMap::new()
+        ValMap::default()
     };
     if let Some(overrides) = args.get(1) {
         if overrides.typ == 8 {
@@ -1103,13 +1102,13 @@ fn normalize_object(v: Val) -> Val {
     if v.typ == 8 {
         v
     } else {
-        vobj(-2, HashMap::new())
+        vobj(-2, ValMap::default())
     }
 }
 
 /// Shallow merge of two object-or-null values; `b` overrides `a`.
 fn merge_objects(a: Val, b: Val) -> Val {
-    let mut m: HashMap<String, Val> = HashMap::new();
+    let mut m: ValMap = ValMap::default();
     if a.typ == 8 {
         for (k, v) in a.as_object().borrow().data.data.iter() {
             m.insert(k.clone(), v.clone());
@@ -1130,7 +1129,7 @@ fn copy_value(v: &Val) -> Val {
         8 => {
             let src = v.as_object();
             let b = src.borrow();
-            let m: HashMap<String, Val> =
+            let m: ValMap =
                 b.data.data.iter().map(|(k, val)| (k.clone(), copy_value(val))).collect();
             vobj(b.typ, m)
         }
@@ -1191,20 +1190,20 @@ mod tests {
     fn oop_inheritance_and_instances() {
         // Build an Animal class with a default and a "kind" method.
         let methods = vobj(-2, {
-            let mut m = HashMap::new();
+            let mut m = ValMap::default();
             m.insert("legs".to_string(), {
                 use crate::sdk::data::Function;
-                Val::new(10, Rc::new(RefCell::new(Box::new(Rc::new(RefCell::new(Function::new(
+                Val::new(10, Payload::from(Rc::new(RefCell::new(Function::new(
                     "legs".into(),
                     0,
                     0,
                     vec!["self".into()],
-                )))))))
+                )))))
             });
             m
         });
         let defaults = vobj(-2, {
-            let mut m = HashMap::new();
+            let mut m = ValMap::default();
             m.insert("name".to_string(), vstr("animal".into()));
             m
         });
@@ -1213,7 +1212,7 @@ mod tests {
 
         // Subclass Dog overrides the default name.
         let dog_defaults = vobj(-2, {
-            let mut m = HashMap::new();
+            let mut m = ValMap::default();
             m.insert("name".to_string(), vstr("dog".into()));
             m
         });
@@ -1232,7 +1231,7 @@ mod tests {
     #[test]
     fn instances_do_not_alias_default_containers() {
         let defaults = vobj(-2, {
-            let mut m = HashMap::new();
+            let mut m = ValMap::default();
             m.insert("tags".to_string(), varr(vec![]));
             m
         });
