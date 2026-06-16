@@ -21,14 +21,19 @@ const CUSTOM_TTF: &[u8] = include_bytes!("../../../crates/elpa-runtime/tests/fon
 
 fn instances(app: &Elpa<HeadlessBackend>) -> Vec<f32> {
     let frame = app.last_frame().expect("a frame");
-    frame
-        .resources
-        .iter()
-        .find_map(|r| match r {
-            ResourceDesc::Buffer(b) if b.id == "elpa.m3.inst" => b.data_f32.clone(),
+    let order = ["body", "chrome", "drawer", "overlay", "root"];
+    let mut out = Vec::new();
+    for scope in order {
+        let id = format!("elpa.layer.{scope}.inst");
+        if let Some(d) = frame.resources.iter().find_map(|r| match r {
+            ResourceDesc::Buffer(b) if b.id == id => b.data_f32.clone(),
             _ => None,
-        })
-        .expect("instance buffer present")
+        }) {
+            out.extend(d);
+        }
+    }
+    assert!(!out.is_empty(), "at least one scope instance buffer present");
+    out
 }
 
 // The base64 of the uploaded font atlas this frame (proves which atlas is live).

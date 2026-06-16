@@ -20,14 +20,19 @@ fn instance() -> Elpa<HeadlessBackend> {
 /// The single per-frame instance buffer the SDK emits (all rounded-rect layers).
 fn instances(app: &Elpa<HeadlessBackend>) -> Vec<f32> {
     let frame = app.last_frame().expect("a frame was submitted");
-    frame
-        .resources
-        .iter()
-        .find_map(|r| match r {
-            ResourceDesc::Buffer(b) if b.id == "elpa.m3.inst" => b.data_f32.clone(),
+    let order = ["body", "chrome", "drawer", "overlay", "root"];
+    let mut out = Vec::new();
+    for scope in order {
+        let id = format!("elpa.layer.{scope}.inst");
+        if let Some(d) = frame.resources.iter().find_map(|r| match r {
+            ResourceDesc::Buffer(b) if b.id == id => b.data_f32.clone(),
             _ => None,
-        })
-        .expect("instance buffer present")
+        }) {
+            out.extend(d);
+        }
+    }
+    assert!(!out.is_empty(), "at least one scope instance buffer present");
+    out
 }
 
 #[test]
@@ -41,7 +46,8 @@ fn gallery_shares_one_shader() {
     collect_wgsl(&ast, &mut shaders);
     shaders.sort();
     shaders.dedup();
-    assert_eq!(shaders.len(), 1, "the whole extended kit shares one shader");
+    // Two shaders: the rounded-rect SDF painter and the layer-compositor blit.
+    assert_eq!(shaders.len(), 2, "the SDF painter + the layer-compositor blit");
     for src in &shaders {
         let module = naga::front::wgsl::parse_str(src)
             .unwrap_or_else(|e| panic!("WGSL parse failed: {}", e.emit_to_string(src)));
@@ -64,7 +70,7 @@ fn collect_wgsl(v: &serde_json::Value, out: &mut Vec<String>) {
 }
 
 #[test]
-fn gallery_starts_and_draws_one_instanced_pass() {
+fn gallery_starts_and_composites_snapshot_layers() {
     let mut app = instance();
     app.start();
 
@@ -73,29 +79,32 @@ fn gallery_starts_and_draws_one_instanced_pass() {
     assert!(app.take_log().is_empty(), "no host errors on first paint");
 
     let frame = app.last_frame().expect("a frame");
-    assert!(frame.resources.iter().any(|r| r.id() == "elpa.m3.pipe"), "pipeline created");
-    // The frame may carry a one-time font-atlas upload before the render pass.
+    assert!(frame.resources.iter().any(|r| r.id() == "elpa.m3.pipe"), "SDF pipeline created");
+    assert!(frame.resources.iter().any(|r| r.id() == "elpa.m3.blit.pipe"), "blit pipeline created");
+    // The gallery decouples into several snapshot layers: a cacheable paint pass
+    // per scope, then a surface composite pass that blits them together.
+    let scope_paints = frame
+        .commands
+        .iter()
+        .filter(|c| matches!(c, EncoderCommand::RenderPass(rp)
+            if rp.id.as_deref().map(|s| s.ends_with(".paint")).unwrap_or(false)))
+        .count();
+    assert!(scope_paints >= 2, "gallery decoupled into multiple snapshot layers");
     let rp = frame
         .commands
         .iter()
         .find_map(|c| match c {
-            EncoderCommand::RenderPass(rp) => Some(rp),
+            EncoderCommand::RenderPass(rp) if rp.targets_surface() => Some(rp),
             _ => None,
         })
-        .expect("expected a render pass");
-    let draws: Vec<&RenderCommand> = rp
+        .expect("expected the surface composite pass");
+    let blits: Vec<&RenderCommand> = rp
         .commands
         .iter()
-        .filter(|c| matches!(c, RenderCommand::Draw { .. }))
+        .filter(|c| matches!(c, RenderCommand::Draw { vertex_count: 3, .. }))
         .collect();
-    assert_eq!(draws.len(), 1, "one instanced draw for the whole gallery");
-    match draws[0] {
-        RenderCommand::Draw { instance_count, vertex_count, .. } => {
-            assert_eq!(*vertex_count, 6);
-            assert!(*instance_count > 50, "many widget + glyph instances");
-        }
-        _ => unreachable!(),
-    }
+    assert!(blits.len() >= 2, "one composite blit per snapshot layer");
+    assert!(instances(&app).len() / 16 > 50, "many widget + glyph instances");
     assert_eq!(instances(&app).len() % 16, 0, "whole instances");
 }
 
@@ -267,4 +276,67 @@ fn fab_cycles_accent_and_resizes_cleanly() {
     assert!(app.last_stats().presented, "resize forces a fresh present");
     assert!(app.trap_reason().is_none(), "no trap on resize");
     assert!(app.take_log().is_empty(), "no host errors on resize");
+}
+
+#[test]
+fn navigation_drawer_is_a_decoupled_snapshot_layer() {
+    // The headline of the scoping system: the navigation drawer paints into its
+    // own snapshot layer, decoupled from the rest of the app. Opening it repaints
+    // *only* the drawer's snapshot while the body and chrome behind it hold theirs.
+    let mut app = instance();
+    app.start();
+    let _ = app.take_log();
+
+    // The scaffold decoupled into named scopes — the drawer among them.
+    assert!(app.layers().contains("drawer"), "drawer is its own scope");
+    assert!(app.layers().contains("body"), "body is its own scope");
+    assert!(app.layers().contains("chrome"), "chrome is its own scope");
+
+    // Open the drawer ('m'): it slides in over several frames. On each animation
+    // frame the drawer's snapshot repaints while the others are reused — the host
+    // scope report shows exactly one repaint against several reuses.
+    app.send_event(&InputEvent::KeyDown { key: "m".into() });
+    let mut drawer_repainted_others_reused = false;
+    for _ in 0..14 {
+        app.animate(16.0);
+        let sc = *app.last_scope_stats();
+        if sc.layers_repainted >= 1 && sc.layers_reused >= 1 {
+            drawer_repainted_others_reused = true;
+        }
+    }
+    assert!(
+        drawer_repainted_others_reused,
+        "the drawer repainted in isolation while the body/chrome snapshots were reused"
+    );
+    assert!(app.trap_reason().is_none(), "no trap animating the drawer");
+    assert!(app.take_log().is_empty(), "no host errors animating the drawer");
+}
+
+#[test]
+fn scrolling_the_body_reuses_the_chrome_and_drawer_snapshots() {
+    // A landscape surface so the body list overflows and scrolls. Dragging the
+    // body repaints only the body's snapshot; the chrome and (closed) drawer keep
+    // theirs — the decoupling that makes scrolling cheap.
+    let mut app = Elpa::new_from_js(
+        HeadlessBackend::default(),
+        SurfaceInfo::new(1400, 600, 1.0),
+        &elpa_material::gallery_program(),
+    )
+    .expect("compiles");
+    app.start();
+    let _ = app.take_log();
+
+    // Drag inside the body to scroll it.
+    app.send_event(&InputEvent::PointerDown { x: 700.0, y: 320.0, button: 0 });
+    let mut body_alone = false;
+    for i in 0..6 {
+        app.send_event(&InputEvent::PointerMove { x: 700.0, y: 320.0 - (i as f64 + 1.0) * 20.0 });
+        let sc = *app.last_scope_stats();
+        if sc.layers_repainted >= 1 && sc.layers_reused >= 1 {
+            body_alone = true;
+        }
+    }
+    app.send_event(&InputEvent::PointerUp { x: 700.0, y: 200.0, button: 0 });
+    assert!(body_alone, "scrolling repainted the body while reusing the chrome/drawer snapshots");
+    assert!(app.trap_reason().is_none());
 }

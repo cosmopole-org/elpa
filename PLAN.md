@@ -437,6 +437,50 @@ the wgpu level instead of over widgets.
 
 ---
 
+## 10b. Scopes — Program-Controlled Layer Snapshots
+
+Partial rendering (§10) caches a pass while the program keeps *re-emitting* it
+identically. The **scope system** goes further: it lets a program decouple a
+region into a named **layer** whose snapshot is reused *without re-emitting the
+region at all*, and repainted only on explicit command. This is the renderer's
+scoping/layer API surfaced end-to-end to Elpian programs.
+
+**The pieces** (mirroring `gpu.define`, but stateful):
+
+- **`elpa-protocol`** — a [`Layer`] (`scope.rs`): id, snapshot size/format, and
+  the resources + encoder passes that paint it. A host-expanded
+  `EncoderCommand::UseLayer { layer }` references it, like `useDefinition`.
+- **`elpa-runtime`** — a `LayerStore` (`scope.rs`). `expand_layers` resolves each
+  `useLayer`: the snapshot **texture** is merged into the frame every time (so the
+  resident snapshot is never evicted); if the snapshot is **stale** the painting
+  passes are spliced in and the layer marked clean; if **valid**, the reference
+  expands to *nothing*. Reported via `ScopeStats { layers_repainted, layers_reused }`.
+- **`elpa-renderer`** — a `LayerTable` (`scope.rs`) + `Renderer::{register,
+  invalidate,unregister}_layer`. A registered layer pass's validity is **explicit**
+  (not content-hashed): reused with zero GPU work until invalidated. `FrameStats`
+  gains `layers_repainted` / `layers_reused`.
+- **`elpa`** — routes `scope.define` / `scope.invalidate` / `scope.release` host
+  calls (and the `define_layer`/`invalidate_layer`/`release_layer` Rust API), and
+  runs a two-stage host expansion per `gpu.submit`: **layers first, then
+  definitions**, before the renderer ever sees the frame.
+
+**The flow.** A program declares a layer once, references it each frame with
+`useLayer`, composites the snapshots by sampling `elpa.layer.<id>.tex` in a
+surface pass, and calls `scope.invalidate(id)` only when that region actually
+changed. A clean layer therefore costs nothing — no VM drawing, no paint pass, no
+re-upload — while a changed one repaints in isolation. Invalidation is explicit so
+the *program* owns the decoupling, which is what makes a navigation drawer slide
+open while the body behind it never re-renders.
+
+**Worked example.** `examples/material` decomposes its scaffold into `body`,
+`chrome`, `drawer` and `overlay` snapshot layers, each painted by the shared SDF
+pipeline into its own transparent (→ premultiplied) target and merged by a
+per-layer full-screen blit (`elpa.m3.blit.*`). Scrolling repaints only `body`;
+opening the drawer repaints only `drawer`; the rest hold their snapshots — proven
+by `examples/material/tests/{run,gallery}.rs` against the `ScopeStats` counters.
+
+---
+
 ## 11. wgpu Command Coverage Matrix
 
 > **This section answers: "does the JSON→wgpu mapping cover all wgpu commands

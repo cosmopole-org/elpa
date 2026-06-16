@@ -132,6 +132,68 @@ function _pipelineResources() {
     ];
 }
 
+// ---------------------------------------------------- layer compositor --------
+// The kit's UI is decoupled into independently-cached **layers** (scopes): each
+// major region — the scrolling body, the chrome (app/nav bars + FAB), the
+// navigation drawer, the modal overlays — paints into its *own* offscreen
+// snapshot texture via the scope API. A region whose pixels did not change keeps
+// its snapshot and is not repainted at all (the VM never re-runs its drawing);
+// only the region that actually changed repaints. The snapshots are then merged
+// into the final image by a cheap full-screen blit per layer, blended in z-order.
+//
+// Each layer's snapshot is painted with the *same* rounded-rect SDF pipeline as
+// before, but into a transparent target: straight-alpha source-over a cleared
+// (0,0,0,0) texture yields a **premultiplied** snapshot, which the compositor
+// then blends onto the surface with premultiplied source-over — correct, halo-
+// free layering. This is the `elpa.m3.blit.*` pipeline below.
+let _BLIT_WGSL = "
+struct VOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32> };
+@vertex
+fn vs(@builtin(vertex_index) vi: u32) -> VOut {
+    // A single oversized triangle covering the viewport (no vertex buffer).
+    var pts = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+    var o: VOut;
+    let p = pts[vi];
+    o.clip = vec4<f32>(p, 0.0, 1.0);
+    // Texture space: u in [0,1] across, v flipped so the snapshot is upright.
+    o.uv = vec2<f32>((p.x + 1.0) * 0.5, 1.0 - (p.y + 1.0) * 0.5);
+    return o;
+}
+@group(0) @binding(0) var layerTex: texture_2d<f32>;
+@group(0) @binding(1) var layerSamp: sampler;
+@fragment
+fn fs(o: VOut) -> @location(0) vec4<f32> {
+    // The snapshot is already premultiplied; emit it straight and let the
+    // premultiplied source-over blend composite it onto the surface.
+    return textureSample(layerTex, layerSamp, o.uv);
+}
+";
+// The compositing pipeline + its sampler and bind-group layout. Shared across all
+// layers; created once and cached like every other static resource.
+function _blitResources() {
+    return [
+        { kind: "shader", id: "elpa.m3.blit.shader", wgsl: _BLIT_WGSL },
+        { kind: "bindGroupLayout", id: "elpa.m3.blit.bgl", entries: [
+            { binding: 0, visibility: ["FRAGMENT"], ty: "texture" },
+            { binding: 1, visibility: ["FRAGMENT"], ty: "sampler" } ] },
+        { kind: "pipelineLayout", id: "elpa.m3.blit.layout", bind_group_layouts: ["elpa.m3.blit.bgl"] },
+        { kind: "sampler", id: "elpa.m3.blit.samp", mag_filter: "linear", min_filter: "linear", mipmap_filter: "nearest" },
+        { kind: "renderPipeline", id: "elpa.m3.blit.pipe", layout: "elpa.m3.blit.layout",
+          vertex: { module: "elpa.m3.blit.shader", entry_point: "vs" },
+          fragment: { module: "elpa.m3.blit.shader", entry_point: "fs", targets: [{
+              format: "bgra8unorm",
+              blend: { color: { src_factor: "one", dst_factor: "one-minus-src-alpha", operation: "add" },
+                       alpha: { src_factor: "one", dst_factor: "one-minus-src-alpha", operation: "add" } } }] } },
+    ];
+}
+// The per-layer bind group sampling that layer's snapshot texture (by its
+// conventional id `elpa.layer.<scope>.tex`), used by the composite blit.
+function _blitBindGroup(scope) {
+    return { kind: "bindGroup", id: concat(concat("elpa.layer.", scope), ".bg"), layout: "elpa.m3.blit.bgl", entries: [
+        { binding: 0, resource: { type: "textureView", texture: concat(concat("elpa.layer.", scope), ".tex") } },
+        { binding: 1, resource: { type: "sampler", sampler: "elpa.m3.blit.samp" } } ] };
+}
+
 // ------------------------------------------------------------ glyph font ------
 // A vector stroke font: each glyph is line segments [x0,y0,x1,y1] in a 4-wide ×
 // 6-tall box (origin top-left, y down), drawn as overlapping rounded capsules.
@@ -221,6 +283,15 @@ let _paintingComp = 0;                         // component currently being pain
 let _keySubs = {};                             // animation key -> subscriber component
 let _layered = 0.0;                            // split static/dynamic instance layers
 let _animatingComps = [];                      // components animating this frame (layered mode)
+// Layer compositor state: each scope's last-submitted instance array (for change
+// detection), which scopes have been declared to the host, and a flag forcing a
+// full re-declare (a resize changes every snapshot's texture size).
+let _scopePrev = {};                           // scope id -> last instance array
+let _scopeDeclared = {};                       // scope id -> 1 once scope.define'd
+let _scopeRedeclare = 0.0;                     // 1 forces every scope to re-declare
+// The fixed scope set + z-order (bottom→top) when the root is a Scaffold. Each is
+// an independently-cached snapshot layer; see the layer compositor notes above.
+let _SCAFFOLD_SCOPES = ["body", "chrome", "drawer", "overlay"];
 let _WHITE = [1.0, 1.0, 1.0, 1.0];
 let _CLEAR = [0.0, 0.0, 0.0, 0.0];
 
@@ -1970,58 +2041,137 @@ function _atlasUploadCmds() {
     return [{ op: "writeTexture", texture: _atlasId(), origin: { x: 0, y: 0, z: 0 },
         size: { width: _atlas.width, height: _atlas.height }, data_b64: _atlas.data }];
 }
-function _submit() {
-    let bg = _colorBg();
-    let res = concat(concat(_pipelineResources(), _atlasTexRes()), concat(_frameBindings(), [
-        // The instance buffer is re-declared every frame with fresh geometry.
-        // Marking it COPY_DST lets the renderer's resource cache refill the same
-        // GPU allocation in place (a queue write) whenever the instance *count*
-        // is unchanged — the steady state while animating — instead of freeing
-        // and reallocating a buffer each frame.
-        _bufF32("elpa.m3.inst", ["VERTEX", "COPY_DST"], _inst),
-    ]));
-    let pass = { op: "renderPass", id: "elpa.m3.pass",
-        color_attachments: [{ view: { kind: "surface" }, load: "clear",
-            clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
-        commands: [
-            { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" },
-            { cmd: "setPipeline", pipeline: "elpa.m3.pipe" },
-            { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst", offset: 0 },
-            { cmd: "draw", vertex_count: 6, instance_count: len(_inst) / 16, first_vertex: 0, first_instance: 0 },
-        ] };
-    askHost("gpu.submit", [{ resources: res, commands: concat(_atlasUploadCmds(), [pass]) }]);
-}
-
-// Submit a layered frame: a cached "static" buffer (non-animating widgets, whose
-// bytes are unchanged frame to frame → the renderer skips re-uploading it) plus a
-// small "dynamic" buffer (the animating components), drawn back-to-back with the
-// shared pipeline. Falls back to a single buffer when nothing is animating.
-function _submitLayered(animating) {
-    for (let i = 0; i < len(animating); i++) { let c = animating[i]; c._animLayer = 1.0; }
-    let dyn = [];
-    let stat = _bucketLayers(_root, dyn);
-    for (let i = 0; i < len(animating); i++) { let c = animating[i]; c._animLayer = 0.0; }
-    if (len(dyn) < 1) { _submit(); return 0; }
-
-    let bg = _colorBg();
-    let res = concat(concat(_pipelineResources(), _atlasTexRes()), concat(_frameBindings(), [
-        _bufF32("elpa.m3.inst.static", ["VERTEX", "COPY_DST"], stat),
-        _bufF32("elpa.m3.inst.dyn", ["VERTEX", "COPY_DST"], dyn),
-    ]));
-    let pass = { op: "renderPass", id: "elpa.m3.pass",
-        color_attachments: [{ view: { kind: "surface" }, load: "clear",
-            clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
-        commands: [
-            { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" },
-            { cmd: "setPipeline", pipeline: "elpa.m3.pipe" },
-            { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst.static", offset: 0 },
-            { cmd: "draw", vertex_count: 6, instance_count: len(stat) / 16, first_vertex: 0, first_instance: 0 },
-            { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst.dyn", offset: 0 },
-            { cmd: "draw", vertex_count: 6, instance_count: len(dyn) / 16, first_vertex: 0, first_instance: 0 },
-        ] };
-    askHost("gpu.submit", [{ resources: res, commands: concat(_atlasUploadCmds(), [pass]) }]);
+// Find the Scaffold node under the (component) root, if any — the layout that
+// defines the kit's decoupled regions. Walks through component wrappers.
+function _findScaffold(node) {
+    if (isNull(node)) { return 0; }
+    if (node.kind == "scaffold") { return node; }
+    if (node.kind == "comp") { return _findScaffold(node._sub); }
     return 0;
 }
+// Split the painted tree into the per-scope instance arrays, in z-order
+// (bottom→top). A Scaffold app decouples into body / chrome / drawer / overlay;
+// any other root is a single `root` scope. Each scaffold region child is routed
+// to a scope by its kind, so e.g. scrolling the body never touches the chrome's
+// snapshot and opening the drawer never touches the body's.
+// Which scope a scaffold region child belongs to, by kind: 1 = chrome (bars +
+// FAB), 2 = drawer, 3 = overlay (modal surfaces), 0 = body (everything else).
+function _scopeOfKind(kk) {
+    if (kk == "appBar") { return 1; }
+    if (kk == "navBar") { return 1; }
+    if (kk == "tabs") { return 1; }
+    if (kk == "fab") { return 1; }
+    if (kk == "drawer") { return 2; }
+    if (kk == "snackbar") { return 3; }
+    if (kk == "dialog") { return 3; }
+    return 0;
+}
+function _scopeBuckets() {
+    let sc = _findScaffold(_root);
+    if (sc == 0) { return [ { id: "root", inst: _root._out } ]; }
+    let body = []; let chrome = concat([], sc._self); let drawer = []; let overlay = [];
+    let kids = sc._kids;
+    for (let i = 0; i < len(kids); i++) {
+        let k = kids[i]; let g = _scopeOfKind(k.kind);
+        if (g == 1) { chrome = concat(chrome, k._out); }
+        else { if (g == 2) { drawer = concat(drawer, k._out); }
+        else { if (g == 3) { overlay = concat(overlay, k._out); }
+        else { body = concat(body, k._out); } } }
+    }
+    return [ { id: "body", inst: body }, { id: "chrome", inst: chrome },
+             { id: "drawer", inst: drawer }, { id: "overlay", inst: overlay } ];
+}
+// Deep equality of two instance arrays (change detection for snapshot reuse).
+function _arrEq(a, b) {
+    if (isNull(a)) { return 0.0; }
+    if (isNull(b)) { return 0.0; }
+    let la = len(a); if (la != len(b)) { return 0.0; }
+    for (let i = 0; i < la; i++) { if (a[i] != b[i]) { return 0.0; } }
+    return 1.0;
+}
+// The scope.define payload for one layer: a full-surface snapshot texture painted
+// by one SDF pass over the scope's instance buffer. The instance buffer itself is
+// declared at the *frame* level (always, cheaply) rather than inside the layer,
+// so the paint pass always reads the live geometry; the layer only owns the
+// snapshot + the paint pass. The paint pass id / texture id follow the scope-API
+// conventions so the host registers the snapshot and the compositor samples it.
+function _layerObj(scope, inst) {
+    let bufId = concat(concat("elpa.layer.", scope), ".inst");
+    let texId = concat(concat("elpa.layer.", scope), ".tex");
+    let passId = concat(concat("elpa.layer.", scope), ".paint");
+    return {
+        id: scope, width: round(_vw), height: round(_vh), format: "bgra8unorm",
+        resources: [],
+        commands: [ { op: "renderPass", id: passId,
+            color_attachments: [{ view: { kind: "texture", texture: texId }, load: "clear",
+                clear_color: { r: 0.0, g: 0.0, b: 0.0, a: 0.0 } }],
+            commands: [
+                { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" },
+                { cmd: "setPipeline", pipeline: "elpa.m3.pipe" },
+                { cmd: "setVertexBuffer", slot: 0, buffer: bufId, offset: 0 },
+                { cmd: "draw", vertex_count: 6, instance_count: len(inst) / 16, first_vertex: 0, first_instance: 0 },
+            ] } ]
+    };
+}
+// Submit a layered frame. Each scope's geometry goes into its own (frame-level)
+// instance buffer; a scope is *repainted* only when it is new, when a resize
+// changed its snapshot size, or when its pixels changed — otherwise its snapshot
+// is reused (the `useLayer` expands to nothing, so the GPU never re-rasterises it
+// and the VM never re-sends its paint work). The snapshots are then composited
+// onto the surface in z-order by one cheap full-screen blit per layer.
+function _submitFrame() {
+    let bg = _colorBg();
+    let scopes = _scopeBuckets();
+    // Shared, cached resources: the SDF pipeline + atlas + globals, and the
+    // compositing (blit) pipeline + its sampler.
+    let res = concat(concat(_pipelineResources(), _atlasTexRes()), _frameBindings());
+    res = concat(res, _blitResources());
+    let cmds = _atlasUploadCmds();
+    let blit = [];
+    for (let i = 0; i < len(scopes); i++) {
+        let sp = scopes[i]; let id = sp.id; let inst = sp.inst;
+        // The scope's live instance buffer, declared every frame (COPY_DST → the
+        // resource cache refills it in place when it changes, no-ops when it does
+        // not). The layer's paint pass reads this buffer.
+        res = concat(res, [ _bufF32(concat(concat("elpa.layer.", id), ".inst"), ["VERTEX", "COPY_DST"], inst) ]);
+        // Decide whether — and how — this scope repaints:
+        //   • new, resized, or its instance *count* changed → re-`define` it, so
+        //     the layer's paint pass carries the right `instance_count`;
+        //   • only its floats moved (same count) → `invalidate` it, reusing the
+        //     registered paint pass and just refilling the buffer in place;
+        //   • identical → leave it alone, so its snapshot is reused.
+        let redo = 0.0;
+        if (!has(_scopeDeclared, id)) { redo = 1.0; }
+        if (_scopeRedeclare > 0.5) { redo = 1.0; }
+        let prevLen = 0.0 - 1.0;
+        if (has(_scopePrev, id)) { prevLen = len(_scopePrev[id]); }
+        if (redo < 0.5) { if (prevLen != len(inst)) { redo = 1.0; } }
+        if (redo > 0.5) {
+            askHost("scope.define", [ _layerObj(id, inst) ]);
+            _scopeDeclared[id] = 1.0;
+        }
+        else { if (_arrEq(_scopePrev[id], inst) < 0.5) { askHost("scope.invalidate", [ id ]); } }
+        _scopePrev[id] = inst;
+        // Reference the layer (keeps its snapshot resident, repaints if dirty) and
+        // queue its composite blit (in z-order).
+        push(cmds, { op: "useLayer", layer: id });
+        res = concat(res, [ _blitBindGroup(id) ]);
+        push(blit, { cmd: "setPipeline", pipeline: "elpa.m3.blit.pipe" });
+        push(blit, { cmd: "setBindGroup", index: 0, bind_group: concat(concat("elpa.layer.", id), ".bg"), dynamic_offsets: [] });
+        push(blit, { cmd: "draw", vertex_count: 3, instance_count: 1, first_vertex: 0, first_instance: 0 });
+    }
+    _scopeRedeclare = 0.0;
+    let composite = { op: "renderPass", id: "elpa.m3.composite",
+        color_attachments: [{ view: { kind: "surface" }, load: "clear",
+            clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
+        commands: blit };
+    push(cmds, composite);
+    askHost("gpu.submit", [{ resources: res, commands: cmds }]);
+}
+// All repaint paths funnel through the layer compositor. (`_submitLayered` is
+// kept for the older animation entry point; it now defers to the same path.)
+function _submit() { _submitFrame(); }
+function _submitLayered(animating) { _submitFrame(); return 0; }
 
 // ------------------------------------------------------------- event loop -----
 // Pan any scrollable viewport under (px,py) by `delta` px; returns whether one
@@ -2154,5 +2304,8 @@ function onFrame(dt) {
 }
 function onResize(info) {
     _setMetrics(info);
+    // The surface size changed, so every layer's snapshot texture must be rebuilt
+    // at the new size — force a full re-declare (and repaint) of all scopes.
+    _scopeRedeclare = 1.0;
     _renderApp();
 }

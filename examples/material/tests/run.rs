@@ -28,7 +28,9 @@ fn kit_shader_is_valid_wgsl() {
     collect_wgsl(&ast, &mut shaders);
     shaders.sort();
     shaders.dedup();
-    assert_eq!(shaders.len(), 1, "the whole kit shares one rounded-rect shader");
+    // Two shaders: the rounded-rect SDF that paints every widget, and the layer
+    // compositor's full-screen blit that merges the snapshot layers.
+    assert_eq!(shaders.len(), 2, "the SDF painter + the layer-compositor blit");
     for src in &shaders {
         let module = naga::front::wgsl::parse_str(src)
             .unwrap_or_else(|e| panic!("WGSL parse failed: {}", e.emit_to_string(src)));
@@ -50,67 +52,68 @@ fn instance() -> Elpa<HeadlessBackend> {
     .expect("SDK + app program compiles")
 }
 
-/// The same app with layered rendering switched on (static/dynamic instance
-/// split). Injected by enabling the SDK flag just before `runApp`.
-fn layered_instance() -> Elpa<HeadlessBackend> {
-    let program = format!(
-        "{}\n{}",
-        elpa_material::MODULE_JS,
-        elpa_material::DEMO_JS.replace("runApp(App)", "setLayered(1.0); runApp(App)"),
-    );
-    Elpa::new_from_js(HeadlessBackend::default(), SurfaceInfo::new(900, 1400, 1.0), &program)
-        .expect("layered SDK + app program compiles")
-}
-
-/// Total instances across every per-frame instance buffer the SDK emitted —
-/// whether one (`elpa.m3.inst`) or the layered pair (`*.static` + `*.dyn`).
+/// Total instances across every per-scope layer instance buffer the SDK emitted.
 fn total_instances(app: &Elpa<HeadlessBackend>) -> usize {
-    let frame = app.last_frame().expect("a frame was submitted");
-    let floats: usize = frame
-        .resources
-        .iter()
-        .filter_map(|r| match r {
-            ResourceDesc::Buffer(b) if b.id.starts_with("elpa.m3.inst") => {
-                b.data_f32.as_ref().map(|d| d.len())
-            }
-            _ => None,
-        })
-        .sum();
-    floats / 16
+    instances(app).len() / 16
 }
 
-/// The single per-frame instance buffer the SDK emits (all rounded-rect layers).
+/// The full per-frame instance stream: every per-scope layer buffer
+/// (`elpa.layer.<scope>.inst`) concatenated in z-order. The layered SDK paints
+/// each region into its own snapshot, so the stream is bucketed by scope; this
+/// reassembles it for the kit's geometric assertions.
 fn instances(app: &Elpa<HeadlessBackend>) -> Vec<f32> {
-    let frame = app.last_frame().expect("a frame was submitted");
-    frame
-        .resources
-        .iter()
-        .find_map(|r| match r {
-            ResourceDesc::Buffer(b) if b.id == "elpa.m3.inst" => b.data_f32.clone(),
-            _ => None,
-        })
-        .expect("instance buffer present")
+    layer_instances(app)
 }
 
-/// The render pass's clear color (the themed background). The frame may carry a
-/// one-time font-atlas upload before the pass, so find the pass rather than
-/// assuming it is first.
+/// Shared aggregation of the kit's per-scope instance buffers (z-order).
+pub fn layer_instances(app: &Elpa<HeadlessBackend>) -> Vec<f32> {
+    let frame = app.last_frame().expect("a frame was submitted");
+    let order = ["body", "chrome", "drawer", "overlay", "root"];
+    let mut out = Vec::new();
+    for scope in order {
+        let id = format!("elpa.layer.{scope}.inst");
+        if let Some(data) = frame.resources.iter().find_map(|r| match r {
+            ResourceDesc::Buffer(b) if b.id == id => b.data_f32.clone(),
+            _ => None,
+        }) {
+            out.extend(data);
+        }
+    }
+    assert!(!out.is_empty(), "at least one scope instance buffer present");
+    out
+}
+
+/// The surface composite pass's clear color (the themed background). The frame
+/// begins with the offscreen layer paint passes and a one-time atlas upload, so
+/// pick the pass that targets the *surface* rather than assuming a position.
 fn clear_color(app: &Elpa<HeadlessBackend>) -> (f64, f64, f64) {
     let frame = app.last_frame().expect("frame");
     let rp = frame
         .commands
         .iter()
         .find_map(|c| match c {
-            EncoderCommand::RenderPass(rp) => Some(rp),
+            EncoderCommand::RenderPass(rp) if rp.targets_surface() => Some(rp),
             _ => None,
         })
-        .expect("expected a render pass");
+        .expect("expected the surface composite pass");
     let c = rp.color_attachments[0].clear_color.expect("clear color");
     (c.r, c.g, c.b)
 }
 
+/// The surface composite pass (the one that merges the snapshot layers).
+fn composite_pass(frame: &elpa::Frame) -> &elpa::protocol::RenderPass {
+    frame
+        .commands
+        .iter()
+        .find_map(|c| match c {
+            EncoderCommand::RenderPass(rp) if rp.targets_surface() => Some(rp),
+            _ => None,
+        })
+        .expect("a surface composite pass")
+}
+
 #[test]
-fn app_starts_and_draws_one_instanced_pass() {
+fn app_starts_and_composites_snapshot_layers() {
     let mut app = instance();
     app.start();
 
@@ -118,32 +121,41 @@ fn app_starts_and_draws_one_instanced_pass() {
     assert!(app.trap_reason().is_none(), "no VM trap: {:?}", app.trap_reason());
     assert!(app.take_log().is_empty(), "no host errors on first paint");
 
-    // The whole UI is one instanced rounded-rect draw over the shared pipeline.
     let frame = app.last_frame().expect("a frame");
-    assert!(frame.resources.iter().any(|r| r.id() == "elpa.m3.pipe"), "pipeline created");
-    let rp = frame
+    // Both pipelines exist: the SDF painter and the layer-compositor blit.
+    assert!(frame.resources.iter().any(|r| r.id() == "elpa.m3.pipe"), "SDF pipeline created");
+    assert!(frame.resources.iter().any(|r| r.id() == "elpa.m3.blit.pipe"), "blit pipeline created");
+
+    // Every major region paints into its own offscreen snapshot: there is a
+    // cacheable paint pass per scope, each targeting that scope's layer texture
+    // with the 6-vertex SDF draw.
+    let paint_passes: Vec<&RenderCommand> = Vec::new();
+    let _ = paint_passes;
+    let scope_paints: usize = frame
         .commands
         .iter()
-        .find_map(|c| match c {
-            EncoderCommand::RenderPass(rp) => Some(rp),
-            _ => None,
-        })
-        .expect("expected a render pass");
-    let draws: Vec<&RenderCommand> = rp
+        .filter(|c| matches!(c, EncoderCommand::RenderPass(rp)
+            if rp.id.as_deref().map(|s| s.ends_with(".paint")).unwrap_or(false)))
+        .count();
+    assert!(scope_paints >= 2, "the scaffold decoupled into multiple snapshot layers");
+
+    // The first frame paints every snapshot (all stale) — the renderer reports it.
+    assert!(app.last_stats().layers_repainted >= 2, "first frame paints each layer once");
+
+    // The snapshots are merged by a full-screen blit per layer in the surface
+    // composite pass (3-vertex triangles), not one giant instanced draw.
+    let cp = composite_pass(frame);
+    let blits: Vec<&RenderCommand> = cp
         .commands
         .iter()
-        .filter(|c| matches!(c, RenderCommand::Draw { .. }))
+        .filter(|c| matches!(c, RenderCommand::Draw { vertex_count: 3, .. }))
         .collect();
-    assert_eq!(draws.len(), 1, "one instanced draw for the whole UI");
-    match draws[0] {
-        RenderCommand::Draw { instance_count, vertex_count, .. } => {
-            assert_eq!(*vertex_count, 6);
-            assert!(*instance_count > 50, "many widget + glyph instances");
-        }
-        _ => unreachable!(),
-    }
-    // The instance buffer matches the draw (whole 16-float instances).
+    assert!(blits.len() >= 2, "one composite blit per snapshot layer");
+
+    // The aggregated instance stream is whole 16-float instances, and there are
+    // many of them (widgets + glyphs across the layers).
     assert_eq!(instances(&app).len() % 16, 0, "whole instances");
+    assert!(total_instances(&app) > 50, "many widget + glyph instances");
 }
 
 #[test]
@@ -176,62 +188,51 @@ fn animation_refills_the_instance_buffer_in_place() {
 }
 
 #[test]
-fn layered_mode_caches_the_static_layer_during_animation() {
-    // With layering on, an easing widget rewrites only the small dynamic layer in
-    // place; the static layer (every other widget) keeps identical bytes, so the
-    // resource cache skips it — no create, no re-upload — even as the frame fully
-    // repaints and presents.
-    let mut app = layered_instance();
+fn idle_layers_reuse_their_snapshot_while_one_region_animates() {
+    // With every region decoupled into its own snapshot layer, an easing widget
+    // (the switch, in the body) repaints only the body's snapshot; the chrome,
+    // drawer and overlay snapshots are *reused* — no GPU paint pass, no re-upload —
+    // even as the frame presents. The renderer reports both counts.
+    let mut app = instance();
     app.start();
     let _ = app.take_log();
 
     app.send_event(&InputEvent::KeyDown { key: " ".into() });
-    let mut saw_static_cached = false;
+    let mut saw_reuse_with_repaint = false;
     for _ in 0..8 {
         app.animate(16.0);
-        let s = app.last_stats();
-        // created == 0 && updated >= 1 means: nothing rebuilt, only the dynamic
-        // buffer refilled — the static layer was served from cache.
-        if s.presented && s.resources_created == 0 && s.resources_updated >= 1 {
-            let frame = app.last_frame().unwrap();
-            let has_static = frame.resources.iter().any(|r| r.id() == "elpa.m3.inst.static");
-            let has_dyn = frame.resources.iter().any(|r| r.id() == "elpa.m3.inst.dyn");
-            if has_static && has_dyn {
-                saw_static_cached = true;
-            }
+        // The host's scope report: the animating region repaints, the rest reuse
+        // their snapshots (their paint passes are omitted entirely).
+        let sc = *app.last_scope_stats();
+        if app.last_stats().presented && sc.layers_repainted >= 1 && sc.layers_reused >= 1 {
+            // Nothing rebuilt — only the animating layer's buffer refilled in place.
+            assert_eq!(
+                app.last_stats().resources_created, 0,
+                "a steady-count animation frame reuses every allocation"
+            );
+            saw_reuse_with_repaint = true;
         }
     }
-    assert!(saw_static_cached, "static layer cached while only the dynamic layer updated");
+    assert!(saw_reuse_with_repaint, "idle layers reused while one region repainted");
     assert!(app.trap_reason().is_none());
     assert!(app.take_log().is_empty());
 }
 
 #[test]
-fn layered_split_conserves_every_instance() {
-    // The layered split must be visually lossless: at every step the static +
-    // dynamic instances together equal the single-buffer frame the unlayered app
-    // produces for the identical state. Drive both in lockstep (the eased values
-    // are deterministic) and compare totals.
-    let mut plain = instance();
-    let mut layered = layered_instance();
-    plain.start();
-    layered.start();
-    let _ = plain.take_log();
-    let _ = layered.take_log();
-    assert_eq!(total_instances(&plain), total_instances(&layered), "same first frame");
+fn animating_one_region_conserves_the_total_instance_count() {
+    // The switch ease only moves floats; the instance count across all snapshot
+    // layers is invariant frame to frame (visually lossless decoupling).
+    let mut app = instance();
+    app.start();
+    let _ = app.take_log();
+    let base = total_instances(&app);
 
-    plain.send_event(&InputEvent::KeyDown { key: " ".into() });
-    layered.send_event(&InputEvent::KeyDown { key: " ".into() });
+    app.send_event(&InputEvent::KeyDown { key: " ".into() });
     for _ in 0..8 {
-        plain.animate(16.0);
-        layered.animate(16.0);
-        assert_eq!(
-            total_instances(&plain),
-            total_instances(&layered),
-            "layered static+dynamic conserves the full instance set"
-        );
+        app.animate(16.0);
+        assert_eq!(total_instances(&app), base, "layered decoupling conserves the instance set");
     }
-    assert!(layered.take_log().is_empty());
+    assert!(app.take_log().is_empty());
 }
 
 #[test]
