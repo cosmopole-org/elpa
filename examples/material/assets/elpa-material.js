@@ -203,6 +203,9 @@ let _scrollDragOn = 0.0; let _scrollDragId = ""; let _scrollDragY = 0.0;  // tou
 let _scrollVel = 0.0;                          // smoothed drag velocity (px/frame)
 let _flingId = ""; let _flingV = 0.0;          // active momentum fling (id + velocity)
 let _atlas = 0; let _atlasUp = 0.0;            // font atlas reply (host) + upload-once flag
+let _fontSrc = 0; let _hasFont = 0.0;          // app-chosen font source (url/path) + presence flag
+let _fontVer = 0;                              // bumped per font swap → versions the atlas texture id
+let _running = 0.0;                            // 1 once runApp has mounted the tree
 let _darkTarget = 0.0; let _darkAnim = 0.0;    // theme
 let _accent = 0;                               // accent index
 let _anim = {}; let _target = {};              // eased 0..1 values by key
@@ -253,7 +256,7 @@ function defineComponent(fn) { return (props) => Component(fn, props); }
 
 // Mount the root component (a `defineComponent` constructor) and paint the first
 // frame — the analog of Flutter's `runApp(MyApp())`.
-function runApp(root) { _root = root({}); _renderApp(); }
+function runApp(root) { _root = root({}); _running = 1.0; _renderApp(); }
 
 // ---- Platform services (capability-gated host interfaces) --------------------
 // Thin app-facing wrappers over Elpa's `askHost` seam: the clock, the fabricated
@@ -462,13 +465,38 @@ function _paintTextCapsules(str, cx, cy, cell, col, thick, font) {
     }
 }
 function _paintText(str, cx, cy, cell, col) { _paintTextStyled(str, cx, cy, cell, col, 0.92, 0); }
-// Load the host-rasterised font atlas once (regular + bold + metrics).
+// Load the host-rasterised font atlas (regular + bold + metrics) for the current
+// font source — the bundled font by default, or the app-chosen URL/storage path.
 function _loadAtlas() {
-    let r = askHost("text.atlas", [{ size: 48.0 }]);
+    let req = { size: 48.0 };
+    if (_hasFont > 0.5) {
+        if (has(_fontSrc, "url")) { req.url = _fontSrc.url; }
+        if (has(_fontSrc, "boldUrl")) { req.boldUrl = _fontSrc.boldUrl; }
+        if (has(_fontSrc, "path")) { req.path = _fontSrc.path; }
+        if (has(_fontSrc, "boldPath")) { req.boldPath = _fontSrc.boldPath; }
+    }
+    let r = askHost("text.atlas", [req]);
     if (isNull(r)) { return 0; }
     if (!has(r, "ok")) { return 0; }
     _atlas = r; _atlasUp = 0.0; return 0;
 }
+// ---- App-facing font control -------------------------------------------------
+// Choose the app's main font. The runtime fetches/loads it, rasterises a fresh
+// atlas, and the whole UI repaints in the new face. Sources degrade gracefully:
+// if a URL can't be fetched (network off/denied) or a path is missing, the host
+// falls back to the bundled font, so these never crash the app.
+//   useFont("https://…/Roboto.ttf")            — download by URL
+//   useFontBold(regularUrl, boldUrl)           — download a regular + bold pair
+//   useFontFromPath("/fonts/app.ttf")          — load from storage
+//   useFontFromPathBold(regularPath, boldPath) — load a regular + bold pair
+//   useDefaultFont()                           — back to the bundled font
+// (Each helper has a fixed arity — the VM binds call arguments positionally.)
+function _applyFont(src, has2) { _fontSrc = src; _hasFont = has2; _atlas = 0; _atlasUp = 0.0; _fontVer = _fontVer + 1; if (_running > 0.5) { _renderApp(); } }
+function useFont(url) { _applyFont({ url: url }, 1.0); }
+function useFontBold(url, boldUrl) { _applyFont({ url: url, boldUrl: boldUrl }, 1.0); }
+function useFontFromPath(path) { _applyFont({ path: path }, 1.0); }
+function useFontFromPathBold(path, boldPath) { _applyFont({ path: path, boldPath: boldPath }, 1.0); }
+function useDefaultFont() { _applyFont(0, 0.0); }
 function _addTap(cx, cy, hw, hh, id, onTap) { push(_curTaps, { cx: cx, cy: cy, hw: hw, hh: hh, id: id, onTap: onTap }); }
 function _addDrag(cx, cy, hw, hh, onChanged, left, width) {
     push(_curDrags, { cx: cx, cy: cy, hw: hw, hh: hh,
@@ -1761,12 +1789,17 @@ function _renderApp() {
     _submit();
 }
 function _repaint() { _renderApp(); }
+// The atlas texture id is versioned per font swap, so when the app changes fonts
+// (and the atlas may change size) the shared bind group's descriptor changes too
+// and the renderer recreates it against the new texture instead of keeping a
+// stale view.
+function _atlasId() { return concat("elpa.m3.atlas.", str(_fontVer)); }
 // The font-atlas texture + sampler (linear, for smooth scaling) that back the
 // glyph instances. Sized to the loaded atlas (a 1×1 stand-in before it loads).
 function _atlasTexRes() {
     let w = 1; let h = 1; if (_atlas != 0) { w = _atlas.width; h = _atlas.height; }
     return [
-        { kind: "texture", id: "elpa.m3.atlas", size: { width: w, height: h }, format: "r8unorm", usage: ["TEXTURE_BINDING", "COPY_DST"] },
+        { kind: "texture", id: _atlasId(), size: { width: w, height: h }, format: "r8unorm", usage: ["TEXTURE_BINDING", "COPY_DST"] },
         { kind: "sampler", id: "elpa.m3.samp", mag_filter: "linear", min_filter: "linear", mipmap_filter: "linear" },
     ];
 }
@@ -1776,17 +1809,17 @@ function _frameBindings() {
         _bufF32("elpa.m3.globals", ["UNIFORM", "COPY_DST"], [_vw, _vh, 0.0, 0.0]),
         { kind: "bindGroup", id: "elpa.m3.gb", layout: "elpa.m3.bgl", entries: [
             { binding: 0, resource: { type: "buffer", buffer: "elpa.m3.globals" } },
-            { binding: 1, resource: { type: "textureView", texture: "elpa.m3.atlas" } },
+            { binding: 1, resource: { type: "textureView", texture: _atlasId() } },
             { binding: 2, resource: { type: "sampler", sampler: "elpa.m3.samp" } } ] },
     ];
 }
-// Upload the atlas pixels exactly once (the texture keeps its contents across
-// frames); returns the encoder command list to prepend to the frame.
+// Upload the atlas pixels exactly once per font (the texture keeps its contents
+// across frames); returns the encoder command list to prepend to the frame.
 function _atlasUploadCmds() {
     if (_atlas == 0) { return []; }
     if (_atlasUp > 0.5) { return []; }
     _atlasUp = 1.0;
-    return [{ op: "writeTexture", texture: "elpa.m3.atlas", origin: { x: 0, y: 0, z: 0 },
+    return [{ op: "writeTexture", texture: _atlasId(), origin: { x: 0, y: 0, z: 0 },
         size: { width: _atlas.width, height: _atlas.height }, data_b64: _atlas.data }];
 }
 function _submit() {

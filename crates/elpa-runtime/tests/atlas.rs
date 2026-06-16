@@ -19,3 +19,19 @@ fn atlas_builds() {
     assert!(nreg == 95 && nbold == 95);
     assert!(ga["adv"].as_f64().unwrap() > 0.0);
 }
+
+#[test]
+fn atlas_source_path_and_url() {
+    use elpa_runtime::{EnvToggles, ClosureNet, NetResponse};
+    const TTF: &[u8] = include_bytes!("../assets/fonts/LiberationSans-Bold.ttf");
+    let mut env = HostEnv::default();
+    env.set_toggles(EnvToggles::all_on());
+    env.fs_mut().write("/f.ttf", TTF).unwrap();
+    let pcall = HostCall { machine_id: "m".into(), api_name: "text.atlas".into(), payload: r#"[{"size":44,"path":"/f.ttf"}]"#.into() };
+    let pr: serde_json::Value = serde_json::from_str(&env.service(&pcall).unwrap()).unwrap();
+    println!("PATH source={:?}", pr["source"]);
+    env.set_net(Box::new(ClosureNet(|_r| Ok(NetResponse{status:200, body:String::new(), bytes: Some(TTF.to_vec())}))));
+    let ucall = HostCall { machine_id: "m".into(), api_name: "text.atlas".into(), payload: r#"[{"size":44,"url":"https://x/f.ttf"}]"#.into() };
+    let ur: serde_json::Value = serde_json::from_str(&env.service(&ucall).unwrap()).unwrap();
+    println!("URL source={:?}", ur["source"]);
+}
