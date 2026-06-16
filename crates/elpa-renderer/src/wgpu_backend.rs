@@ -786,21 +786,35 @@ impl<'s> WgpuBackend<'s> {
                 );
             }
             RenderCommand::SetVertexBuffer { slot, buffer, offset } => {
-                be.set_vertex_buffer(*slot, self.buffers.get(buffer).expect("vbuf").slice(*offset..));
+                let vbuf = self.buffers.get(buffer).expect("vbuf");
+                // `Buffer::slice(offset..)` panics on an empty range, and wgpu
+                // forbids a zero-sized buffer binding. An empty vertex buffer (a
+                // layer/scope with no instances this frame) carries no geometry, so
+                // skip the bind entirely — the matching `draw` is a no-op too.
+                if vbuf.size() > *offset {
+                    be.set_vertex_buffer(*slot, vbuf.slice(*offset..));
+                }
             }
             RenderCommand::SetIndexBuffer { buffer, format, offset } => {
-                let fmt = if format == "uint16" {
-                    wgpu::IndexFormat::Uint16
-                } else {
-                    wgpu::IndexFormat::Uint32
-                };
-                be.set_index_buffer(self.buffers.get(buffer).expect("ibuf").slice(*offset..), fmt);
+                let ibuf = self.buffers.get(buffer).expect("ibuf");
+                if ibuf.size() > *offset {
+                    let fmt = if format == "uint16" {
+                        wgpu::IndexFormat::Uint16
+                    } else {
+                        wgpu::IndexFormat::Uint32
+                    };
+                    be.set_index_buffer(ibuf.slice(*offset..), fmt);
+                }
             }
             RenderCommand::Draw { vertex_count, instance_count, first_vertex, first_instance } => {
-                be.draw(
-                    *first_vertex..*first_vertex + *vertex_count,
-                    *first_instance..*first_instance + *instance_count,
-                );
+                // An empty draw (no vertices or no instances) does nothing; skip it
+                // so an unbound/empty vertex buffer never reaches a draw call.
+                if *vertex_count > 0 && *instance_count > 0 {
+                    be.draw(
+                        *first_vertex..*first_vertex + *vertex_count,
+                        *first_instance..*first_instance + *instance_count,
+                    );
+                }
             }
             RenderCommand::DrawIndexed {
                 index_count,
@@ -809,11 +823,13 @@ impl<'s> WgpuBackend<'s> {
                 base_vertex,
                 first_instance,
             } => {
-                be.draw_indexed(
-                    *first_index..*first_index + *index_count,
-                    *base_vertex,
-                    *first_instance..*first_instance + *instance_count,
-                );
+                if *index_count > 0 && *instance_count > 0 {
+                    be.draw_indexed(
+                        *first_index..*first_index + *index_count,
+                        *base_vertex,
+                        *first_instance..*first_instance + *instance_count,
+                    );
+                }
             }
             RenderCommand::DrawIndirect { buffer, offset } => {
                 be.draw_indirect(self.buffers.get(buffer).expect("indirect"), *offset);
