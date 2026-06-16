@@ -945,16 +945,27 @@ function _measureKind(node) {
     }
     return { w: 0.0, h: 0.0 };
 }
+// A Row/Column's intrinsic size is its packed children, but an explicit
+// `width`/`height` is a tight constraint the *paint* pass already honours on the
+// main axis — so measurement must report it too. Otherwise a width-constrained
+// Row measures at its (often tiny, all-`Expanded`) intrinsic width, and a parent
+// that centres or cross-aligns it (a `Column({ cross: "start" })`, a sized box)
+// places it by that wrong width, leaving the full-width row painted off-centre
+// and overflowing its container.
 function _measureColumn(node) {
     let mw = 0.0; let h = 0.0; let nc = len(node.children); let gap = _gapPx(node);
     for (let i = 0; i < nc; i++) { let c = _measure(node.children[i]); if (c.w > mw) { mw = c.w; } h = h + c.h; }
     if (nc > 1) { h = h + gap * (nc - 1); }
+    if (has(node, "width")) { mw = node.width * _u; }
+    if (has(node, "height")) { h = node.height * _u; }
     return { w: mw, h: h };
 }
 function _measureRow(node) {
     let w = 0.0; let mh = 0.0; let nc = len(node.children); let gap = _gapPx(node);
     for (let i = 0; i < nc; i++) { let c = _measure(node.children[i]); w = w + c.w; if (c.h > mh) { mh = c.h; } }
     if (nc > 1) { w = w + gap * (nc - 1); }
+    if (has(node, "width")) { w = node.width * _u; }
+    if (has(node, "height")) { mh = node.height * _u; }
     return { w: w, h: mh };
 }
 
@@ -1184,12 +1195,25 @@ function _paintScaffold(node) {
     // Horizontal safe area (landscape cutouts / side gesture areas): centre the
     // content column inside the unreserved span. Collapses to _vw/2 with no insets.
     let bodyCx = _saL + (_vw - _saL - _saR) / 2.0;
+    let hasBar = 0.0; if (has(node, "bottomBar")) { if (!isNull(node.bottomBar)) { hasBar = 1.0; } }
+    let hasFab = 0.0; if (has(node, "fab")) { if (!isNull(node.fab)) { hasFab = 1.0; } }
+    // FAB geometry, computed up front: the scrollable body reserves trailing room
+    // beneath it (below) so its last item can scroll clear of the floating button
+    // instead of being trapped under it. The FAB itself is still painted last, so
+    // it draws over the body and the bars.
+    let fabR = _du() * 4.2;
+    let fabX = _vw - _saR - _u * 9.0; let fabY = _vh - _saB - _u * 9.0;
+    if (isExpanded() < 0.5) {
+        fabX = _vw - _saR - _u * 4.0 - fabR;
+        fabY = _vh - _saB - _u * 4.0 - fabR;
+        if (hasBar > 0.5) { fabY = _vh - _saB - barH - _u * 4.0 - fabR; }
+    }
     // Carry the navigation bar's surface down through the bottom (gesture) inset
     // so the bar reads as reaching the screen edge rather than floating above a
     // strip of background. Drawn into the scaffold's own (behind-children) buffer.
-    if (_saB > 0.0) { if (has(node, "bottomBar")) { if (!isNull(node.bottomBar)) {
+    if (_saB > 0.0) { if (hasBar > 0.5) {
         _rect(_vw / 2.0, _vh - _saB / 2.0, _vw / 2.0, _saB / 2.0, 0.0, 0.0, 0.0, _surfaceContainer(1.0), _CLEAR);
-    } } }
+    } }
     if (has(node, "onKey")) { _keyHandler = node.onKey; _hasKey = 1.0; }
     let kids = [];
     // Paint the body first so the top app bar and bottom navigation draw *over*
@@ -1200,14 +1224,27 @@ function _paintScaffold(node) {
         // Body lives below the (inset-extended) app bar and above the bottom inset,
         // minus the navigation bar when present.
         let bodyTop = aHTotal; let bodyH = _vh - aHTotal - _saB;
-        if (has(node, "bottomBar")) { bodyH = bodyH - barH; }
+        if (hasBar > 0.5) { bodyH = bodyH - barH; }
         // A scrollable body fills the whole body region (tight vertical constraint)
         // so its viewport adapts to the screen — no fixed-height list stranded in a
         // sea of whitespace on tall phones, no overflow on short ones. Other body
         // widgets (e.g. a Card) keep their intrinsic size and are centred.
+        //
+        // It also gets content padding (the analog of Flutter's `ListView` padding):
+        // a leading inset so the first item isn't glued to the app bar's hairline,
+        // and a trailing inset sized to clear the floating FAB so the last item can
+        // scroll fully into view rather than staying pinned beneath it. The viewport
+        // box itself is unchanged (content scrolls *under* the FAB), so a centred,
+        // non-scrolling body — e.g. a Card — keeps its position.
         let bk = node.body.kind;
-        if (bk == "listView") { let bn = node.body; bn._fh = bodyH; }
-        if (bk == "gridView") { let bn = node.body; bn._fh = bodyH; }
+        let padT = _u * 1.5 * _sp;
+        let padB = _u * 2.0 * _sp;
+        if (hasFab > 0.5) {
+            let clear = (bodyTop + bodyH) - (fabY - fabR) + _u * 2.0;
+            if (clear > 0.0) { padB = padB + clear; }
+        }
+        if (bk == "listView") { let bn = node.body; bn._fh = bodyH; bn._cPadT = padT; bn._cPadB = padB; }
+        if (bk == "gridView") { let bn = node.body; bn._fh = bodyH; bn._cPadT = padT; bn._cPadB = padB; }
         _paint(node.body, bodyCx, bodyTop + bodyH / 2.0); push(kids, node.body);
     } }
     if (has(node, "appBar")) { if (!isNull(node.appBar)) { _paint(node.appBar, _vw / 2.0, aHTotal / 2.0); push(kids, node.appBar); } }
@@ -1218,20 +1255,12 @@ function _paintScaffold(node) {
         let bn = node.bottomBar; bn._fw = _vw - _saL - _saR;
         _paint(bn, bodyCx, _vh - _saB - _u * 5.5 * _dens); bn._fw = -1.0; push(kids, bn);
     } }
-    if (has(node, "fab")) { if (!isNull(node.fab)) {
-        // M3 places the FAB 16dp from the screen edges, clearing the bottom
-        // navigation bar. On desktop (the dense scale) this is the historical
-        // `_u*9` inset; on phones/tablets the chrome is taller, so lift the FAB to
-        // rest just above the (now ≈80dp) nav bar instead of overlapping it.
-        let fabR = _du() * 4.2;
-        let fabX = _vw - _saR - _u * 9.0; let fabY = _vh - _saB - _u * 9.0;
-        if (isExpanded() < 0.5) {
-            fabX = _vw - _saR - _u * 4.0 - fabR;
-            fabY = _vh - _saB - _u * 4.0 - fabR;
-            if (has(node, "bottomBar")) { if (!isNull(node.bottomBar)) { fabY = _vh - _saB - barH - _u * 4.0 - fabR; } }
-        }
-        _paint(node.fab, fabX, fabY); push(kids, node.fab);
-    } }
+    // M3 places the FAB 16dp from the screen edges, clearing the bottom navigation
+    // bar. On desktop (the dense scale) this is the historical `_u*9` inset; on
+    // phones/tablets the chrome is taller, so the FAB rests just above the (now
+    // ≈80dp) nav bar instead of overlapping it. (Geometry computed above so the
+    // body could reserve scroll clearance beneath it; painted here, last/on top.)
+    if (hasFab > 0.5) { _paint(node.fab, fabX, fabY); push(kids, node.fab); }
     if (has(node, "drawer")) { if (!isNull(node.drawer)) { let dh = _drawerHost(node); _paint(dh, _vw / 2.0, _vh / 2.0); push(kids, dh); } }
     if (has(node, "snackbar")) { if (!isNull(node.snackbar)) { _paint(node.snackbar, _vw / 2.0, _vh / 2.0); push(kids, node.snackbar); } }
     if (has(node, "dialog")) { if (!isNull(node.dialog)) { _paint(node.dialog, _vw / 2.0, _vh / 2.0); push(kids, node.dialog); } }
@@ -1363,6 +1392,22 @@ function _colorRole(name, a) {
 }
 // Left-aligned text: `_paintText` centers on x, so shift by half its width.
 function _paintTextLeft(str, x, cy, cell, col) { _paintText(str, x + _textW(str, cell) / 2.0, cy, cell, col); }
+// Truncate `str` to fit `maxW` px at `cell`, appending an ellipsis — so single-
+// line labels (list tiles, etc.) never spill past their box. (This kit has no
+// per-widget scissor, so an over-long string would otherwise paint right across
+// its neighbours and off the screen edge.)
+function _ellipsize(str, cell, maxW) {
+    if (maxW <= 0.0) { return ""; }
+    if (_textW(str, cell) <= maxW) { return str; }
+    let ell = "..."; let ew = _textW(ell, cell); let n = len(str); let fit = "";
+    for (let i = 0; i < n; i++) {
+        let next = concat(fit, charAt(str, i));
+        if (_textW(next, cell) + ew > maxW) { i = n; } else { fit = next; }
+    }
+    return concat(fit, ell);
+}
+// Left-aligned text clipped to a max width with an ellipsis.
+function _paintTextLeftClip(str, x, cy, cell, col, maxW) { _paintTextLeft(_ellipsize(str, cell, maxW), x, cy, cell, col); }
 // Word-wrapped left-aligned paragraph within `maxW`.
 function _paintWrappedLeft(str, x, y, maxW, cell, col) {
     let words = split(str, " "); let line = ""; let ly = y; let lh = 6.0 * cell + cell * 1.4;
@@ -1456,9 +1501,14 @@ function _paintWrap(node, cx, cy) {
 function _paintListView(node, cx, cy) {
     _beginSelf(node);
     let mz = _measure(node); let hw = mz.w / 2.0; let hh = mz.h / 2.0; let gap = _gapPx(node);
+    // Optional content padding (leading/trailing), e.g. the Scaffold's app-bar /
+    // FAB clearance. It extends the scrollable extent without resizing the viewport.
+    let padT = 0.0; if (has(node, "_cPadT")) { padT = node._cPadT; }
+    let padB = 0.0; if (has(node, "_cPadB")) { padB = node._cPadB; }
     let nc = len(node.children); let total = 0.0;
     for (let i = 0; i < nc; i++) { total = total + _measure(node.children[i]).h; }
     if (nc > 1) { total = total + gap * (nc - 1); }
+    total = total + padT + padB;
     let viewport = mz.h; let maxOff = total - viewport; if (maxOff < 0.0) { maxOff = 0.0; }
     let off = 0.0; if (has(_scroll, node.id)) { off = _scroll[node.id]; }
     if (off > maxOff) { off = maxOff; } if (off < 0.0) { off = 0.0; }
@@ -1466,7 +1516,7 @@ function _paintListView(node, cx, cy) {
     _listRegions[node.id] = { cx: cx, cy: cy, hw: hw, hh: hh, maxOff: maxOff };
     let r = _u * 1.2; if (has(node, "radius")) { r = node.radius * _u; }
     if (has(node, "surface")) { if (node.surface > 0.5) { _rect(cx, cy, hw, hh, r, 0.0, 0.0, _surfaceContainer(1.0), _CLEAR); } }
-    let top = cy - hh - off; let kids = [];
+    let top = cy - hh - off + padT; let kids = [];
     for (let i = 0; i < nc; i++) {
         let ch = node.children[i]; let cm = _measure(ch); let itemCy = top + cm.h / 2.0;
         if (itemCy + cm.h / 2.0 >= cy - hh) { if (itemCy - cm.h / 2.0 <= cy + hh) { _paint(ch, cx, itemCy); push(kids, ch); } }
@@ -1485,13 +1535,15 @@ function _paintGridView(node, cx, cy) {
     let mz = _measure(node); let hw = mz.w / 2.0; let hh = mz.h / 2.0;
     let cols = node.cols; let gap = _gapPx(node); let cellW = (mz.w - gap * (cols - 1)) / cols;
     let cellH = cellW; if (has(node, "cellHeight")) { cellH = node.cellHeight * _u; }
+    let padT = 0.0; if (has(node, "_cPadT")) { padT = node._cPadT; }
+    let padB = 0.0; if (has(node, "_cPadB")) { padB = node._cPadB; }
     let nc = len(node.children); let rows = ceil(num(nc) / cols);
-    let total = rows * cellH + (rows - 1) * gap; let viewport = mz.h;
+    let total = rows * cellH + (rows - 1) * gap + padT + padB; let viewport = mz.h;
     let maxOff = total - viewport; if (maxOff < 0.0) { maxOff = 0.0; }
     let off = 0.0; if (has(_scroll, node.id)) { off = _scroll[node.id]; }
     if (off > maxOff) { off = maxOff; } if (off < 0.0) { off = 0.0; } _scroll[node.id] = off;
     _listRegions[node.id] = { cx: cx, cy: cy, hw: hw, hh: hh, maxOff: maxOff };
-    let left = cx - hw; let top = cy - hh - off; let kids = [];
+    let left = cx - hw; let top = cy - hh - off + padT; let kids = [];
     for (let i = 0; i < nc; i++) {
         let col = i % cols; let row = floor(num(i) / cols);
         let cxi = left + col * (cellW + gap) + cellW / 2.0; let cyi = top + row * (cellH + gap) + cellH / 2.0;
@@ -1575,8 +1627,13 @@ function _paintListTile(node, cx, cy) {
     let tx = cx - hw + _u * 4.0; if (hasLead) { tx = cx - hw + _u * 9.0; }
     let hasSub = has(node, "subtitle");
     let ty = cy; if (hasSub) { ty = cy - _du() * 1.3; }
-    _paintTextLeft(node.title, tx, ty, _cell("body"), _onSurface(1.0));
-    if (hasSub) { _paintTextLeft(node.subtitle, tx, cy + _du() * 1.6, _cell("caption"), _onSurface(0.65)); }
+    // Text runs from `tx` to the tile's right edge, leaving room for the trailing
+    // icon when present; clip it there so a long title/subtitle elides instead of
+    // bleeding past the tile (and off the screen).
+    let txRight = cx + hw - _u * 3.0; if (has(node, "trailing")) { txRight = cx + hw - _u * 7.0; }
+    let textW = txRight - tx;
+    _paintTextLeftClip(node.title, tx, ty, _cell("body"), _onSurface(1.0), textW);
+    if (hasSub) { _paintTextLeftClip(node.subtitle, tx, cy + _du() * 1.6, _cell("caption"), _onSurface(0.65), textW); }
     if (has(node, "trailing")) { _icon(node.trailing, cx + hw - _u * 4.0, cy, _du() * 1.7, _onSurface(0.7)); }
     if (has(node, "onTap")) { _addTap(cx, cy, hw, hh, _idOf(node), node.onTap); }
 }

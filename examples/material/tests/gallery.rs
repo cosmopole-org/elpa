@@ -316,3 +316,49 @@ fn fab_cycles_accent_and_resizes_cleanly() {
     assert!(app.trap_reason().is_none(), "no trap on resize");
     assert!(app.take_log().is_empty(), "no host errors on resize");
 }
+
+#[test]
+fn no_section_overflows_the_screen_horizontally_on_a_phone() {
+    // A width-constrained Row/Column must measure at its constrained width so a
+    // parent that cross-aligns or centres it places it correctly. Before that fix
+    // the layout section's `Row({ width: 88 })` measured at its (all-`Expanded`,
+    // ~zero) intrinsic width, so `Column({ cross: "start" })` mis-centred it and
+    // the full-width row painted ~half a screen off the left edge. Guard every
+    // section on a real compact phone surface: no painted quad's horizontal extent
+    // may run off either screen edge (a small tolerance absorbs icon strokes that
+    // legitimately sit right at the margin).
+    let mut app = Elpa::new_from_js(
+        HeadlessBackend::default(),
+        SurfaceInfo::new(1080, 2340, 3.0), // logical 360x780 -> compact (phone)
+        &elpa_material::gallery_program(),
+    )
+    .expect("SDK + gallery program compiles");
+    app.start();
+    let _ = app.take_log();
+
+    let vw = 1080.0_f32;
+    let tol = 8.0_f32; // px of slack for stroke caps sitting on the margin
+    for section in 0..4 {
+        let inst = instances(&app);
+        let mut i = 0;
+        let (mut min_left, mut max_right) = (f32::MAX, f32::MIN);
+        while i + 4 <= inst.len() {
+            let (cx, hw) = (inst[i], inst[i + 2]);
+            min_left = min_left.min(cx - hw);
+            max_right = max_right.max(cx + hw);
+            i += 16;
+        }
+        assert!(
+            min_left > -tol,
+            "section {section}: a widget overflowed the left screen edge (left={min_left})"
+        );
+        assert!(
+            max_right < vw + tol,
+            "section {section}: a widget overflowed the right screen edge (right={max_right})"
+        );
+        assert!(app.trap_reason().is_none(), "no trap in section {section}");
+        // Advance to the next bottom-nav section.
+        app.send_event(&InputEvent::KeyDown { key: "t".into() });
+    }
+    assert!(app.take_log().is_empty(), "no host errors sweeping the sections");
+}
