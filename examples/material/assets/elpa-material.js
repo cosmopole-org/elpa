@@ -1134,10 +1134,11 @@ function _paintAppBar(node, cx, cy) {
     _rect(_vw / 2.0, cy, _vw / 2.0, cy, 0.0, 0.0, 0.0, _surfaceContainer(1.0), _CLEAR);
     _rect(_vw / 2.0, bot - _u * 0.05, _vw / 2.0, _u * 0.05, 0.0, 0.0, 0.0, _outlineVar(0.8), _CLEAR);
     let onS = _onSurface(1.0); let onSV = _onSurface(0.7);
-    let lineCx = _u * 6.0; let lw = _u * 2.0; let lh = _u * 0.4; let sp = _u * 1.3;
-    _rect(lineCx, cy - sp, lw, lh, lh, 0.0, 0.0, onS, _CLEAR);
-    _rect(lineCx, cy, lw, lh, lh, 0.0, 0.0, onS, _CLEAR);
-    _rect(lineCx, cy + sp, lw, lh, lh, 0.0, 0.0, onS, _CLEAR);
+    // The nav (menu) icon goes through the standard icon set, so its stroke weight,
+    // round caps and proportions match every other icon rather than being a
+    // bespoke set of bars.
+    let lineCx = _u * 6.0;
+    _icon("menu", lineCx, cy, _u * 2.6, onS);
     // Trailing action rendered as a small accent avatar (theme/profile affordance).
     _disc(_vw - _u * 6.0, cy, _u * 2.4, _acc(1.0));
     _paintTextLeft(node.title, _u * 11.0, cy, _cell("title"), onS);
@@ -1165,8 +1166,9 @@ function _paintFab(node, cx, cy) {
     let st = _hover(cx, cy, r, r) * 0.08 + _pressVal("fab") * 0.12;
     _shadow(cx, cy, r, r, rad, _u * 0.4, _u * 1.2, _u * 3.0);
     _rect(cx, cy, r, r, rad, 0.0, 0.0, _brighten(_acc(1.0), st), _CLEAR);
-    _rect(cx, cy, r * 0.42, r * 0.10, r * 0.10, 0.0, 0.0, _onAcc(1.0), _CLEAR);
-    _rect(cx, cy, r * 0.10, r * 0.42, r * 0.10, 0.0, 0.0, _onAcc(1.0), _CLEAR);
+    // The "+" goes through the standard icon set (matching weight/caps/size to the
+    // rest), sized as a ~24dp icon inside the 56dp FAB.
+    _icon("add", cx, cy, r * 0.43, _onAcc(1.0));
     _addTap(cx, cy, r, r, "fab", node.onTap);
 }
 function _paintSwitch(node, cx, cy) {
