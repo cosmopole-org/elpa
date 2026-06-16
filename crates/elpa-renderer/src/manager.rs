@@ -18,6 +18,7 @@ use elpa_protocol::{EncoderCommand, Frame, RenderCommand, RenderPass};
 use crate::backend::GpuBackend;
 use crate::cache::{content_hash, PassCache, ResourceCache};
 use crate::dirty::DirtyTracker;
+use crate::scope::LayerTable;
 
 /// Per-frame work report. The steady-state goal is
 /// `resources_created == 0 && passes_recorded == 0 && !presented`. A frame that
@@ -30,6 +31,13 @@ pub struct FrameStats {
     pub resources_updated: usize,
     pub passes_recorded: usize,
     pub passes_cached: usize,
+    /// Registered **layer** snapshots repainted this frame (a subset of
+    /// `passes_recorded`): an offscreen layer pass whose snapshot was stale.
+    pub layers_repainted: usize,
+    /// Registered **layer** snapshots reused this frame (a subset of
+    /// `passes_cached`): an offscreen layer pass skipped because its snapshot was
+    /// still valid — no GPU work, the resident snapshot texture stands in.
+    pub layers_reused: usize,
     pub presented: bool,
 }
 
@@ -48,6 +56,7 @@ pub struct Renderer<B: GpuBackend> {
     resources: ResourceCache,
     passes: PassCache,
     dirty: DirtyTracker,
+    layers: LayerTable,
 }
 
 impl<B: GpuBackend> Renderer<B> {
@@ -57,6 +66,7 @@ impl<B: GpuBackend> Renderer<B> {
             resources: ResourceCache::new(),
             passes: PassCache::new(),
             dirty: DirtyTracker::new(),
+            layers: LayerTable::new(),
         }
     }
 
@@ -71,10 +81,44 @@ impl<B: GpuBackend> Renderer<B> {
 
     /// Drop all cached pass recordings so every pass re-records next frame. Used
     /// after a surface resize / format change, where cached offscreen textures
-    /// and the prior present are no longer valid.
+    /// and the prior present are no longer valid. Every registered layer snapshot
+    /// is invalidated too — its texture is the wrong size for the new surface.
     pub fn invalidate(&mut self) {
         self.passes = PassCache::new();
+        self.layers.invalidate_all();
         self.dirty.mark_full();
+    }
+
+    // ---- Layer scoping (snapshot control) -----------------------------------
+
+    /// Register an offscreen pass id as an independently-cached **layer**. Its
+    /// snapshot is then reused frame-to-frame (no GPU work) until the program
+    /// calls [`Renderer::invalidate_layer`] — repaints are *explicit*, not driven
+    /// by content hashing. Registering is idempotent; the first appearance after
+    /// registration paints the snapshot once.
+    pub fn register_layer(&mut self, paint_pass_id: &str) {
+        self.layers.register(paint_pass_id);
+    }
+
+    /// Stop treating `paint_pass_id` as a layer (and forget its snapshot state).
+    /// Returns whether it was registered.
+    pub fn unregister_layer(&mut self, paint_pass_id: &str) -> bool {
+        self.layers.unregister(paint_pass_id)
+    }
+
+    /// Mark a registered layer's snapshot stale so its next appearance repaints.
+    pub fn invalidate_layer(&mut self, paint_pass_id: &str) {
+        self.layers.invalidate(paint_pass_id);
+    }
+
+    /// Whether `paint_pass_id` is a registered layer.
+    pub fn is_layer(&self, paint_pass_id: &str) -> bool {
+        self.layers.is_registered(paint_pass_id)
+    }
+
+    /// The layer snapshot table (validity per registered layer).
+    pub fn layers(&self) -> &LayerTable {
+        &self.layers
     }
 
     /// Map one submitted [`Frame`] onto the GPU.
@@ -99,7 +143,24 @@ impl<B: GpuBackend> Renderer<B> {
                     if let (Some(id), false) = (rp.id.as_deref(), rp.targets_surface()) {
                         // Cacheable offscreen pass.
                         live_passes.push(id.to_string());
-                        if self.passes.is_valid(id, hash) {
+                        if self.layers.is_registered(id) {
+                            // Registered layer: snapshot validity is *explicit* —
+                            // reuse the snapshot until the program invalidates it,
+                            // regardless of content hash. This is what lets a layer
+                            // hold its rendered snapshot across frames while the
+                            // rest of the frame changes around it.
+                            if self.layers.is_valid(id) {
+                                stats.passes_cached += 1;
+                                stats.layers_reused += 1;
+                                plan.push(Plan::Skip);
+                            } else {
+                                self.passes.insert(id, hash);
+                                self.layers.mark_painted(id);
+                                frame_dirty = true;
+                                stats.layers_repainted += 1;
+                                plan.push(Plan::RecordRender(i));
+                            }
+                        } else if self.passes.is_valid(id, hash) {
                             stats.passes_cached += 1;
                             plan.push(Plan::Skip);
                         } else {
@@ -360,6 +421,61 @@ mod tests {
         assert_eq!(s.passes_recorded, 2, "scene + surface re-recorded");
         assert!(s.presented);
         assert_eq!(r.backend().last_dirty, vec![Rect::new(0, 0, 800, 600)]);
+    }
+
+    #[test]
+    fn registered_layer_reuses_snapshot_until_explicitly_invalidated() {
+        let mut r = Renderer::new(Mock::default());
+        r.register_layer("scene");
+
+        // Frame 1: layer painted once (snapshot built), surface composited.
+        let s = r.render(&scene_frame(64, Some(Rect::new(0, 0, 800, 600))));
+        assert_eq!(s.layers_repainted, 1);
+        assert_eq!(s.layers_reused, 0);
+        assert!(s.presented);
+
+        // Frame 2: even though we re-emit an *identical* layer pass, an unchanged
+        // hash is irrelevant — the snapshot is explicitly valid, so it is reused.
+        let s = r.render(&scene_frame(64, Some(Rect::new(0, 0, 800, 600))));
+        assert_eq!(s.layers_reused, 1, "snapshot reused with no record");
+        assert_eq!(s.passes_recorded, 0);
+
+        // Frame 3: changing the buffer would normally invalidate a content-hashed
+        // pass — but a *layer* ignores content, so the snapshot is still reused.
+        let s = r.render(&scene_frame(128, Some(Rect::new(0, 0, 800, 600))));
+        assert_eq!(s.layers_reused, 1, "explicit-only: content change does not repaint a layer");
+        assert_eq!(s.layers_repainted, 0);
+
+        // Now invalidate explicitly: the next frame repaints the snapshot.
+        r.invalidate_layer("scene");
+        let s = r.render(&scene_frame(128, Some(Rect::new(0, 0, 800, 600))));
+        assert_eq!(s.layers_repainted, 1, "explicit invalidation repaints");
+        assert!(s.presented);
+    }
+
+    #[test]
+    fn invalidate_forces_all_layers_to_repaint() {
+        let mut r = Renderer::new(Mock::default());
+        r.register_layer("scene");
+        r.render(&scene_frame(64, Some(Rect::new(0, 0, 800, 600))));
+        // Reused in steady state.
+        assert_eq!(r.render(&scene_frame(64, Some(Rect::new(0, 0, 800, 600)))).layers_reused, 1);
+        // A full invalidate (e.g. resize) forces a repaint.
+        r.invalidate();
+        let s = r.render(&scene_frame(64, Some(Rect::new(0, 0, 800, 600))));
+        assert_eq!(s.layers_repainted, 1);
+    }
+
+    #[test]
+    fn unregistering_a_layer_restores_content_hash_caching() {
+        let mut r = Renderer::new(Mock::default());
+        r.register_layer("scene");
+        r.render(&scene_frame(64, Some(Rect::new(0, 0, 800, 600))));
+        assert!(r.unregister_layer("scene"));
+        // No longer a layer: an identical re-submit is a normal content-hash hit.
+        let s = r.render(&scene_frame(64, Some(Rect::new(0, 0, 800, 600))));
+        assert_eq!(s.layers_reused, 0);
+        assert_eq!(s.passes_cached, 1, "back to ordinary pass caching");
     }
 
     #[test]

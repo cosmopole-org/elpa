@@ -44,9 +44,9 @@ pub use headless::HeadlessBackend;
 pub use surface::{Insets, SurfaceInfo};
 
 // Re-export the core types a host/example needs.
-pub use elpa_protocol::{self as protocol, Definition, DefinitionBody, Frame};
+pub use elpa_protocol::{self as protocol, Definition, DefinitionBody, Frame, Layer};
 pub use elpa_renderer::{FrameStats, GpuBackend, Renderer};
-pub use elpa_runtime::DefinitionStore;
+pub use elpa_runtime::{DefinitionStore, LayerStore, ScopeStats};
 
 #[cfg(feature = "wgpu")]
 pub use elpa_renderer::wgpu_backend::WgpuBackend;
@@ -55,8 +55,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use elpa_runtime::{
-    definition_from_define, frame_from_submit, import_request, reply_json, reply_null,
-    undefine_target, HostEnv, Runtime, Start,
+    definition_from_define, frame_from_submit, import_request, layer_from_define, reply_json,
+    reply_null, scope_target, undefine_target, HostEnv, Runtime, Start,
 };
 
 // Re-export the instance-governance surface so a host can cap, gate, and steer
@@ -91,6 +91,12 @@ pub struct Elpa<B: GpuBackend> {
     /// Registered reusable drawing definitions (the `gpu.define` store). Submitted
     /// frames are expanded against this before they reach the renderer.
     defs: DefinitionStore,
+    /// Registered rendering layers / scopes (the `scope.define` store). Submitted
+    /// frames are expanded against this — painting stale snapshots and reusing
+    /// valid ones — before definition expansion and rendering.
+    layers: LayerStore,
+    /// Layer expansion report for the most recent submitted frame.
+    scope_stats: ScopeStats,
     /// Bundled external Elpian modules, keyed by the `source` string `vm.import`
     /// references (e.g. a project asset path). Populated by the embedder.
     assets: HashMap<String, String>,
@@ -133,6 +139,8 @@ impl<B: GpuBackend> Elpa<B> {
             last_stats: FrameStats::default(),
             log: Vec::new(),
             defs: DefinitionStore::new(),
+            layers: LayerStore::new(),
+            scope_stats: ScopeStats::default(),
             assets: HashMap::new(),
             fetcher: None,
             env: HostEnv::default(),
@@ -165,8 +173,10 @@ impl<B: GpuBackend> Elpa<B> {
     }
     /// Resume a paused VM, servicing any host calls it makes as it continues.
     pub fn resume(&mut self) {
-        let Elpa { runtime, renderer, surface, last_frame, last_stats, log, defs, assets, fetcher, env } =
-            self;
+        let Elpa {
+            runtime, renderer, surface, last_frame, last_stats, log, defs, layers, scope_stats,
+            assets, fetcher, env,
+        } = self;
         let mid = runtime.machine_id().to_string();
         let mut result = elpian_vm::api::resume_execution(mid.clone());
         loop {
@@ -175,7 +185,8 @@ impl<B: GpuBackend> Elpa<B> {
             }
             let reply = match elpa_protocol::HostCall::parse(&result.host_call_data) {
                 Ok(hc) => handle_call(
-                    &hc, renderer, surface, last_frame, last_stats, log, defs, assets, fetcher, env,
+                    &hc, renderer, surface, last_frame, last_stats, log, defs, layers, scope_stats,
+                    assets, fetcher, env,
                 ),
                 Err(_) => reply_null(),
             };
@@ -235,6 +246,48 @@ impl<B: GpuBackend> Elpa<B> {
         &self.defs
     }
 
+    // ---- Scoping / layers (the same stores the `scope.*` host calls write) ---
+
+    /// Declare a rendering **layer / scope** directly from the Rust host (the
+    /// same store the `scope.define` host call writes to). The layer paints into
+    /// its own offscreen snapshot texture, which is reused frame-to-frame until
+    /// invalidated; a frame composites it by sampling [`Layer::texture_id`]. Also
+    /// registers the layer's paint pass with the renderer so its snapshot is
+    /// snapshot-controlled (reused until [`Elpa::invalidate_layer`]).
+    pub fn define_layer(&mut self, layer: Layer) {
+        self.renderer.register_layer(&layer.paint_pass_id());
+        self.layers.declare(layer);
+    }
+
+    /// Mark a layer's snapshot stale so its next use repaints (in both the host
+    /// layer store and the renderer's snapshot table, which stay in lock-step).
+    /// Returns whether a layer with that id was registered.
+    pub fn invalidate_layer(&mut self, id: &str) -> bool {
+        if let Some(pass) = self.layers.paint_pass_id(id) {
+            self.renderer.invalidate_layer(&pass);
+        }
+        self.layers.invalidate(id)
+    }
+
+    /// Release a layer and its snapshot. Returns whether one was present.
+    pub fn release_layer(&mut self, id: &str) -> bool {
+        if let Some(pass) = self.layers.paint_pass_id(id) {
+            self.renderer.unregister_layer(&pass);
+        }
+        self.layers.release(id)
+    }
+
+    /// The current layer store (count/lookup/validity of registered scopes).
+    pub fn layers(&self) -> &LayerStore {
+        &self.layers
+    }
+
+    /// Layer-expansion report for the most recent submitted frame (snapshots
+    /// repainted vs. reused).
+    pub fn last_scope_stats(&self) -> &ScopeStats {
+        &self.scope_stats
+    }
+
     /// Import and run an Elpian module directly from the host, registering
     /// whatever definitions it declares. The `source` may be either Elpian AST
     /// JSON or **JavaScript** source — it is compiled through whichever front-end
@@ -242,13 +295,15 @@ impl<B: GpuBackend> Elpa<B> {
     /// module. Returns whether the module compiled.
     pub fn import_ast(&mut self, ast_json: &str) -> bool {
         let id = format!("elpa-import-{}", IMPORT_COUNTER.fetch_add(1, Ordering::Relaxed));
-        let Elpa { renderer, surface, last_frame, last_stats, log, defs, assets, fetcher, env, .. } =
-            self;
+        let Elpa {
+            renderer, surface, last_frame, last_stats, log, defs, layers, scope_stats, assets,
+            fetcher, env, ..
+        } = self;
         match runtime_from_source(id, ast_json) {
             Some(mut rt) => {
                 pump_vm(
                     &mut rt, Start::Main, renderer, surface, last_frame, last_stats, log, defs,
-                    assets, fetcher, env,
+                    layers, scope_stats, assets, fetcher, env,
                 );
                 rt.dispose();
                 true
@@ -286,6 +341,9 @@ impl<B: GpuBackend> Elpa<B> {
         let insets = self.surface.insets;
         self.surface = SurfaceInfo::new(width, height, scale_factor).with_insets(insets);
         self.renderer.invalidate();
+        // The snapshot textures are sized to the old surface; force every layer to
+        // repaint at the new size (the renderer's table is reset by `invalidate`).
+        self.layers.invalidate_all();
         let input = self.surface.to_json().to_string();
         self.drive(Start::Func { name: "onResize", input: &input });
     }
@@ -337,11 +395,12 @@ impl<B: GpuBackend> Elpa<B> {
     fn drive(&mut self, start: Start) {
         // Disjoint borrows of the instance's fields for the dispatch closure.
         let Elpa {
-            runtime, renderer, surface, last_frame, last_stats, log, defs, assets, fetcher, env,
+            runtime, renderer, surface, last_frame, last_stats, log, defs, layers, scope_stats,
+            assets, fetcher, env,
         } = self;
         pump_vm(
-            runtime, start, renderer, surface, last_frame, last_stats, log, defs, assets, fetcher,
-            env,
+            runtime, start, renderer, surface, last_frame, last_stats, log, defs, layers,
+            scope_stats, assets, fetcher, env,
         );
     }
 }
@@ -372,12 +431,17 @@ fn pump_vm<B: GpuBackend>(
     last_stats: &mut FrameStats,
     log: &mut Vec<String>,
     defs: &mut DefinitionStore,
+    layers: &mut LayerStore,
+    scope_stats: &mut ScopeStats,
     assets: &HashMap<String, String>,
     fetcher: &Option<AssetFetcher>,
     env: &mut HostEnv,
 ) {
     rt.pump(start, |hc| {
-        handle_call(hc, renderer, surface, last_frame, last_stats, log, defs, assets, fetcher, env)
+        handle_call(
+            hc, renderer, surface, last_frame, last_stats, log, defs, layers, scope_stats, assets,
+            fetcher, env,
+        )
     });
 }
 
@@ -399,6 +463,8 @@ fn handle_call<B: GpuBackend>(
     last_stats: &mut FrameStats,
     log: &mut Vec<String>,
     defs: &mut DefinitionStore,
+    layers: &mut LayerStore,
+    scope_stats: &mut ScopeStats,
     assets: &HashMap<String, String>,
     fetcher: &Option<AssetFetcher>,
     env: &mut HostEnv,
@@ -412,7 +478,13 @@ fn handle_call<B: GpuBackend>(
     match hc.api_name.as_str() {
         "gpu.submit" => {
             if let Some(frame) = frame_from_submit(hc) {
-                match defs.expand(frame) {
+                // Two-stage host expansion before rendering: first resolve scope
+                // `useLayer` references (painting stale snapshots, reusing valid
+                // ones), then resolve drawing `useDefinition` references in the
+                // result. The renderer thus sees a flat, self-contained frame.
+                let (scoped, sstats) = layers.expand_layers(frame);
+                *scope_stats = sstats;
+                match defs.expand(scoped) {
                     Ok(flat) => {
                         *last_stats = renderer.render(&flat);
                         *last_frame = Some(flat);
@@ -434,6 +506,38 @@ fn handle_call<B: GpuBackend>(
             }
             reply_null()
         }
+        // ---- Scoping / layer-based rendering (the scope.* API) --------------
+        "scope.define" => {
+            if let Some(layer) = layer_from_define(hc) {
+                // Register the paint pass with the renderer so its snapshot is
+                // snapshot-controlled, then store the layer (which starts dirty,
+                // so its first use paints the snapshot once).
+                renderer.register_layer(&layer.paint_pass_id());
+                layers.declare(layer);
+            }
+            reply_null()
+        }
+        "scope.invalidate" => {
+            if let Some(id) = scope_target(hc) {
+                // Invalidate in lock-step: the host re-splices the paint passes on
+                // the next use, and the renderer re-records the snapshot when it
+                // sees them (its table would otherwise still consider it valid).
+                if let Some(pass) = layers.paint_pass_id(&id) {
+                    renderer.invalidate_layer(&pass);
+                }
+                layers.invalidate(&id);
+            }
+            reply_null()
+        }
+        "scope.release" => {
+            if let Some(id) = scope_target(hc) {
+                if let Some(pass) = layers.paint_pass_id(&id) {
+                    renderer.unregister_layer(&pass);
+                }
+                layers.release(&id);
+            }
+            reply_null()
+        }
         "vm.import" => {
             if let Some(req) = import_request(hc) {
                 match resolve_module(&req, assets, fetcher) {
@@ -444,7 +548,7 @@ fn handle_call<B: GpuBackend>(
                             Some(mut rt) => {
                                 pump_vm(
                                     &mut rt, Start::Main, renderer, surface, last_frame, last_stats,
-                                    log, defs, assets, fetcher, env,
+                                    log, defs, layers, scope_stats, assets, fetcher, env,
                                 );
                                 rt.dispose();
                             }
@@ -750,5 +854,122 @@ mod tests {
         });
         app.start();
         assert!(app.definitions().contains("net"), "fetched module registered its shape");
+    }
+
+    // ---- Scoping / layer-based rendering -------------------------------------
+
+    /// A program whose `onEvent`/top-level body submits a frame that uses a layer
+    /// (`useLayer`) and then composites with a surface pass. The host defines the
+    /// layer from Rust (the `scope.define` path is covered by `runtime` tests).
+    fn layer_using_frame() -> serde_json::Value {
+        obj(json!({
+            "commands": arr(vec![
+                obj(json!({ "op": s("useLayer"), "layer": s("drawer") })),
+                obj(json!({
+                    "op": s("renderPass"), "id": s("composite"),
+                    "color_attachments": arr(vec![ obj(json!({ "view": obj(json!({ "kind": s("surface") })) })) ]),
+                    "commands": arr(vec![ obj(json!({ "cmd": s("draw"), "vertex_count": i(6) })) ])
+                })),
+            ])
+        }))
+    }
+
+    /// A drawer layer whose paint pass renders one draw into its snapshot texture.
+    fn drawer_layer() -> Layer {
+        use protocol::command::{ColorAttachment, RenderPass, TargetView};
+        use protocol::resource::BufferDesc;
+        use protocol::RenderCommand;
+        Layer {
+            id: "drawer".into(),
+            width: 800,
+            height: 600,
+            format: protocol::scope::default_layer_format(),
+            clear_color: None,
+            resources: vec![protocol::ResourceDesc::Buffer(BufferDesc::new(
+                "drawerInst",
+                64,
+                vec!["VERTEX".into(), "COPY_DST".into()],
+            ))],
+            commands: vec![protocol::EncoderCommand::RenderPass(RenderPass {
+                id: Some("elpa.layer.drawer.paint".into()),
+                color_attachments: vec![ColorAttachment {
+                    view: TargetView::Texture { texture: "elpa.layer.drawer.tex".into() },
+                    resolve_target: None,
+                    load: "clear".into(),
+                    store: true,
+                    clear_color: None,
+                }],
+                depth_stencil: None,
+                commands: vec![RenderCommand::Draw {
+                    vertex_count: 6,
+                    instance_count: 1,
+                    first_vertex: 0,
+                    first_instance: 0,
+                }],
+            })],
+        }
+    }
+
+    #[test]
+    fn layer_paints_once_then_reuses_snapshot_until_invalidated() {
+        // The app submits the same layer-using frame on start and on each event.
+        let submit = host_call("gpu.submit", vec![layer_using_frame()]);
+        let program = json!({
+            "type": "program",
+            "body": [
+                submit.clone(),
+                { "type": "functionDefinition", "data": {
+                    "name": "onEvent", "params": ["e"], "body": [ submit ] } }
+            ]
+        })
+        .to_string();
+
+        let mut app =
+            Elpa::new(HeadlessBackend::default(), SurfaceInfo::new(800, 600, 1.0), &program).unwrap();
+        app.define_layer(drawer_layer());
+        assert_eq!(app.layers().len(), 1);
+
+        // Start: snapshot stale -> the layer is painted (its paint pass recorded)
+        // and the surface composited. The realized frame carries the snapshot
+        // texture, the painting resource, the paint pass and the composite pass.
+        app.start();
+        assert_eq!(app.last_scope_stats().layers_repainted, 1);
+        assert_eq!(app.last_stats().layers_repainted, 1, "renderer recorded the snapshot");
+        let frame = app.last_frame().unwrap();
+        assert!(frame.resources.iter().any(|r| r.id() == "elpa.layer.drawer.tex"));
+        assert!(frame.resources.iter().any(|r| r.id() == "drawerInst"));
+        assert!(frame.commands.iter().any(|c| matches!(c,
+            protocol::EncoderCommand::RenderPass(rp) if rp.id.as_deref() == Some("elpa.layer.drawer.paint"))));
+
+        // An event re-submits the identical frame: the snapshot is *reused* — the
+        // paint pass is omitted, the painting resource is gone, but the snapshot
+        // texture is still declared (kept resident) for compositing.
+        app.send_event(&InputEvent::PointerDown { x: 1.0, y: 1.0, button: 0 });
+        assert_eq!(app.last_scope_stats().layers_reused, 1);
+        assert_eq!(app.last_scope_stats().layers_repainted, 0);
+        let frame = app.last_frame().unwrap();
+        assert!(frame.resources.iter().any(|r| r.id() == "elpa.layer.drawer.tex"), "snapshot resident");
+        assert!(!frame.resources.iter().any(|r| r.id() == "drawerInst"), "no painting cost when reused");
+        assert!(!frame.commands.iter().any(|c| matches!(c,
+            protocol::EncoderCommand::RenderPass(rp) if rp.id.as_deref() == Some("elpa.layer.drawer.paint"))),
+            "paint pass omitted when snapshot reused");
+
+        // Explicit invalidation makes the next submit repaint the snapshot.
+        app.invalidate_layer("drawer");
+        app.send_event(&InputEvent::PointerDown { x: 2.0, y: 2.0, button: 0 });
+        assert_eq!(app.last_scope_stats().layers_repainted, 1, "invalidation forces a repaint");
+        assert_eq!(app.last_stats().layers_repainted, 1, "renderer repainted in lock-step");
+    }
+
+    #[test]
+    fn releasing_a_layer_drops_it_from_both_stores() {
+        let mut app =
+            Elpa::new(HeadlessBackend::default(), SurfaceInfo::new(8, 8, 1.0), &app_ast()).unwrap();
+        app.define_layer(drawer_layer());
+        assert!(app.layers().contains("drawer"));
+        assert!(app.renderer().is_layer("elpa.layer.drawer.paint"));
+        assert!(app.release_layer("drawer"));
+        assert!(!app.layers().contains("drawer"));
+        assert!(!app.renderer().is_layer("elpa.layer.drawer.paint"));
     }
 }

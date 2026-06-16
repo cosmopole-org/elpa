@@ -55,6 +55,14 @@ pub enum EncoderCommand {
     /// rendering — the renderer never sees this variant. Lets one frame
     /// reference a whole reusable scene (passes/copies) by id.
     UseDefinition { definition: String },
+    /// Paint or reuse a registered [`Layer`](crate::Layer)'s snapshot. Resolved
+    /// by the host's layer store *before* rendering — the renderer never sees
+    /// this variant. If the layer's snapshot is stale it expands to the layer's
+    /// painting passes (repainting the snapshot texture); if the snapshot is
+    /// still valid it expands to *nothing* — the resident snapshot texture is
+    /// reused and the VM never re-ran the layer's drawing. Either way the layer's
+    /// snapshot texture is kept resident for the compositing pass to sample.
+    UseLayer { layer: String },
     CopyBufferToBuffer {
         src: ResourceId,
         src_offset: u64,

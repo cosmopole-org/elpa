@@ -23,6 +23,7 @@ pub mod backend;
 pub mod cache;
 pub mod dirty;
 pub mod manager;
+pub mod scope;
 
 #[cfg(feature = "wgpu-backend")]
 pub mod wgpu_backend;
@@ -31,3 +32,4 @@ pub use backend::GpuBackend;
 pub use cache::{content_hash, PassCache, ResourceCache};
 pub use dirty::DirtyTracker;
 pub use manager::{FrameStats, Renderer};
+pub use scope::LayerTable;
