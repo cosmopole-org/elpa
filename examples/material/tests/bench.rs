@@ -50,11 +50,7 @@ fn bench_material_end_to_end() {
     let first_paint = t.elapsed();
     let inst = app.last_frame().map(|f| {
         f.resources.iter().filter_map(|r| match r {
-            elpa::protocol::ResourceDesc::Buffer(b)
-                if b.id.starts_with("elpa.layer.") && b.id.ends_with(".inst") =>
-            {
-                b.data_f32.as_ref().map(|d| d.len() / 16)
-            }
+            elpa::protocol::ResourceDesc::Buffer(b) if b.id == "elpa.m3.inst" => b.data_f32.as_ref().map(|d| d.len() / 16),
             _ => None,
         }).sum::<usize>()
     }).unwrap_or(0);

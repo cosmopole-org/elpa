@@ -3,19 +3,8 @@ use elpa::{Elpa, HeadlessBackend, SurfaceInfo};
 
 fn inst(app: &Elpa<HeadlessBackend>) -> Vec<f32> {
     let f = app.last_frame().unwrap();
-    // The layered SDK buckets geometry into per-scope snapshot buffers; aggregate
-    // them (z-order) into the full instance stream the assertions expect.
-    let mut out = Vec::new();
-    for scope in ["body", "chrome", "drawer", "overlay", "root"] {
-        let id = format!("elpa.layer.{scope}.inst");
-        if let Some(d) = f.resources.iter().find_map(|r| match r {
-            ResourceDesc::Buffer(b) if b.id == id => b.data_f32.clone(),
-            _ => None,
-        }) {
-            out.extend(d);
-        }
-    }
-    out
+    f.resources.iter().find_map(|r| match r {
+        ResourceDesc::Buffer(b) if b.id=="elpa.m3.inst" => b.data_f32.clone(), _=>None }).unwrap()
 }
 
 fn run(app_js: &str) -> Elpa<HeadlessBackend> {

@@ -100,11 +100,18 @@ the program drives directly through the renderer's layer system:
   sampling each snapshot (`elpa.layer.<id>.tex`) in a surface pass.
 
 This lets a region repaint in isolation while everything around it holds its
-snapshot: a navigation drawer slides open while the body behind it is never
-re-rendered, or the body scrolls while the chrome around it stays cached, with the
-layers merged into the final frame by a cheap per-layer composite. The Material
-SDK (`examples/material`) builds exactly this — its scaffold decouples the body,
-chrome, drawer and overlays into separate snapshot layers — as the worked example.
+snapshot — a heavy 3D scene behind a moving HUD, a large static map under an
+overlay, a chart that updates once a second — with the layers merged into the
+final frame by a cheap per-layer composite.
+
+> **Use it where it pays.** Layering wins when a region is **expensive to render
+> and changes rarely**: the snapshot then saves real per-frame GPU work. It is the
+> wrong tool for a region that is already cheap to draw — compositing a snapshot
+> (an offscreen target + a full-screen blit) costs more than just re-issuing a few
+> draws. The Material kit (`examples/material`) deliberately stays **single-pass**
+> (it draws the whole UI as one instanced rounded-rect pass); an experiment that
+> layered it measured ~3× *slower*, so the kit does not use scopes. The scope API
+> is proven end-to-end by the `crates/elpa` tests instead.
 
 ## Build & test
 
