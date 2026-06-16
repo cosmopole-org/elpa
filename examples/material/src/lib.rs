@@ -10,8 +10,9 @@
 //! * [`MODULE_JS`] — **the SDK**. A widget framework: the rounded-rect SDF
 //!   pipeline, a glyph font (digits + symbols) and vector icon set, a responsive
 //!   layout coordinator, the per-widget M3 colors/sizes, ~50 widget constructors
-//!   spanning layout (`Container`, `Padding`, `Center`, `Stack`/`Positioned`,
-//!   `Wrap`, `ListView`, `GridView`, `Expanded`, …), the Material catalog
+//!   spanning layout (`Container`, `Padding`, `SafeArea`, `Center`,
+//!   `Stack`/`Positioned`, `Wrap`, `ListView`, `GridView`, `Expanded`, …),
+//!   the Material catalog
 //!   (`Scaffold`, `AppBar`, `TextField`, `IconButton`, `ListTile`, `Tabs`,
 //!   `NavigationBar`, `SegmentedButton`, `ExpansionTile`, `Drawer`, `Dialog`,
 //!   `Snackbar`, …), content/charts (`DataTable`, `BarChart`, `LineChart`,

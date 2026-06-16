@@ -192,6 +192,7 @@ let _lw = 1.0; let _lh = 1.0;                 // logical (dp/CSS) viewport size
 let _class = 2;                               // M3 window size class: 0 compact, 1 medium, 2 expanded
 let _type = 1.0;                              // responsive type scale (larger on small screens)
 let _dens = 1.0;                              // responsive chrome density (taller bars on phones)
+let _saT = 0.0; let _saR = 0.0; let _saB = 0.0; let _saL = 0.0; // safe-area insets (physical px): status bar, nav/gesture bar, cutouts
 let _root = 0;                                 // root component node
 let _NULL = { kind: "null" };                  // tree-root sentinel parent
 let _curOut = []; let _curTaps = []; let _curDrags = [];  // paint targets
@@ -339,6 +340,13 @@ function Divider(p) { p.kind = "divider"; return p; }
 // A decorated box: optional fixed width/height, padding, fill, border, radius.
 function Container(p) { p.kind = "container"; return p; }
 function Padding(p) { p.kind = "padding"; return p; }
+// Insets its child by the platform safe-area (status bar / nav bar / cutouts) so
+// content is never hidden behind system UI — the analog of Flutter's `SafeArea`.
+// Per-edge opt-out with numeric flags `top`/`right`/`bottom`/`left` (1 keep on,
+// default; 0 ignore that edge). The Scaffold already applies this to its chrome,
+// so this is for body content laid out outside a Scaffold (e.g. a full-bleed
+// custom screen).
+function SafeArea(p) { p.kind = "safeArea"; return p; }
 function Center(p) { p.kind = "center"; return p; }
 function Align(p) { p.kind = "align"; return p; }
 function SizedBox(p) { p.kind = "sizedBox"; return p; }
@@ -389,6 +397,19 @@ function _padOf(node) {
     if (has(node, "padT")) { t = node.padT; }
     if (has(node, "padB")) { b = node.padB; }
     return { l: l * _u, r: r * _u, t: t * _u, b: b * _u };
+}
+
+// The active safe-area insets for a SafeArea node, in physical px (the same unit
+// `_padOf` returns, so `_paintBox` consumes either uniformly). Any edge whose
+// numeric flag is set to 0 is dropped, so e.g. `SafeArea({ bottom: 0.0, child })`
+// guards only the top/sides and lets content run to the bottom edge.
+function _safeInsets(node) {
+    let t = _saT; let r = _saR; let b = _saB; let l = _saL;
+    if (has(node, "top")) { if (node.top < 0.5) { t = 0.0; } }
+    if (has(node, "right")) { if (node.right < 0.5) { r = 0.0; } }
+    if (has(node, "bottom")) { if (node.bottom < 0.5) { b = 0.0; } }
+    if (has(node, "left")) { if (node.left < 0.5) { l = 0.0; } }
+    return { l: l, r: r, t: t, b: b };
 }
 
 // --------------------------------------------------------- color system -------
@@ -829,6 +850,10 @@ function _measureKind(node) {
         let m = { w: 0.0, h: 0.0 }; if (has(node, "child")) { m = _measure(node.child); }
         let pad = _padOf(node); return { w: m.w + pad.l + pad.r, h: m.h + pad.t + pad.b };
     }
+    if (k == "safeArea") {
+        let m = { w: 0.0, h: 0.0 }; if (has(node, "child")) { m = _measure(node.child); }
+        let pad = _safeInsets(node); return { w: m.w + pad.l + pad.r, h: m.h + pad.t + pad.b };
+    }
     if (k == "center") { return _sizedOuter(node); }
     if (k == "align") { return _sizedOuter(node); }
     if (k == "sizedBox") { return _sizedOuter(node); }
@@ -996,6 +1021,7 @@ function _paint(node, cx, cy) {
     if (k == "scaffold") { _paintScaffold(node); return 0; }
     if (k == "container") { _paintContainer(node, cx, cy); return 0; }
     if (k == "padding") { _paintBox(node, cx, cy, _padOf(node)); return 0; }
+    if (k == "safeArea") { _paintBox(node, cx, cy, _safeInsets(node)); return 0; }
     if (k == "center") { _paintCenter(node, cx, cy); return 0; }
     if (k == "align") { _paintAlign(node, cx, cy); return 0; }
     if (k == "sizedBox") { _paintCenter(node, cx, cy); return 0; }
@@ -1127,7 +1153,18 @@ function _paintCard(node, cx, cy) {
 }
 function _paintScaffold(node) {
     _beginSelf(node);
-    let aH = _u * 10.0 * _dens;
+    let aH = _u * 10.0 * _dens;        // app bar content height (below the status bar)
+    let aHTotal = aH + _saT;           // ...the bar's surface also spans the status bar
+    let barH = _u * 11.0 * _dens;      // bottom navigation bar height
+    // Horizontal safe area (landscape cutouts / side gesture areas): centre the
+    // content column inside the unreserved span. Collapses to _vw/2 with no insets.
+    let bodyCx = _saL + (_vw - _saL - _saR) / 2.0;
+    // Carry the navigation bar's surface down through the bottom (gesture) inset
+    // so the bar reads as reaching the screen edge rather than floating above a
+    // strip of background. Drawn into the scaffold's own (behind-children) buffer.
+    if (_saB > 0.0) { if (has(node, "bottomBar")) { if (!isNull(node.bottomBar)) {
+        _rect(_vw / 2.0, _vh - _saB / 2.0, _vw / 2.0, _saB / 2.0, 0.0, 0.0, 0.0, _surfaceContainer(1.0), _CLEAR);
+    } } }
     if (has(node, "onKey")) { _keyHandler = node.onKey; _hasKey = 1.0; }
     let kids = [];
     // Paint the body first so the top app bar and bottom navigation draw *over*
@@ -1135,8 +1172,10 @@ function _paintScaffold(node) {
     // that extend past the viewport edges are covered by the bars (M3 also layers
     // the app bar above scrolling content) instead of bleeding across them.
     if (has(node, "body")) { if (!isNull(node.body)) {
-        let bodyTop = aH; let bodyH = _vh - aH;
-        if (has(node, "bottomBar")) { bodyH = bodyH - _u * 11.0 * _dens; }
+        // Body lives below the (inset-extended) app bar and above the bottom inset,
+        // minus the navigation bar when present.
+        let bodyTop = aHTotal; let bodyH = _vh - aHTotal - _saB;
+        if (has(node, "bottomBar")) { bodyH = bodyH - barH; }
         // A scrollable body fills the whole body region (tight vertical constraint)
         // so its viewport adapts to the screen — no fixed-height list stranded in a
         // sea of whitespace on tall phones, no overflow on short ones. Other body
@@ -1144,11 +1183,11 @@ function _paintScaffold(node) {
         let bk = node.body.kind;
         if (bk == "listView") { let bn = node.body; bn._fh = bodyH; }
         if (bk == "gridView") { let bn = node.body; bn._fh = bodyH; }
-        _paint(node.body, _vw / 2.0, bodyTop + bodyH / 2.0); push(kids, node.body);
+        _paint(node.body, bodyCx, bodyTop + bodyH / 2.0); push(kids, node.body);
     } }
-    if (has(node, "appBar")) { if (!isNull(node.appBar)) { _paint(node.appBar, _vw / 2.0, aH / 2.0); push(kids, node.appBar); } }
-    if (has(node, "bottomBar")) { if (!isNull(node.bottomBar)) { _paint(node.bottomBar, _vw / 2.0, _vh - _u * 5.5 * _dens); push(kids, node.bottomBar); } }
-    if (has(node, "fab")) { if (!isNull(node.fab)) { _paint(node.fab, _vw - _u * 9.0, _vh - _u * 9.0); push(kids, node.fab); } }
+    if (has(node, "appBar")) { if (!isNull(node.appBar)) { _paint(node.appBar, _vw / 2.0, aHTotal / 2.0); push(kids, node.appBar); } }
+    if (has(node, "bottomBar")) { if (!isNull(node.bottomBar)) { _paint(node.bottomBar, bodyCx, _vh - _saB - _u * 5.5 * _dens); push(kids, node.bottomBar); } }
+    if (has(node, "fab")) { if (!isNull(node.fab)) { _paint(node.fab, _vw - _saR - _u * 9.0, _vh - _saB - _u * 9.0); push(kids, node.fab); } }
     if (has(node, "drawer")) { if (!isNull(node.drawer)) { _paint(node.drawer, _vw / 2.0, _vh / 2.0); push(kids, node.drawer); } }
     if (has(node, "snackbar")) { if (!isNull(node.snackbar)) { _paint(node.snackbar, _vw / 2.0, _vh / 2.0); push(kids, node.snackbar); } }
     if (has(node, "dialog")) { if (!isNull(node.dialog)) { _paint(node.dialog, _vw / 2.0, _vh / 2.0); push(kids, node.dialog); } }
@@ -1163,16 +1202,21 @@ function _paintAppBar(node, cx, cy) {
     _rect(_vw / 2.0, cy, _vw / 2.0, cy, 0.0, 0.0, 0.0, _surfaceContainer(1.0), _CLEAR);
     _rect(_vw / 2.0, bot - _u * 0.05, _vw / 2.0, _u * 0.05, 0.0, 0.0, 0.0, _outlineVar(0.8), _CLEAR);
     let onS = _onSurface(1.0); let onSV = _onSurface(0.7);
+    // The bar's surface spans the status bar, but its controls sit in the region
+    // *below* it (and clear of side cutouts), so the system clock/icons never
+    // overlap the title or actions. With no insets `ccy` is the bar centre.
+    let ccy = _saT + (bot - _saT) / 2.0;
     // The nav (menu) icon goes through the standard icon set, so its stroke weight,
     // round caps and proportions match every other icon rather than being a
     // bespoke set of bars.
-    let lineCx = _u * 6.0;
-    _icon("menu", lineCx, cy, _u * 2.6, onS);
+    let lineCx = _saL + _u * 6.0;
+    _icon("menu", lineCx, ccy, _u * 2.6, onS);
     // Trailing action rendered as a small accent avatar (theme/profile affordance).
-    _disc(_vw - _u * 6.0, cy, _u * 2.4, _acc(1.0));
-    _paintTextLeft(node.title, _u * 11.0, cy, _cell("title"), onS);
-    if (has(node, "onMenu")) { _addTap(lineCx, cy, _u * 3.0, _u * 3.0, "appMenu", node.onMenu); }
-    if (has(node, "onAction")) { _addTap(_vw - _u * 6.0, cy, _u * 3.0, _u * 3.0, "appAction", node.onAction); }
+    let actCx = _vw - _saR - _u * 6.0;
+    _disc(actCx, ccy, _u * 2.4, _acc(1.0));
+    _paintTextLeft(node.title, _saL + _u * 11.0, ccy, _cell("title"), onS);
+    if (has(node, "onMenu")) { _addTap(lineCx, ccy, _u * 3.0, _u * 3.0, "appMenu", node.onMenu); }
+    if (has(node, "onAction")) { _addTap(actCx, ccy, _u * 3.0, _u * 3.0, "appAction", node.onAction); }
 }
 // M3 filled button: a fully-rounded accent pill at *elevation 0* (no drop shadow
 // — that was a Material 2 trait); hover/press add a tonal state layer.
@@ -1824,6 +1868,18 @@ function _setMetrics(si) {
     // headless reference surface is unchanged.)
     if (_class == 0) { _type = 1.5; _dens = 1.3; }
     else { if (_class == 1) { _type = 1.22; _dens = 1.12; } else { _type = 1.0; _dens = 1.0; } }
+    // Safe-area insets (physical px): the space the platform reserves for the
+    // status bar (top), the navigation / gesture bar (bottom) and any display
+    // cutouts (sides). The Scaffold and SafeArea widget keep chrome clear of
+    // these while still drawing background under them. Zero on desktop / web.
+    _saT = 0.0; _saR = 0.0; _saB = 0.0; _saL = 0.0;
+    if (has(si, "safeArea")) {
+        let sa = si.safeArea;
+        if (has(sa, "top")) { _saT = num(sa.top); }
+        if (has(sa, "right")) { _saR = num(sa.right); }
+        if (has(sa, "bottom")) { _saB = num(sa.bottom); }
+        if (has(sa, "left")) { _saL = num(sa.left); }
+    }
     _u = _unit();
 }
 // The layout unit (physical px). Content is laid out to ~92 of these wide, so the

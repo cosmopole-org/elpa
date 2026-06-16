@@ -25,9 +25,10 @@
 //!   resources, submit the first frame via `gpu.submit(frame)`.
 //! * **`onEvent(e)`** — called for each input event; `e` is `{type, x, y, nx,
 //!   ny, button|key|deltaY}`. Mutate state, then `gpu.submit` a new frame.
-//! * **`onResize(info)`** — called on surface resize; `info` is the
-//!   [`SurfaceInfo`] JSON (physical+logical size, scale, aspect). Re-build size-
-//!   dependent resources and re-submit.
+//! * **`onResize(info)`** — called on surface resize *and* whenever the
+//!   safe-area insets change; `info` is the [`SurfaceInfo`] JSON (physical+logical
+//!   size, scale, aspect, and `safeArea` insets for the status / navigation bars
+//!   and cutouts). Re-build size-dependent resources, re-fit chrome, re-submit.
 //! * **`onFrame(dtMs)`** — called once per animation tick for continuous
 //!   animation; submit the next frame.
 //!
@@ -40,7 +41,7 @@ pub mod surface;
 
 pub use event::InputEvent;
 pub use headless::HeadlessBackend;
-pub use surface::SurfaceInfo;
+pub use surface::{Insets, SurfaceInfo};
 
 // Re-export the core types a host/example needs.
 pub use elpa_protocol::{self as protocol, Definition, DefinitionBody, Frame};
@@ -279,8 +280,30 @@ impl<B: GpuBackend> Elpa<B> {
     /// re-submit. The host is still responsible for reconfiguring the wgpu
     /// surface on its backend before the next present.
     pub fn resize(&mut self, width: u32, height: u32, scale_factor: f64) {
-        self.surface = SurfaceInfo::new(width, height, scale_factor);
+        // Carry the safe-area insets across the resize: they describe the system
+        // bars, which a pure size change does not alter (the host updates them
+        // separately via `set_safe_area_insets` when the system UI shifts).
+        let insets = self.surface.insets;
+        self.surface = SurfaceInfo::new(width, height, scale_factor).with_insets(insets);
         self.renderer.invalidate();
+        let input = self.surface.to_json().to_string();
+        self.drive(Start::Func { name: "onResize", input: &input });
+    }
+
+    /// Report updated safe-area insets — the space reserved by the status bar,
+    /// navigation / gesture bar and display cutouts, in *physical* pixels — and
+    /// notify the app via `onResize` so it can re-fit its chrome around them.
+    ///
+    /// Insets change independently of size (device rotation, the system bars
+    /// showing/hiding, the soft keyboard opening), so this is separate from
+    /// [`resize`]. It is a no-op (no `onResize`) when the insets are unchanged,
+    /// so a host may safely call it every frame with the latest platform values.
+    pub fn set_safe_area_insets(&mut self, top: f64, right: f64, bottom: f64, left: f64) {
+        let insets = Insets::new(top, right, bottom, left);
+        if self.surface.insets == insets {
+            return;
+        }
+        self.surface = self.surface.with_insets(insets);
         let input = self.surface.to_json().to_string();
         self.drive(Start::Func { name: "onResize", input: &input });
     }
@@ -550,6 +573,34 @@ mod tests {
         assert_eq!(app.surface_info().scale_factor, 2.0);
         // invalidate() forced a re-record even though the frame content matches.
         assert!(app.renderer().backend().render_passes >= 2);
+    }
+
+    #[test]
+    fn safe_area_insets_update_surface_and_survive_resize() {
+        let surface = SurfaceInfo::new(800, 600, 2.0);
+        let mut app = Elpa::new(HeadlessBackend::default(), surface, &app_ast()).unwrap();
+        app.start();
+        assert_eq!(app.surface_info().insets, Insets::ZERO);
+
+        // Reporting insets updates the surface the app reads via gpu.surfaceInfo
+        // (and notifies it via onResize). The reported surface JSON carries them.
+        app.set_safe_area_insets(96.0, 0.0, 48.0, 0.0);
+        let insets = Insets::new(96.0, 0.0, 48.0, 0.0);
+        assert_eq!(app.surface_info().insets, insets);
+        assert_eq!(app.surface_info().to_json()["safeArea"]["top"], 96.0);
+
+        // Re-reporting the same insets is a no-op and leaves them in place.
+        app.set_safe_area_insets(96.0, 0.0, 48.0, 0.0);
+        assert_eq!(app.surface_info().insets, insets);
+
+        // A pure size change preserves the reported insets (the host owns when the
+        // system bars actually move, via set_safe_area_insets).
+        app.resize(1280, 720, 2.0);
+        assert_eq!(app.surface_info().insets, insets);
+
+        // Clearing them back to zero is honoured too.
+        app.set_safe_area_insets(0.0, 0.0, 0.0, 0.0);
+        assert_eq!(app.surface_info().insets, Insets::ZERO);
     }
 
     fn host_call(name: &str, args: Vec<serde_json::Value>) -> serde_json::Value {
