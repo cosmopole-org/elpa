@@ -56,9 +56,9 @@ let App = defineComponent(function(props, update) {
     return Scaffold({
         onKey: (k) => {
             // 'f' tells the runtime to download a font by URL and use it as the
-            // main font; 'F' restores the bundled one. (Needs the host to grant
-            // network — the web example does.)
-            if (k == "f") { useFont("https://cdn.jsdelivr.net/gh/google/fonts/ofl/pacifico/Pacifico-Regular.ttf"); return 0; }
+            // main font; 'F' restores the default font (which the runtime also
+            // downloads). Both need the host to grant network — the examples do.
+            if (k == "f") { useFont("https://cdn.jsdelivr.net/npm/@expo-google-fonts/pacifico@0.2.3/Pacifico_400Regular.ttf"); return 0; }
             if (k == "F") { useDefaultFont(); return 0; }
             if (k == "d") { dark = 1.0 - dark; }
             if (k == " ") { swOn = 1.0 - swOn; }

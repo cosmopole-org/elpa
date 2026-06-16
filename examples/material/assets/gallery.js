@@ -72,7 +72,12 @@ function galGridDemo() {
         let role = "surfaceHigh"; if (i % 3 == 0) { role = "primary"; }
         push(cells, Container({ color: role, radius: 2.0 }));
     }
-    return Labeled({ label: "GRIDVIEW (3 COLS)", child: GridView({ id: "grid1", cols: 3, width: 88.0, height: 30.0, gap: 2.0, cellHeight: 13.0, children: cells }) });
+    // Responsive reflow: a phone shows a 2-column grid (taller cells), a larger
+    // screen the original 3 columns — the Material "fewer columns when narrow"
+    // pattern, driven by the size-class API.
+    let cols = 3; let label = "GRIDVIEW (3 COLS)";
+    if (isCompact() > 0.5) { cols = 2; label = "GRIDVIEW (2 COLS, PHONE)"; }
+    return Labeled({ label: label, child: GridView({ id: "grid1", cols: cols, width: 88.0, height: 30.0, gap: 2.0, cellHeight: 13.0, children: cells }) });
 }
 function galLayout(update) {
     let k = [];
@@ -252,9 +257,10 @@ function galKey(k, update) {
     if (k == "p") { playing = 1.0 - playing; }
     if (k == "d") { dark = 1.0 - dark; }
     // 'f' downloads a web font by URL and uses it as the main font; 'F' restores
-    // the bundled one. The runtime fetches and rasterises it; the UI repaints in
-    // the new face. (`useFont` repaints itself, so no `update()` is needed here.)
-    if (k == "f") { useFont("https://cdn.jsdelivr.net/gh/google/fonts/ofl/pacifico/Pacifico-Regular.ttf"); return 0; }
+    // the default font (itself downloaded by the runtime). The runtime fetches and
+    // rasterises it; the UI repaints in the new face. (`useFont` repaints itself,
+    // so no `update()` is needed here.)
+    if (k == "f") { useFont("https://cdn.jsdelivr.net/npm/@expo-google-fonts/pacifico@0.2.3/Pacifico_400Regular.ttf"); return 0; }
     if (k == "F") { useDefaultFont(); return 0; }
     update();
 }

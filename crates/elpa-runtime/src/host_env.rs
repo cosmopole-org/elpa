@@ -406,13 +406,25 @@ pub struct HostEnv {
     /// Rasterised font atlases keyed by `"<px>|<source>"`, so `text.atlas` builds
     /// each (size, font) once and replays the cached reply on subsequent calls.
     atlas_cache: BTreeMap<String, String>,
+    /// The default UI font (regular, bold) bytes, downloaded **once** through the
+    /// host's `NetProvider` the first time `text.atlas` needs it and cached here
+    /// for the process lifetime. No font is bundled into the binary: it is fetched
+    /// at runtime (see [`DEFAULT_FONT_URL`]), so a build that never wires a network
+    /// provider simply has no default atlas and callers fall back to their own
+    /// vector text — the call still never traps.
+    default_font: Option<(Vec<u8>, Vec<u8>)>,
 }
 
-/// Bundled UI font (Liberation Sans, SIL OFL 1.1 — see `assets/fonts/LICENSE.txt`).
-/// A metric-compatible, professional sans-serif rasterised on the host into a
-/// coverage atlas the SDK samples for real, anti-aliased text.
-const FONT_REGULAR: &[u8] = include_bytes!("../assets/fonts/LiberationSans-Regular.ttf");
-const FONT_BOLD: &[u8] = include_bytes!("../assets/fonts/LiberationSans-Bold.ttf");
+/// The default UI font — **Roboto** (Apache-2.0), Material Design's canonical
+/// sans-serif. It is *not* bundled into the binary; the runtime downloads it once
+/// through the host's [`NetProvider`] the first time it rasterises text (i.e. as
+/// the runtime loads its first frame), then caches the bytes. The URLs are pinned,
+/// immutable CDN artifacts (a versioned npm package mirrored by jsDelivr) and are
+/// served with permissive CORS so the browser build's synchronous fetch works.
+const DEFAULT_FONT_URL: &str =
+    "https://cdn.jsdelivr.net/npm/@expo-google-fonts/roboto@0.2.3/Roboto_400Regular.ttf";
+const DEFAULT_FONT_BOLD_URL: &str =
+    "https://cdn.jsdelivr.net/npm/@expo-google-fonts/roboto@0.2.3/Roboto_700Bold.ttf";
 
 impl Default for HostEnv {
     fn default() -> Self {
@@ -422,7 +434,7 @@ impl Default for HostEnv {
 
 impl HostEnv {
     pub fn new(fs: Box<dyn FileStore>, net: Box<dyn NetProvider>) -> Self {
-        HostEnv { toggles: EnvToggles::default(), fs, net, clock_ms: 0, rng_state: 0x9E3779B97F4A7C15, atlas_cache: BTreeMap::new() }
+        HostEnv { toggles: EnvToggles::default(), fs, net, clock_ms: 0, rng_state: 0x9E3779B97F4A7C15, atlas_cache: BTreeMap::new(), default_font: None }
     }
 
     pub fn toggles(&self) -> EnvToggles {
@@ -576,10 +588,13 @@ impl HostEnv {
     /// anti-aliased text by sampling a texture instead of stroking capsules.
     ///
     /// Arg: `{ size: <px>, url?, boldUrl?, path?, boldPath? }`. With no source the
-    /// bundled font is used; `path`/`boldPath` load font bytes from the fabricated
-    /// filesystem; `url`/`boldUrl` fetch them through the host's `NetProvider`
-    /// (binary-safe via `NetResponse.bytes`). A failed/denied source falls back to
-    /// the bundled font, so the call never traps.
+    /// default font is used (downloaded once at runtime — see [`DEFAULT_FONT_URL`]);
+    /// `path`/`boldPath` load font bytes from the fabricated filesystem;
+    /// `url`/`boldUrl` fetch them through the host's `NetProvider` (binary-safe via
+    /// `NetResponse.bytes`). A failed/denied custom source falls back to the default
+    /// font; if even the default cannot be obtained (no network provisioned) the
+    /// call returns an error reply rather than trapping, so the caller can fall back
+    /// to its own vector text.
     ///
     /// Reply: `{ ok, source, width, height, pxSize, ascent, descent, lineHeight,
     ///           data (base64 R8 coverage), regular:{ch:{...}}, bold:{ch:{...}} }`
@@ -609,23 +624,41 @@ impl HostEnv {
         if let Some(cached) = self.atlas_cache.get(&cache_key) {
             return cached.clone();
         }
-        let (reg, bold, source) = self.resolve_font_bytes(&url, &bold_url, &path, &bold_path);
-        let reply = build_text_atlas(px as f32, &reg, &bold, &source);
-        self.atlas_cache.insert(cache_key, reply.clone());
+        let Some((reg, bold, source)) = self.resolve_font_bytes(&url, &bold_url, &path, &bold_path)
+        else {
+            // No usable font at all (no source resolved and the default could not be
+            // downloaded). Don't cache the failure, so a later call — once a network
+            // provider is wired — can still succeed.
+            return err_reply("no font available (default font download failed — wire a network provider)");
+        };
+        // A custom source whose bytes fail to parse falls back to the default font.
+        let fallback = self.default_font_bytes();
+        let reply = build_text_atlas(
+            px as f32,
+            &reg,
+            &bold,
+            &source,
+            fallback.as_ref().map(|(r, b)| (r.as_slice(), b.as_slice())),
+        );
+        // Only memoise successful builds; an error stays retryable.
+        if reply_is_ok(&reply) {
+            self.atlas_cache.insert(cache_key, reply.clone());
+        }
         reply
     }
 
     /// Resolve the (regular, bold) font bytes for `text.atlas`, honouring a
     /// storage `path` or a `url` (each with an optional bold companion) and
-    /// falling back to the bundled font when a source is absent, disabled, or
-    /// fails. Returns the bytes plus a label describing what was used.
+    /// falling back to the default font when a source is absent, disabled, or
+    /// fails. Returns the bytes plus a label describing what was used, or `None`
+    /// when no source resolves *and* the default font cannot be downloaded.
     fn resolve_font_bytes(
         &mut self,
         url: &Option<String>,
         bold_url: &Option<String>,
         path: &Option<String>,
         bold_path: &Option<String>,
-    ) -> (Vec<u8>, Vec<u8>, String) {
+    ) -> Option<(Vec<u8>, Vec<u8>, String)> {
         if let Some(p) = path {
             if self.toggles.filesystem {
                 if let Ok(reg) = self.fs.read(p) {
@@ -635,7 +668,7 @@ impl HostEnv {
                             .and_then(|bp| self.fs.read(bp).ok())
                             .filter(|b| !b.is_empty())
                             .unwrap_or_else(|| reg.clone());
-                        return (reg, bold, format!("path:{p}"));
+                        return Some((reg, bold, format!("path:{p}")));
                     }
                 }
             }
@@ -647,11 +680,29 @@ impl HostEnv {
                         .as_ref()
                         .and_then(|bu| self.fetch_font(bu))
                         .unwrap_or_else(|| reg.clone());
-                    return (reg, bold, format!("url:{u}"));
+                    return Some((reg, bold, format!("url:{u}")));
                 }
             }
         }
-        (FONT_REGULAR.to_vec(), FONT_BOLD.to_vec(), "bundled".to_string())
+        self.default_font_bytes().map(|(reg, bold)| (reg, bold, "default".to_string()))
+    }
+
+    /// The default font (regular, bold) bytes, downloaded once through the host's
+    /// `NetProvider` and cached for the process lifetime. Returns `None` when no
+    /// network is provisioned (or the download fails) — there is no bundled font to
+    /// fall back to, by design.
+    fn default_font_bytes(&mut self) -> Option<(Vec<u8>, Vec<u8>)> {
+        if let Some(font) = &self.default_font {
+            return Some(font.clone());
+        }
+        if !self.toggles.network {
+            return None;
+        }
+        let reg = self.fetch_font(DEFAULT_FONT_URL)?;
+        // A missing bold face is non-fatal: reuse the regular so text still renders.
+        let bold = self.fetch_font(DEFAULT_FONT_BOLD_URL).unwrap_or_else(|| reg.clone());
+        self.default_font = Some((reg.clone(), bold.clone()));
+        Some((reg, bold))
     }
 
     /// Fetch font bytes from a URL through the installed `NetProvider`; binary
@@ -669,8 +720,15 @@ impl HostEnv {
 }
 
 /// Rasterise regular+bold printable ASCII into one shelf-packed R8 coverage
-/// atlas. Falls back to the bundled font if the supplied bytes fail to parse.
-fn build_text_atlas(px: f32, reg_bytes: &[u8], bold_bytes: &[u8], source: &str) -> String {
+/// atlas. If the supplied bytes fail to parse, falls back to `fallback` (the
+/// downloaded default font) when one is available, else returns an error reply.
+fn build_text_atlas(
+    px: f32,
+    reg_bytes: &[u8],
+    bold_bytes: &[u8],
+    source: &str,
+    fallback: Option<(&[u8], &[u8])>,
+) -> String {
     use base64::Engine;
     use fontdue::{Font, FontSettings};
 
@@ -678,12 +736,10 @@ fn build_text_atlas(px: f32, reg_bytes: &[u8], bold_bytes: &[u8], source: &str) 
     let (regular, bold, source) = match (load(reg_bytes), load(bold_bytes)) {
         (Some(r), Some(b)) => (r, b, source.to_string()),
         _ => {
-            // Bad custom font → fall back to the bundled one rather than fail.
-            let r = Font::from_bytes(FONT_REGULAR, FontSettings::default());
-            let b = Font::from_bytes(FONT_BOLD, FontSettings::default());
-            match (r, b) {
-                (Ok(r), Ok(b)) => (r, b, "bundled".to_string()),
-                _ => return err_reply("font load failed"),
+            // Bad custom font → fall back to the default font rather than fail.
+            match fallback.and_then(|(r, b)| Some((load(r)?, load(b)?))) {
+                Some((r, b)) => (r, b, "default".to_string()),
+                None => return err_reply("font load failed"),
             }
         }
     };
@@ -809,6 +865,15 @@ fn str_or(v: &Value) -> String {
 
 fn err_reply(msg: &str) -> String {
     json!({ "ok": false, "error": msg }).to_string()
+}
+
+/// Whether a JSON reply string carries `"ok": true` (used to avoid memoising
+/// failed `text.atlas` builds so they stay retryable once a provider is wired).
+fn reply_is_ok(reply: &str) -> bool {
+    serde_json::from_str::<Value>(reply)
+        .ok()
+        .and_then(|v| v.get("ok").and_then(|o| o.as_bool()))
+        .unwrap_or(false)
 }
 
 fn result_reply(r: Result<(), String>) -> String {

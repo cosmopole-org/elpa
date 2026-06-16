@@ -186,7 +186,12 @@ let _GLYPHS = {
 };
 
 // ----------------------------------------------------------- runtime state ----
-let _vw = 1.0; let _vh = 1.0; let _u = 1.0;   // viewport + 1% unit
+let _vw = 1.0; let _vh = 1.0; let _u = 1.0;   // physical viewport + layout unit
+let _dpr = 1.0;                               // device pixel ratio (physical/logical)
+let _lw = 1.0; let _lh = 1.0;                 // logical (dp/CSS) viewport size
+let _class = 2;                               // M3 window size class: 0 compact, 1 medium, 2 expanded
+let _type = 1.0;                              // responsive type scale (larger on small screens)
+let _dens = 1.0;                              // responsive chrome density (taller bars on phones)
 let _root = 0;                                 // root component node
 let _NULL = { kind: "null" };                  // tree-root sentinel parent
 let _curOut = []; let _curTaps = []; let _curDrags = [];  // paint targets
@@ -226,6 +231,22 @@ let _accDark  = [[0.816,0.737,1.000],[0.306,0.847,0.859],[0.616,0.839,0.490],[1.
 // Push the app's theme into the framework (call from the root builder each
 // build, like reading ThemeData from MaterialApp).
 function setTheme(darkTarget, accent) { _darkTarget = darkTarget; _accent = accent; }
+
+// ---- Responsive layout API (Material window size classes) ---------------------
+// Apps read these to adapt their *composition* to the form factor — e.g. fewer
+// grid columns or a single-column reflow on a phone — the same way Flutter apps
+// branch on `MediaQuery`/`LayoutBuilder`. The framework already adapts the unit,
+// type scale and chrome density per class; these let an app go further.
+//   sizeClass()  -> "compact" | "medium" | "expanded"
+//   isCompact()  -> 1.0 on phones (logical width < 600dp), else 0.0
+//   isExpanded() -> 1.0 on tablets/desktop (>= 840dp), else 0.0
+//   screenWidth()/screenHeight() -> logical (dp) viewport size
+function sizeClass() { if (_class == 0) { return "compact"; } if (_class == 1) { return "medium"; } return "expanded"; }
+function isCompact() { if (_class == 0) { return 1.0; } return 0.0; }
+function isMedium() { if (_class == 1) { return 1.0; } return 0.0; }
+function isExpanded() { if (_class == 2) { return 1.0; } return 0.0; }
+function screenWidth() { return _lw; }
+function screenHeight() { return _lh; }
 
 // Opt into layered rendering: while widgets animate, the instances of the
 // *non-animating* widgets are uploaded as a separate "static" buffer whose
@@ -466,7 +487,7 @@ function _paintTextCapsules(str, cx, cy, cell, col, thick, font) {
 }
 function _paintText(str, cx, cy, cell, col) { _paintTextStyled(str, cx, cy, cell, col, 0.92, 0); }
 // Load the host-rasterised font atlas (regular + bold + metrics) for the current
-// font source — the bundled font by default, or the app-chosen URL/storage path.
+// font source — the downloaded default font, or the app-chosen URL/storage path.
 function _loadAtlas() {
     let req = { size: 48.0 };
     if (_hasFont > 0.5) {
@@ -478,18 +499,22 @@ function _loadAtlas() {
     let r = askHost("text.atlas", [req]);
     if (isNull(r)) { return 0; }
     if (!has(r, "ok")) { return 0; }
+    // A failed build (e.g. no network to download the default font) replies with
+    // `ok:false` and no atlas fields — keep `_atlas` at 0 so text falls back to the
+    // built-in stroke-vector glyphs instead of dividing by undefined metrics.
+    if (!r.ok) { return 0; }
     _atlas = r; _atlasUp = 0.0; return 0;
 }
 // ---- App-facing font control -------------------------------------------------
 // Choose the app's main font. The runtime fetches/loads it, rasterises a fresh
 // atlas, and the whole UI repaints in the new face. Sources degrade gracefully:
 // if a URL can't be fetched (network off/denied) or a path is missing, the host
-// falls back to the bundled font, so these never crash the app.
+// falls back to the default font, so these never crash the app.
 //   useFont("https://…/Roboto.ttf")            — download by URL
 //   useFontBold(regularUrl, boldUrl)           — download a regular + bold pair
 //   useFontFromPath("/fonts/app.ttf")          — load from storage
 //   useFontFromPathBold(regularPath, boldPath) — load a regular + bold pair
-//   useDefaultFont()                           — back to the bundled font
+//   useDefaultFont()                           — back to the downloaded default font
 // (Each helper has a fixed arity — the VM binds call arguments positionally.)
 function _applyFont(src, has2) { _fontSrc = src; _hasFont = has2; _atlas = 0; _atlasUp = 0.0; _fontVer = _fontVer + 1; if (_running > 0.5) { _renderApp(); } }
 function useFont(url) { _applyFont({ url: url }, 1.0); }
@@ -670,14 +695,18 @@ function _iconSvg(d, cx, cy, r, t, col, vb) {
 }
 
 // ---------------------------------------------------------- sizing / cells ----
+// Named M3 type roles, scaled by the responsive type factor so text stays
+// readable on phones (where the layout unit is small) without bloating the
+// information-dense desktop. Measurement and painting both resolve sizes through
+// here (and `_cellOf`), so the larger type stays perfectly consistent.
 function _cell(size) {
-    if (size == "headline") { return _u * 0.82; }
-    if (size == "title") { return _u * 0.55; }
-    if (size == "body") { return _u * 0.42; }
-    if (size == "label") { return _u * 0.40; }
-    if (size == "caption") { return _u * 0.32; }
-    if (size == "micro") { return _u * 0.26; }
-    return _u * 0.40;
+    if (size == "headline") { return _u * 0.82 * _type; }
+    if (size == "title") { return _u * 0.55 * _type; }
+    if (size == "body") { return _u * 0.42 * _type; }
+    if (size == "label") { return _u * 0.40 * _type; }
+    if (size == "caption") { return _u * 0.32 * _type; }
+    if (size == "micro") { return _u * 0.26 * _type; }
+    return _u * 0.40 * _type;
 }
 // Resolve a Text node's cell size (the per-glyph scale). Supports the named M3
 // roles (above), an explicit pixel font size (`px`, the rendered cap height), and
@@ -685,7 +714,7 @@ function _cell(size) {
 function _cellOf(node) {
     if (has(node, "px")) { return node.px / 6.0; }
     let s = "body"; if (has(node, "size")) { s = node.size; }
-    if (typeOf(s) == "number") { return _u * s; }
+    if (typeOf(s) == "number") { return _u * s * _type; }
     return _cell(s);
 }
 // Resolve a Text node's stroke weight (capsule thickness as a fraction of the
@@ -834,7 +863,7 @@ function _measureKind(node) {
     if (k == "listTile") { let w = _u * 56.0; if (has(node, "width")) { w = node.width * _u; } return { w: w, h: _u * 9.0 }; }
     if (k == "textField") { let w = _u * 50.0; if (has(node, "width")) { w = node.width * _u; } return { w: w, h: _u * 7.5 }; }
     if (k == "tabs") { return { w: len(node.tabs) * _u * 14.0, h: _u * 6.0 }; }
-    if (k == "navBar") { return { w: len(node.items) * _u * 14.0, h: _u * 11.0 }; }
+    if (k == "navBar") { return { w: len(node.items) * _u * 14.0, h: _u * 11.0 * _dens }; }
     if (k == "segmented") { return { w: len(node.segments) * _u * 13.0, h: _u * 5.5 }; }
     if (k == "circularProgress") { let r = _u * 4.0; if (has(node, "radius")) { r = node.radius * _u; } return { w: r * 2.0, h: r * 2.0 }; }
     if (k == "snackbar") { return { w: _u * 60.0, h: _u * 7.0 }; }
@@ -1098,7 +1127,7 @@ function _paintCard(node, cx, cy) {
 }
 function _paintScaffold(node) {
     _beginSelf(node);
-    let aH = _u * 10.0;
+    let aH = _u * 10.0 * _dens;
     if (has(node, "onKey")) { _keyHandler = node.onKey; _hasKey = 1.0; }
     let kids = [];
     // Paint the body first so the top app bar and bottom navigation draw *over*
@@ -1107,7 +1136,7 @@ function _paintScaffold(node) {
     // the app bar above scrolling content) instead of bleeding across them.
     if (has(node, "body")) { if (!isNull(node.body)) {
         let bodyTop = aH; let bodyH = _vh - aH;
-        if (has(node, "bottomBar")) { bodyH = bodyH - _u * 11.0; }
+        if (has(node, "bottomBar")) { bodyH = bodyH - _u * 11.0 * _dens; }
         // A scrollable body fills the whole body region (tight vertical constraint)
         // so its viewport adapts to the screen — no fixed-height list stranded in a
         // sea of whitespace on tall phones, no overflow on short ones. Other body
@@ -1118,7 +1147,7 @@ function _paintScaffold(node) {
         _paint(node.body, _vw / 2.0, bodyTop + bodyH / 2.0); push(kids, node.body);
     } }
     if (has(node, "appBar")) { if (!isNull(node.appBar)) { _paint(node.appBar, _vw / 2.0, aH / 2.0); push(kids, node.appBar); } }
-    if (has(node, "bottomBar")) { if (!isNull(node.bottomBar)) { _paint(node.bottomBar, _vw / 2.0, _vh - _u * 5.5); push(kids, node.bottomBar); } }
+    if (has(node, "bottomBar")) { if (!isNull(node.bottomBar)) { _paint(node.bottomBar, _vw / 2.0, _vh - _u * 5.5 * _dens); push(kids, node.bottomBar); } }
     if (has(node, "fab")) { if (!isNull(node.fab)) { _paint(node.fab, _vw - _u * 9.0, _vh - _u * 9.0); push(kids, node.fab); } }
     if (has(node, "drawer")) { if (!isNull(node.drawer)) { _paint(node.drawer, _vw / 2.0, _vh / 2.0); push(kids, node.drawer); } }
     if (has(node, "snackbar")) { if (!isNull(node.snackbar)) { _paint(node.snackbar, _vw / 2.0, _vh / 2.0); push(kids, node.snackbar); } }
@@ -1774,16 +1803,45 @@ function _repaintAll() {
 
 // --------------------------------------------------------------- render -------
 function _bufF32(id, usage, data) { return { kind: "buffer", id: id, size: len(data) * 4, usage: usage, data_f32: data }; }
-// The responsive layout unit (1% of the *shorter* viewport side). Widgets are
-// sized in these units, and the apps lay content out to roughly 90 of them wide;
-// deriving the unit from the shorter side keeps that content inside the screen in
-// *both* orientations — on a tall phone the width governs (so nothing overflows
-// horizontally), on a wide desktop the height governs (the prior behaviour).
-function _unit() { return min(_vw, _vh) * 0.01; }
+// Adopt the live surface metrics and recompute every responsive quantity from
+// them. Breakpoints are driven by the *logical* (dp) width — Material's window
+// size classes — not the physical pixel count, so a HiDPI phone is treated as the
+// small screen it is rather than as a wide desktop. The layout unit, type scale
+// and chrome density are then chosen per class, so the UI genuinely adapts to the
+// form factor instead of being one proportional design scaled up and down.
+function _setMetrics(si) {
+    _vw = num(si.width); _vh = num(si.height);
+    _dpr = 1.0; if (has(si, "scaleFactor")) { _dpr = num(si.scaleFactor); }
+    if (_dpr < 0.1) { _dpr = 1.0; }
+    _lw = _vw / _dpr; _lh = _vh / _dpr;
+    if (has(si, "logicalWidth")) { _lw = num(si.logicalWidth); }
+    if (has(si, "logicalHeight")) { _lh = num(si.logicalHeight); }
+    // M3 window size classes by logical width: compact (phones), medium (small
+    // tablets / large phones landscape), expanded (tablets / desktop).
+    if (_lw < 600.0) { _class = 0; } else { if (_lw < 840.0) { _class = 1; } else { _class = 2; } }
+    // Phones get noticeably larger text and taller, easier-to-tap chrome; the
+    // desktop keeps the denser, information-rich scale. (Expanded == 1.0 so the
+    // headless reference surface is unchanged.)
+    if (_class == 0) { _type = 1.5; _dens = 1.3; }
+    else { if (_class == 1) { _type = 1.22; _dens = 1.12; } else { _type = 1.0; _dens = 1.0; } }
+    _u = _unit();
+}
+// The layout unit (physical px). Content is laid out to ~92 of these wide, so the
+// unit is the content column divided by ~96. On a phone the column is nearly the
+// full width (a small margin); on a tablet/desktop it is a centred reading column
+// capped to a comfortable width, so a wide window shows a focused column rather
+// than a single edge-to-edge sheet — the Material responsive layout pattern.
+function _unit() {
+    let colDp = _lw - 24.0;                                    // compact: ~12dp side margins
+    if (_class == 1) { colDp = min(_lw - 64.0, 720.0); }       // medium: padded, capped
+    if (_class == 2) { colDp = min(_lw * 0.9, 860.0); }        // expanded: centred reading column
+    if (colDp < 240.0) { colDp = _lw; }                        // tiny windows: use all of it
+    return colDp / 96.0 * _dpr;
+}
 function _renderApp() {
     if (_atlas == 0) { _loadAtlas(); }
     let si = askHost("gpu.surfaceInfo", []);
-    _vw = num(si.width); _vh = num(si.height); _u = _unit();
+    _setMetrics(si);
     _hasKey = 0.0; _hasWheel = 0.0; _hasFocusInput = 0.0;
     _mount(_root, _NULL);
     _paint(_root, _vw * 0.5, _vh * 0.5);
@@ -2007,6 +2065,6 @@ function onFrame(dt) {
     if (len(dirty) > 0) { _repaintComps(dirty); }
 }
 function onResize(info) {
-    _vw = num(info.width); _vh = num(info.height); _u = _unit();
+    _setMetrics(info);
     _renderApp();
 }
