@@ -26,16 +26,21 @@ struct WebSyncNet;
 
 impl NetProvider for WebSyncNet {
     fn fetch(&mut self, req: &NetRequest) -> Result<NetResponse, String> {
-        let xhr = web_sys::XmlHttpRequest::new().map_err(|_| "XHR unavailable".to_string())?;
-        xhr.open_with_async(&req.method, &req.url, false).map_err(|_| "XHR open failed".to_string())?;
-        // Map each byte to a char code 0..255 (high bytes land in U+F700..U+F7FF).
-        let _ = xhr.override_mime_type("text/plain; charset=x-user-defined");
-        xhr.send().map_err(|_| "XHR send failed (CORS / network?)".to_string())?;
-        let status = xhr.status().unwrap_or(0);
-        let text = xhr.response_text().ok().flatten().unwrap_or_default();
-        let bytes: Vec<u8> = text.chars().map(|c| (c as u32 & 0xFF) as u8).collect();
-        Ok(NetResponse { status, body: String::new(), bytes: Some(bytes) })
+        let bytes = xhr_get_bytes(&req.method, &req.url)?;
+        Ok(NetResponse { status: 200, body: String::new(), bytes: Some(bytes) })
     }
+}
+
+/// Blocking XHR returning raw bytes (the `x-user-defined` charset trick, since a
+/// synchronous XHR can't yield an ArrayBuffer). Shared by the font net provider
+/// and the media fetcher. The URL must allow CORS.
+fn xhr_get_bytes(method: &str, url: &str) -> Result<Vec<u8>, String> {
+    let xhr = web_sys::XmlHttpRequest::new().map_err(|_| "XHR unavailable".to_string())?;
+    xhr.open_with_async(method, url, false).map_err(|_| "XHR open failed".to_string())?;
+    let _ = xhr.override_mime_type("text/plain; charset=x-user-defined");
+    xhr.send().map_err(|_| "XHR send failed (CORS / network?)".to_string())?;
+    let text = xhr.response_text().ok().flatten().unwrap_or_default();
+    Ok(text.chars().map(|c| (c as u32 & 0xFF) as u8).collect())
 }
 
 /// A live app instance with a canvas-backed wgpu surface (`'static`).
@@ -138,6 +143,11 @@ async fn run() {
         toggles.network = true;
         app.env_mut().set_toggles(toggles);
         app.env_mut().set_net(Box::new(WebSyncNet));
+        // Media fetcher for images / animated GIFs. The browser has no host
+        // threads, so on wasm the media engine decodes inline at request time
+        // (this blocking XHR does the download); the guest still polls and shows a
+        // placeholder until the pixels arrive, so the UI stays responsive.
+        app.env_mut().set_media_fetcher(Box::new(|url: &str| xhr_get_bytes("GET", url)));
     }
     app.start(); // run the SDK + app, paint the first frame
 

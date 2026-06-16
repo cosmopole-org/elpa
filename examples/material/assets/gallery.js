@@ -205,11 +205,17 @@ function galCharts(update) {
 }
 
 // ============================ media section ===================================
+// A real network image, decoded off the render thread and shown as a GPU
+// texture (a placeholder fills the frame until it lands).
 function galImageDemo() {
-    return Image({ width: 88.0, height: 36.0, radius: 2.0, label: "PLACEHOLDER IMAGE" });
+    return Image({ width: 88.0, height: 36.0, radius: 2.0,
+        url: "https://picsum.photos/seed/elpa/640/360", label: "NETWORK IMAGE" });
 }
+// Real streaming video: an animated GIF fetched from the network and decoded to
+// RGBA frames off-thread, advanced by the frame clock while playing.
 function galVideoDemo(update) {
     return VideoPlayer({ id: "vid", width: 88.0, height: 40.0, playing: playing, value: vpos,
+        url: "https://upload.wikimedia.org/wikipedia/commons/2/2c/Rotating_earth_%28large%29.gif",
         onToggle: () => { playing = 1.0 - playing; update(); },
         onSeek: (v) => { vpos = v; update(); } });
 }
@@ -307,7 +313,8 @@ let App = defineComponent(function(props, update) {
         bottomBar: NavigationBar({ index: tab, items: items, onChange: (i) => { tab = i; update(); } }),
         body: galBody(update),
         drawer: Drawer({ open: menuOpen, header: "ELPA GALLERY", subtitle: "DESIGN SYSTEM DEMO",
-            avatarIcon: "person", index: tab, items: galDrawerItems(),
+            avatarIcon: "person", image: "https://picsum.photos/seed/elpanav/600/320",
+            index: tab, items: galDrawerItems(),
             // The first four destinations switch sections; the decorative extras
             // just acknowledge with a snackbar. Either way the drawer closes.
             onSelect: (i) => { if (i < 4) { tab = i; } else { snackOn = 1.0; } menuOpen = 0.0; update(); },

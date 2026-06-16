@@ -18,3 +18,5 @@ elpa = { path = "../../crates/elpa" }
 # keywords, syntax) are caught in `cargo test` without a browser/GPU.
 naga = { version = "29", features = ["wgsl-in"] }
 serde_json = { workspace = true }
+# Build tiny PNG/GIF fixtures in-test to drive the async media pipeline end to end.
+image = { version = "0.25", default-features = false, features = ["png", "gif"] }

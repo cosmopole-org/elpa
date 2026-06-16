@@ -132,6 +132,70 @@ function _pipelineResources() {
     ];
 }
 
+// ----------------------------------------------------- image pipeline ---------
+// A second pipeline that draws one full-colour textured quad per image/video
+// frame, with rounded-corner coverage and a tint. It is intentionally separate
+// from the SDF pipeline (different binding layout: a per-image uniform + an RGBA
+// texture), and is invoked between SDF sub-draws so images respect paint order.
+let _IMG_WGSL = "
+struct U { a: vec4<f32>, b: vec4<f32>, uv: vec4<f32>, tint: vec4<f32> };
+@group(0) @binding(0) var<uniform> u: U;
+@group(0) @binding(1) var tex: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+struct Out {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) p: vec2<f32>,
+};
+@vertex
+fn vs(@builtin(vertex_index) vi: u32) -> Out {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0));
+    let half = u.b.xy;
+    let local = corners[vi] * half;
+    let world = u.a.zw + local;
+    let ndc = vec2<f32>(world.x / u.a.x * 2.0 - 1.0, 1.0 - world.y / u.a.y * 2.0);
+    var o: Out;
+    o.clip = vec4<f32>(ndc, 0.0, 1.0);
+    let cuv = corners[vi] * 0.5 + vec2<f32>(0.5, 0.5);
+    o.uv = mix(u.uv.xy, u.uv.zw, cuv);
+    o.p = local;
+    return o;
+}
+fn sd_round_box_i(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
+    let q = abs(p) - b + vec2<f32>(r, r);
+    return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0, 0.0))) - r;
+}
+@fragment
+fn fs(o: Out) -> @location(0) vec4<f32> {
+    let c = textureSample(tex, samp, o.uv);
+    let r = min(u.b.z, min(u.b.x, u.b.y));
+    let d = sd_round_box_i(o.p, u.b.xy, r);
+    let cov = clamp(0.5 - d / 1.0, 0.0, 1.0);
+    let col = c * u.tint;
+    return vec4<f32>(col.rgb, col.a * cov);
+}
+";
+function _imgPipelineResources() {
+    return [
+        { kind: "shader", id: "elpa.m3.img.shader", wgsl: _IMG_WGSL },
+        { kind: "bindGroupLayout", id: "elpa.m3.img.bgl",
+          entries: [
+              { binding: 0, visibility: ["VERTEX", "FRAGMENT"], ty: "uniform" },
+              { binding: 1, visibility: ["FRAGMENT"], ty: "texture" },
+              { binding: 2, visibility: ["FRAGMENT"], ty: "sampler" }] },
+        { kind: "pipelineLayout", id: "elpa.m3.img.layout", bind_group_layouts: ["elpa.m3.img.bgl"] },
+        { kind: "renderPipeline", id: "elpa.m3.img.pipe", layout: "elpa.m3.img.layout",
+          vertex: { module: "elpa.m3.img.shader", entry_point: "vs", buffers: [] },
+          fragment: { module: "elpa.m3.img.shader", entry_point: "fs", targets: [{
+              format: "bgra8unorm",
+              blend: { color: { src_factor: "src-alpha", dst_factor: "one-minus-src-alpha", operation: "add" },
+                       alpha: { src_factor: "one", dst_factor: "one-minus-src-alpha", operation: "add" } } }] } },
+        { kind: "sampler", id: "elpa.m3.img.samp", mag_filter: "linear", min_filter: "linear", mipmap_filter: "linear" },
+    ];
+}
+
 // ------------------------------------------------------------ glyph font ------
 // A vector stroke font: each glyph is line segments [x0,y0,x1,y1] in a 4-wide ×
 // 6-tall box (origin top-left, y down), drawn as overlapping rounded capsules.
@@ -223,6 +287,25 @@ let _layered = 0.0;                            // split static/dynamic instance 
 let _animatingComps = [];                      // components animating this frame (layered mode)
 let _WHITE = [1.0, 1.0, 1.0, 1.0];
 let _CLEAR = [0.0, 0.0, 0.0, 0.0];
+
+// ---- async media (real network/storage images + animated "video") ------------
+// Decoded RGBA frames arrive from the host's off-thread `media.*` engine and are
+// shown as GPU textures by a *second* pipeline. A widget that wants an image
+// emits a self-contained "image sentinel" instance (`_image`) into the normal
+// instance stream; `_submit` finds those sentinels, strips them, and interleaves
+// a textured-quad draw at exactly that z-position (so widgets painted after it —
+// a video's controls, a drawer's avatar/title — correctly sit on top). Each
+// source gets a stable texture handle whose contents the frame clock refreshes,
+// so advancing a video frame is just a texture re-upload, no relayout.
+let _media = {};            // key -> load/playback state
+let _imgTex = {};           // handle -> { w, h, ver, up, data }  (texture contents)
+let _imgHandle = {};        // media key -> numeric texture handle
+let _imgHandleN = 0;        // handle allocator
+let _mediaChanged = 0.0;    // a frame advanced / load completed this tick
+let _IMG_MARK = 424242.0;   // sentinel marker in instance slot 0 (off-screen, unique)
+// A 1x1 placeholder pixel (RGBA #F4F4F6FF) shown until the real pixels land,
+// pre-encoded as base64 (the VM JS subset has no base64 encoder).
+let _IMG_PLACEHOLDER = "9PT2/w==";
 
 // M3 tonal accent palette (primary tone for light / dark schemes): purple (the
 // M3 default), teal, green, pink — the hues ColorScheme.fromSeed yields.
@@ -1448,6 +1531,99 @@ function _pieColor(i) {
 }
 function _fmtTime(frac) { return concat(str(floor(frac * 100.0)), "%"); }
 
+// ----------------------------------------------------- media subsystem --------
+// Stable per-source texture handle (so the texture id survives repaints and only
+// its *contents* change as frames advance).
+function _mediaHandle(key) {
+    if (!has(_imgHandle, key)) { _imgHandle[key] = _imgHandleN; _imgHandleN = _imgHandleN + 1; }
+    return _imgHandle[key];
+}
+// The texture id encodes its size, so a placeholder (1x1) → real-size swap yields
+// a *new* id and the renderer recreates the texture (and its bind group) rather
+// than keeping a stale 1x1 view — the same versioning trick the font atlas uses.
+// Same-size frames keep the id stable, so a video just re-uploads in place.
+function _imgTexId(handle, w, h) { return concat(concat(concat(concat("elpa.m3.img.tex.", str(handle)), "."), str(w)), concat("x", str(h))); }
+// Register a media source (idempotent) and kick off its off-thread load. `src` is
+// `{ url }` (network) or `{ path }` (storage); `video` marks an animated source.
+function _mediaEnsure(key, src, video) {
+    let handle = _mediaHandle(key); let hk = str(handle);
+    if (!has(_imgTex, hk)) { _imgTex[hk] = { w: 1, h: 1, ver: 0, up: 0.0, data: _IMG_PLACEHOLDER }; }
+    if (!has(_media, key)) {
+        _media[key] = { ready: 0.0, failed: 0.0, w: 1, h: 1, frames: 1, total: 0, video: video,
+            handle: handle, startMs: now(), curIdx: -1 };
+        let req = { id: key };
+        if (has(src, "url")) { req.url = src.url; } else { if (has(src, "path")) { req.path = src.path; } }
+        askHost("media.open", [req]);
+    }
+    return _media[key];
+}
+// Poll a source's load status; on completion record its metadata. Cheap.
+function _mediaPollOne(key) {
+    let m = _media[key];
+    if (m.ready > 0.5) { return 0; } if (m.failed > 0.5) { return 0; }
+    let p = askHost("media.poll", [{ id: key }]);
+    if (isNull(p)) { return 0; }
+    if (has(p, "failed")) { if (p.failed) { m.failed = 1.0; return 0; } }
+    if (has(p, "ready")) { if (p.ready) {
+        m.ready = 1.0; m.w = num(p.width); m.h = num(p.height);
+        m.frames = num(p.frames); m.total = num(p.durationMs);
+        m.curIdx = -1;  // force the first frame to upload
+    } }
+    return 0;
+}
+// Pick the current frame for a source (stills: 0; video: advance by wall-clock
+// while playing) and, when it changes, pull its RGBA pixels and stage a texture
+// upload. Returns 1 if the texture contents changed.
+function _mediaAdvance(key, playing) {
+    let m = _media[key];
+    if (m.ready < 0.5) { return 0.0; }
+    let idx = 0;
+    if (m.video > 0.5) { if (m.frames > 1) {
+        if (playing > 0.5) {
+            let per = m.total / m.frames; if (per < 1.0) { per = 60.0; }
+            let elapsed = now() - m.startMs; let span = m.total; if (span < 1.0) { span = m.frames * per; }
+            idx = floor((elapsed - floor(elapsed / span) * span) / per);
+            if (idx >= m.frames) { idx = m.frames - 1; } if (idx < 0) { idx = 0; }
+        } else { idx = m.curIdx; if (idx < 0) { idx = 0; } }
+    } }
+    if (idx == m.curIdx) { return 0.0; }
+    let f = askHost("media.frame", [{ id: key, index: idx }]);
+    if (isNull(f)) { return 0.0; }
+    if (!has(f, "data")) { return 0.0; }
+    m.curIdx = idx;
+    let t = _imgTex[str(m.handle)];
+    t.w = num(f.width); t.h = num(f.height); t.data = f.data; t.ver = t.ver + 1; t.up = 0.0;
+    return 1.0;
+}
+// Drive every registered source one tick: load the not-yet-ready ones and
+// advance the playing videos. Called from the frame clock.
+function _mediaTick() {
+    let changed = 0.0; let ks = keys(_media);
+    for (let i = 0; i < len(ks); i++) {
+        let key = ks[i]; let m = _media[key];
+        _mediaPollOne(key);
+        let playing = 1.0; if (has(m, "_playing")) { playing = m._playing; }
+        if (_mediaAdvance(key, playing) > 0.5) { changed = 1.0; }
+    }
+    return changed;
+}
+// Emit an image sentinel: a 16-float instance carrying everything needed to draw
+// the textured quad for `handle`, found and interleaved by `_submit`.
+//   [0]=marker [1]=handle [2..6]=cx,cy,hw,hh,r [7..10]=u0,v0,u1,v1 [11..14]=tint
+function _image(handle, cx, cy, hw, hh, r, tint) {
+    push(_curOut, _IMG_MARK); push(_curOut, num(handle)); push(_curOut, cx); push(_curOut, cy);
+    push(_curOut, hw); push(_curOut, hh); push(_curOut, r); push(_curOut, 0.0);
+    push(_curOut, 0.0); push(_curOut, 1.0); push(_curOut, 1.0); push(_curOut, tint[0]);
+    push(_curOut, tint[1]); push(_curOut, tint[2]); push(_curOut, tint[3]); push(_curOut, 0.0);
+}
+// Convenience: ensure a source is loading and emit its quad (with the loaded
+// frame or the placeholder), tinted `tint`. Returns the source state.
+function _drawMedia(key, src, video, cx, cy, hw, hh, r, tint) {
+    let m = _mediaEnsure(key, src, video);
+    _image(m.handle, cx, cy, hw, hh, r, tint);
+    return m;
+}
+
 // ------------------------------------------------------ layout widget paints --
 function _paintBox(node, cx, cy, pad) {
     _beginSelf(node);
@@ -1790,16 +1966,24 @@ function _paintDrawer(node, cx, cy) {
     let left = pcx - hw;
     // ---- account header ----
     let headerH = _saT + _du() * 26.0;
-    // An accent-tinted banner; a real network image fills it once that path is
-    // wired (the header content — avatar + names — draws over it either way).
-    _rect(pcx, headerH / 2.0, hw, headerH / 2.0, 0.0, 0.0, 0.0, _acc(0.16), _CLEAR);
+    let headInk = _onSurface(1.0); let headSub = _onSurface(0.6);
+    if (has(node, "image")) {
+        // A real network image fills the banner (loaded off-thread); a dark scrim
+        // over it keeps the avatar + names legible regardless of the photo.
+        _rect(pcx, headerH / 2.0, hw, headerH / 2.0, 0.0, 0.0, 0.0, _acc(0.16), _CLEAR);
+        _drawMedia(concat("drw:", node.image), { url: node.image }, 0.0, pcx, headerH / 2.0, hw, headerH / 2.0, 0.0, _WHITE);
+        _rect(pcx, headerH / 2.0, hw, headerH / 2.0, 0.0, 0.0, 0.0, [0.0, 0.0, 0.0, 0.42], _CLEAR);
+        headInk = [1.0, 1.0, 1.0, 1.0]; headSub = [1.0, 1.0, 1.0, 0.82];
+    } else {
+        _rect(pcx, headerH / 2.0, hw, headerH / 2.0, 0.0, 0.0, 0.0, _acc(0.16), _CLEAR);
+    }
     let avR = _du() * 4.2; let avX = left + _u * 6.0 + avR; let avY = _saT + _du() * 8.0;
     _disc(avX, avY, avR + _u * 0.4, _surfaceContainer(1.0));
     _disc(avX, avY, avR, _acc(1.0));
     let avIcon = "person"; if (has(node, "avatarIcon")) { avIcon = node.avatarIcon; }
     _icon(avIcon, avX, avY, avR * 0.62, _onAcc(1.0));
-    if (has(node, "header")) { _paintTextLeftClip(node.header, left + _u * 6.0, avY + avR + _du() * 3.4, _cell("title"), _onSurface(1.0), hw * 2.0 - _u * 10.0); }
-    if (has(node, "subtitle")) { _paintTextLeftClip(node.subtitle, left + _u * 6.0, avY + avR + _du() * 6.6, _cell("caption"), _onSurface(0.6), hw * 2.0 - _u * 10.0); }
+    if (has(node, "header")) { _paintTextLeftClip(node.header, left + _u * 6.0, avY + avR + _du() * 3.4, _cell("title"), headInk, hw * 2.0 - _u * 10.0); }
+    if (has(node, "subtitle")) { _paintTextLeftClip(node.subtitle, left + _u * 6.0, avY + avR + _du() * 6.6, _cell("caption"), headSub, hw * 2.0 - _u * 10.0); }
     // ---- destinations (with section captions + dividers) ----
     let items = node.items; let iy = headerH + _du() * 2.5; let rowH = _du() * 6.2; let navIdx = 0;
     for (let i = 0; i < len(items); i++) {
@@ -1844,8 +2028,24 @@ function _paintDataTable(node, cx, cy) {
 }
 
 // ------------------------------------------------------------ media / charts --
+// A media source from a widget: `{ url }` (network) or `{ path }` (storage).
+function _mediaSrcOf(node) {
+    if (has(node, "url")) { return { key: concat("u:", node.url), req: { url: node.url } }; }
+    if (has(node, "path")) { return { key: concat("p:", node.path), req: { path: node.path } }; }
+    return 0;
+}
 function _paintImage(node, cx, cy) {
     let mz = _measure(node); let hw = mz.w / 2.0; let hh = mz.h / 2.0; let r = _u * 1.2; if (has(node, "radius")) { r = node.radius * _u; }
+    let src = _mediaSrcOf(node);
+    if (src != 0) {
+        // Real image: a placeholder fill shows until the off-thread decode lands,
+        // then the textured quad takes over. The caption (SDF) draws over it.
+        let tone = _surfaceHighest(1.0);
+        _rect(cx, cy, hw, hh, r, 0.0, 0.0, tone, _CLEAR);
+        _drawMedia(src.key, src.req, 0.0, cx, cy, hw, hh, r, _WHITE);
+        if (has(node, "label")) { _paintText(node.label, cx, cy + hh - _u * 2.0, _cell("caption"), [1.0, 1.0, 1.0, 0.85]); }
+        return 0;
+    }
     let tone = _surfaceHighest(1.0); if (has(node, "color")) { tone = _colorRole(node.color, 1.0); }
     _rect(cx, cy, hw, hh, r, 0.0, 0.0, tone, _CLEAR);
     _rect(cx, cy - hh * 0.5, hw, hh * 0.5, r, 0.0, 0.0, _brighten(tone, 0.04), _CLEAR);
@@ -1857,8 +2057,22 @@ function _paintVideo(node, cx, cy) {
     let playing = 0.0; if (has(node, "playing")) { playing = node.playing; }
     let val = 0.0; if (has(node, "value")) { val = node.value; }
     _rect(cx, cy, hw, hh, _u * 1.2, 0.0, 0.0, [0.05, 0.05, 0.07, 1.0], _CLEAR);
-    _rect(cx, cy - hh * 0.4, hw, hh * 0.6, _u * 1.2, 0.0, 0.0, [0.1, 0.11, 0.14, 1.0], _CLEAR);
+    // Real streaming video: an animated source (GIF) decoded off-thread, its
+    // frames advanced by the clock while playing. Falls back to the stylised
+    // gradient when no source is given.
+    let src = _mediaSrcOf(node);
+    if (src != 0) {
+        let m = _drawMedia(src.key, src.req, 1.0, cx, cy, hw, hh, _u * 1.2, _WHITE);
+        m._playing = playing;
+        // Track playback progress on the live frame index for the scrubber.
+        if (m.ready > 0.5) { if (m.frames > 1) { val = m.curIdx / (m.frames - 1); } }
+    } else {
+        _rect(cx, cy - hh * 0.4, hw, hh * 0.6, _u * 1.2, 0.0, 0.0, [0.1, 0.11, 0.14, 1.0], _CLEAR);
+    }
+    // A scrim behind the controls keeps them legible over a bright frame.
+    _rect(cx, cy + hh - _u * 2.6, hw, _u * 2.6, _u * 1.2, 0.0, 0.0, [0.0, 0.0, 0.0, 0.32], _CLEAR);
     let cr = min(hw, hh) * 0.34;
+    _disc(cx, cy, cr, [0.0, 0.0, 0.0, 0.32]);
     _disc(cx, cy, cr, [1.0, 1.0, 1.0, 0.16]);
     let ic = "play"; if (playing > 0.5) { ic = "pause"; }
     _icon(ic, cx, cy, cr * 0.7, [1.0, 1.0, 1.0, 0.95]);
@@ -2101,14 +2315,90 @@ function _atlasUploadCmds() {
     return [{ op: "writeTexture", texture: _atlasId(), origin: { x: 0, y: 0, z: 0 },
         size: { width: _atlas.width, height: _atlas.height }, data_b64: _atlas.data }];
 }
-function _submit() {
+// Split the assembled instance stream into a clean SDF buffer (image sentinels
+// removed) and an ordered draw plan: alternating SDF instance sub-ranges and
+// image draws, in paint order, so images sit at the right z. Also returns the
+// unique image-texture handles referenced this frame.
+function _planDraws(inst) {
+    let n = len(inst) / 16; let clean = []; let draws = []; let handles = []; let seen = {};
+    let cleanCount = 0; let runStart = 0; let runCount = 0;
+    for (let i = 0; i < n; i++) {
+        let base = i * 16;
+        if (inst[base] == _IMG_MARK) {
+            if (runCount > 0) { push(draws, { sdf: 1.0, first: runStart, count: runCount }); }
+            let handle = floor(inst[base + 1] + 0.5);
+            push(draws, { sdf: 0.0, handle: handle,
+                cx: inst[base + 2], cy: inst[base + 3], hw: inst[base + 4], hh: inst[base + 5], r: inst[base + 6],
+                u0: inst[base + 7], v0: inst[base + 8], u1: inst[base + 9], v1: inst[base + 10],
+                tint: [inst[base + 11], inst[base + 12], inst[base + 13], inst[base + 14]] });
+            if (!has(seen, str(handle))) { seen[str(handle)] = 1.0; push(handles, handle); }
+            runStart = cleanCount; runCount = 0;
+        } else {
+            for (let j = 0; j < 16; j++) { push(clean, inst[base + j]); }
+            cleanCount = cleanCount + 1; runCount = runCount + 1;
+        }
+    }
+    if (runCount > 0) { push(draws, { sdf: 1.0, first: runStart, count: runCount }); }
+    return { clean: clean, draws: draws, handles: handles };
+}
+// Declare an image handle's texture (and stage its one-time upload), deduped by
+// id across the frame. Returns the texture id.
+function _declareImageTex(handle, res, uploads, declared) {
+    let t = _imgTex[str(handle)]; let id = _imgTexId(handle, t.w, t.h);
+    if (has(declared, id)) { return id; }
+    declared[id] = 1.0;
+    push(res, { kind: "texture", id: id, size: { width: t.w, height: t.h }, format: "rgba8unorm", usage: ["TEXTURE_BINDING", "COPY_DST"] });
+    if (t.up < 0.5) {
+        push(uploads, { op: "writeTexture", texture: id, origin: { x: 0, y: 0, z: 0 },
+            size: { width: t.w, height: t.h }, data_b64: t.data });
+        t.up = 1.0;
+    }
+    return id;
+}
+// Build the interleaved SDF/image draw commands for one plan against vertex
+// buffer `vbuf`. SDF runs draw sub-ranges of `vbuf`; each image draw switches to
+// the image pipeline with its own (tag-namespaced) uniform + bind group. The
+// vertex buffer stays bound across the image pipeline (which has none), so it is
+// set once. Appends per-image resources/uploads to `res`/`uploads`.
+function _imgDrawCmds(plan, vbuf, tag, res, uploads, declared) {
+    let pcmds = [
+        { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" },
+        { cmd: "setPipeline", pipeline: "elpa.m3.pipe" },
+        { cmd: "setVertexBuffer", slot: 0, buffer: vbuf, offset: 0 },
+    ];
+    for (let i = 0; i < len(plan.draws); i++) {
+        let d = plan.draws[i];
+        if (d.sdf > 0.5) {
+            push(pcmds, { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" });
+            push(pcmds, { cmd: "setPipeline", pipeline: "elpa.m3.pipe" });
+            push(pcmds, { cmd: "draw", vertex_count: 6, instance_count: d.count, first_vertex: 0, first_instance: d.first });
+        } else {
+            let texId = _declareImageTex(d.handle, res, uploads, declared);
+            let uid = concat(concat("elpa.m3.img.u.", tag), str(i)); let bid = concat(concat("elpa.m3.img.bg.", tag), str(i));
+            push(res, _bufF32(uid, ["UNIFORM", "COPY_DST"],
+                [_vw, _vh, d.cx, d.cy, d.hw, d.hh, d.r, 0.0, d.u0, d.v0, d.u1, d.v1, d.tint[0], d.tint[1], d.tint[2], d.tint[3]]));
+            push(res, { kind: "bindGroup", id: bid, layout: "elpa.m3.img.bgl", entries: [
+                { binding: 0, resource: { type: "buffer", buffer: uid } },
+                { binding: 1, resource: { type: "textureView", texture: texId } },
+                { binding: 2, resource: { type: "sampler", sampler: "elpa.m3.img.samp" } } ] });
+            push(pcmds, { cmd: "setPipeline", pipeline: "elpa.m3.img.pipe" });
+            push(pcmds, { cmd: "setBindGroup", index: 0, bind_group: bid });
+            push(pcmds, { cmd: "draw", vertex_count: 6, instance_count: 1, first_vertex: 0, first_instance: 0 });
+        }
+    }
+    return pcmds;
+}
+// Add the shared image-pipeline resources (shader, layout, pipeline, sampler).
+function _addImgPipeline(res) {
+    let ip = _imgPipelineResources();
+    for (let i = 0; i < len(ip); i++) { push(res, ip[i]); }
+}
+// Single instanced draw for the whole frame — the path for an app with no images
+// (its instance buffer is re-declared each frame; COPY_DST lets the renderer's
+// cache refill the same GPU allocation in place while the count is unchanged).
+function _submitPlain() {
     let bg = _colorBg();
     let res = concat(concat(_pipelineResources(), _atlasTexRes()), concat(_frameBindings(), [
-        // The instance buffer is re-declared every frame with fresh geometry.
-        // Marking it COPY_DST lets the renderer's resource cache refill the same
-        // GPU allocation in place (a queue write) whenever the instance *count*
-        // is unchanged — the steady state while animating — instead of freeing
-        // and reallocating a buffer each frame.
         _bufF32("elpa.m3.inst", ["VERTEX", "COPY_DST"], _inst),
     ]));
     let pass = { op: "renderPass", id: "elpa.m3.pass",
@@ -2121,6 +2411,23 @@ function _submit() {
             { cmd: "draw", vertex_count: 6, instance_count: len(_inst) / 16, first_vertex: 0, first_instance: 0 },
         ] };
     askHost("gpu.submit", [{ resources: res, commands: concat(_atlasUploadCmds(), [pass]) }]);
+}
+function _submit() {
+    if (_imgHandleN == 0) { _submitPlain(); return 0; }
+    let bg = _colorBg();
+    let plan = _planDraws(_inst);
+    if (len(plan.handles) == 0) { _submitPlain(); return 0; }
+    let res = concat(concat(_pipelineResources(), _atlasTexRes()), concat(_frameBindings(), [
+        _bufF32("elpa.m3.inst", ["VERTEX", "COPY_DST"], plan.clean),
+    ]));
+    _addImgPipeline(res);
+    let uploads = _atlasUploadCmds();
+    let pcmds = _imgDrawCmds(plan, "elpa.m3.inst", "", res, uploads, {});
+    let pass = { op: "renderPass", id: "elpa.m3.pass",
+        color_attachments: [{ view: { kind: "surface" }, load: "clear",
+            clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
+        commands: pcmds };
+    askHost("gpu.submit", [{ resources: res, commands: concat(uploads, [pass]) }]);
 }
 
 // Submit a layered frame: a cached "static" buffer (non-animating widgets, whose
@@ -2135,22 +2442,25 @@ function _submitLayered(animating) {
     if (len(dyn) < 1) { _submit(); return 0; }
 
     let bg = _colorBg();
+    // Each layer is planned for image sentinels independently: the static layer
+    // (cached body) and the dynamic layer (the animating components) each get
+    // their own interleaved SDF/image draws against their own vertex buffer. The
+    // static buffer's bytes stay identical frame to frame, so the cache skips it.
+    let ps = _planDraws(stat); let pd = _planDraws(dyn);
     let res = concat(concat(_pipelineResources(), _atlasTexRes()), concat(_frameBindings(), [
-        _bufF32("elpa.m3.inst.static", ["VERTEX", "COPY_DST"], stat),
-        _bufF32("elpa.m3.inst.dyn", ["VERTEX", "COPY_DST"], dyn),
+        _bufF32("elpa.m3.inst.static", ["VERTEX", "COPY_DST"], ps.clean),
+        _bufF32("elpa.m3.inst.dyn", ["VERTEX", "COPY_DST"], pd.clean),
     ]));
+    let uploads = _atlasUploadCmds();
+    let declared = {};
+    if (len(ps.handles) + len(pd.handles) > 0) { _addImgPipeline(res); }
+    let cmds = _imgDrawCmds(ps, "elpa.m3.inst.static", "st", res, uploads, declared);
+    cmds = concat(cmds, _imgDrawCmds(pd, "elpa.m3.inst.dyn", "dy", res, uploads, declared));
     let pass = { op: "renderPass", id: "elpa.m3.pass",
         color_attachments: [{ view: { kind: "surface" }, load: "clear",
             clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
-        commands: [
-            { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" },
-            { cmd: "setPipeline", pipeline: "elpa.m3.pipe" },
-            { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst.static", offset: 0 },
-            { cmd: "draw", vertex_count: 6, instance_count: len(stat) / 16, first_vertex: 0, first_instance: 0 },
-            { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst.dyn", offset: 0 },
-            { cmd: "draw", vertex_count: 6, instance_count: len(dyn) / 16, first_vertex: 0, first_instance: 0 },
-        ] };
-    askHost("gpu.submit", [{ resources: res, commands: concat(_atlasUploadCmds(), [pass]) }]);
+        commands: cmds };
+    askHost("gpu.submit", [{ resources: res, commands: concat(uploads, [pass]) }]);
     return 0;
 }
 
@@ -2247,6 +2557,11 @@ function _flingStep() {
     return 1.0;
 }
 function onFrame(dt) {
+    // Drive async media first: load not-yet-ready sources and advance playing
+    // videos. A texture change alone needs no relayout — re-submitting the same
+    // instance stream re-uploads the frame — so track it and submit at the end if
+    // nothing else repainted.
+    let mediaChanged = _mediaTick();
     // Advance animations; collect the components whose keys are still moving, then
     // repaint *only those* (idle frames cost nothing). The theme cross-fade is the
     // one exception: it recolors everything, so it repaints the whole tree.
@@ -2281,7 +2596,9 @@ function onFrame(dt) {
         _repaint();
         return 0;
     }
-    if (len(dirty) > 0) { _repaintComps(dirty); }
+    if (len(dirty) > 0) { _repaintComps(dirty); return 0; }
+    // No widget animated, but a media texture did — re-submit to upload/show it.
+    if (mediaChanged > 0.5) { _submit(); }
 }
 function onResize(info) {
     _setMetrics(info);
