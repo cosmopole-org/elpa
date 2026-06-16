@@ -95,7 +95,9 @@ CI builds this APK on every push and commits it to the repo root as `elpa.apk`
 (see [`.github/workflows/android-apk.yml`](../../.github/workflows/android-apk.yml)).
 
 APK packaging is configured under `[package.metadata.android]` in
-[`Cargo.toml`](Cargo.toml) (package id, min/target SDK, app label).
+[`Cargo.toml`](Cargo.toml) (package id, min/target SDK, app label, and the
+`android.permission.INTERNET` permission the manifest needs so the demo's
+font download works on a device — see the network note below).
 
 ## Notes
 
@@ -112,6 +114,15 @@ APK packaging is configured under `[package.metadata.android]` in
   bar while keeping its title/actions below it, and lifts the navigation bar
   above the gesture inset; the `SafeArea` widget does the same for custom
   content. On desktop the insets are always zero, so the layout is unchanged.
+- **Network / font download.** The gallery's `f` key downloads a font by URL
+  (`useFont(...)`), and the demo can also issue `httpGet`s. Two things must be
+  granted for that to work: the **Elpa sandbox** must have its `network` toggle
+  on with a fetcher installed (the host does this in `src/lib.rs` via
+  `toggles.network = true` + `set_net(...)`), **and** the **Android app** must
+  hold the `android.permission.INTERNET` permission (declared under
+  `[[package.metadata.android.uses_permission]]` in `Cargo.toml`). Without the
+  manifest permission the socket call fails on a device even though the sandbox
+  allows it. The URLs are HTTPS, so no cleartext-traffic exception is required.
 - This crate is intentionally **excluded from the workspace** (it pulls the full
   wgpu + winit stack); build it on its own as shown above.
 
