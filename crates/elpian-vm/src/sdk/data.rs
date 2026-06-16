@@ -221,6 +221,23 @@ impl Val {
             _ => panic!("as_bool on non-bool value (typ {})", self.typ),
         }
     }
+    /// JavaScript truthiness: the value's boolean coercion used by `if`/`while`/
+    /// `for` conditions, `!`, `&&`/`||` and the ternary. `null`/`undefined`, the
+    /// numeric zeros, an empty string and `false` are falsy; every object, array,
+    /// function and non-empty string (and any non-zero number) is truthy.
+    pub fn truthy(&self) -> bool {
+        match &self.data {
+            Payload::Null => false,
+            Payload::Bool(v) => *v,
+            Payload::I16(v) => *v != 0,
+            Payload::I32(v) => *v != 0,
+            Payload::I64(v) => *v != 0,
+            Payload::F32(v) => *v != 0.0 && !v.is_nan(),
+            Payload::F64(v) => *v != 0.0 && !v.is_nan(),
+            Payload::Str(s) => !s.is_empty(),
+            Payload::Obj(_) | Payload::Arr(_) | Payload::Func(_) => true,
+        }
+    }
     pub fn as_string(&self) -> String {
         match &self.data {
             Payload::Str(s) => s.clone(),

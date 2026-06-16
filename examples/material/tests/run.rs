@@ -92,16 +92,21 @@ fn instances(app: &Elpa<HeadlessBackend>) -> Vec<f32> {
         .expect("instance buffer present")
 }
 
-/// The render pass's clear color (the themed background).
+/// The render pass's clear color (the themed background). The frame may carry a
+/// one-time font-atlas upload before the pass, so find the pass rather than
+/// assuming it is first.
 fn clear_color(app: &Elpa<HeadlessBackend>) -> (f64, f64, f64) {
     let frame = app.last_frame().expect("frame");
-    match &frame.commands[0] {
-        EncoderCommand::RenderPass(rp) => {
-            let c = rp.color_attachments[0].clear_color.expect("clear color");
-            (c.r, c.g, c.b)
-        }
-        _ => panic!("expected a render pass"),
-    }
+    let rp = frame
+        .commands
+        .iter()
+        .find_map(|c| match c {
+            EncoderCommand::RenderPass(rp) => Some(rp),
+            _ => None,
+        })
+        .expect("expected a render pass");
+    let c = rp.color_attachments[0].clear_color.expect("clear color");
+    (c.r, c.g, c.b)
 }
 
 #[test]
@@ -116,23 +121,26 @@ fn app_starts_and_draws_one_instanced_pass() {
     // The whole UI is one instanced rounded-rect draw over the shared pipeline.
     let frame = app.last_frame().expect("a frame");
     assert!(frame.resources.iter().any(|r| r.id() == "elpa.m3.pipe"), "pipeline created");
-    match &frame.commands[0] {
-        EncoderCommand::RenderPass(rp) => {
-            let draws: Vec<&RenderCommand> = rp
-                .commands
-                .iter()
-                .filter(|c| matches!(c, RenderCommand::Draw { .. }))
-                .collect();
-            assert_eq!(draws.len(), 1, "one instanced draw for the whole UI");
-            match draws[0] {
-                RenderCommand::Draw { instance_count, vertex_count, .. } => {
-                    assert_eq!(*vertex_count, 6);
-                    assert!(*instance_count > 100, "many widget + glyph instances");
-                }
-                _ => unreachable!(),
-            }
+    let rp = frame
+        .commands
+        .iter()
+        .find_map(|c| match c {
+            EncoderCommand::RenderPass(rp) => Some(rp),
+            _ => None,
+        })
+        .expect("expected a render pass");
+    let draws: Vec<&RenderCommand> = rp
+        .commands
+        .iter()
+        .filter(|c| matches!(c, RenderCommand::Draw { .. }))
+        .collect();
+    assert_eq!(draws.len(), 1, "one instanced draw for the whole UI");
+    match draws[0] {
+        RenderCommand::Draw { instance_count, vertex_count, .. } => {
+            assert_eq!(*vertex_count, 6);
+            assert!(*instance_count > 50, "many widget + glyph instances");
         }
-        _ => panic!("expected a render pass"),
+        _ => unreachable!(),
     }
     // The instance buffer matches the draw (whole 16-float instances).
     assert_eq!(instances(&app).len() % 16, 0, "whole instances");
@@ -288,8 +296,8 @@ fn tapping_the_fab_cycles_the_accent() {
     let _ = app.take_log();
     let before = instances(&app);
 
-    // FAB center ≈ (vw - u*9, vh - u*9) with u = vh/100 → (774, 1274) on 900×1400.
-    app.send_event(&InputEvent::PointerDown { x: 774.0, y: 1274.0, button: 0 });
+    // FAB center ≈ (vw - u*9, vh - u*9) with u = min(vw,vh)/100 = 9 → (819, 1319).
+    app.send_event(&InputEvent::PointerDown { x: 819.0, y: 1319.0, button: 0 });
     let after = instances(&app);
     assert!(after != before, "tapping the FAB recolored the UI (accent cycled)");
     assert!(app.take_log().is_empty(), "no host errors on tap");
@@ -305,8 +313,8 @@ fn tapping_a_radio_updates_only_that_component() {
     let _ = app.take_log();
     let before = instances(&app);
 
-    // Middle radio "B" center ≈ (450, 999) on 900×1400 (computed from the layout).
-    app.send_event(&InputEvent::PointerDown { x: 450.0, y: 999.0, button: 0 });
+    // Middle radio "B" center ≈ (450, 892) on 900×1400 (u = min(vw,vh)/100 = 9).
+    app.send_event(&InputEvent::PointerDown { x: 450.0, y: 892.0, button: 0 });
     for _ in 0..8 {
         app.animate(16.0);
     }

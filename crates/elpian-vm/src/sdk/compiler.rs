@@ -1378,6 +1378,9 @@ pub fn compile_code(p: String) -> Vec<u8> {
 // Supported subset (everything the AST/bytecode actually models):
 //   * `let` / `const` / `var` declarations (→ `definition`).
 //   * assignment, including `+= -= *= /= %=` and `++` / `--` (→ `assignment`).
+//     A simple target (`x`, `a.b`, `a[i]`) uses the native `assignment`; a nested
+//     or computed target (`a.b.c`, `a[i].x`, `o.a[i]`) is lowered to a
+//     `__setIndex(base, key, value)` builtin call, so deep assignment works.
 //   * `function name(params) { ... }` (→ `functionDefinition`).
 //   * `return` (→ `returnOperation`).
 //   * `if` / `else if` / `else` (→ `ifStmt` chains).
@@ -1557,13 +1560,30 @@ fn js_arith(op: &str, a: Value, b: Value) -> Value {
 fn js_def(name: &str, val: Value) -> Value {
     json!({ "type": "definition", "data": { "leftSide": js_ident(name), "rightSide": val } })
 }
-/// Build an `assignment` node, but only for the lvalues the bytecode models
-/// (a bare identifier or an `a.b` / `a[i]` indexer). Anything else yields
+/// Build an assignment for any JS lvalue. A bare identifier or a *direct* indexer
+/// (`a.b` / `a[i]`, whose base is a named variable) uses the native `assignment`
+/// node the bytecode models. A *nested or computed* base (`a.b.c`, `a[i].x`,
+/// `o.a[i]`) — where the base is itself an expression — is lowered to a call to
+/// the `__setIndex` builtin: the base expression evaluates to a container
+/// reference and the builtin stores into it. This keeps deep assignment working
+/// without the lvalue having to be a single named variable. Anything else yields
 /// `None`, so the caller can drop the meaningless statement.
 fn js_assign(target: Value, rhs: Value) -> Option<Value> {
     match target["type"].as_str().unwrap_or("") {
-        "identifier" | "indexer" => {
+        "identifier" => {
             Some(json!({ "type": "assignment", "data": { "leftSide": target, "rightSide": rhs } }))
+        }
+        "indexer" => {
+            if target["data"]["target"]["type"] == "identifier" {
+                Some(json!({ "type": "assignment", "data": { "leftSide": target, "rightSide": rhs } }))
+            } else {
+                let base = target["data"]["target"].clone();
+                let index = target["data"]["index"].clone();
+                Some(json!({ "type": "functionCall", "data": {
+                    "callee": js_ident("__setIndex"),
+                    "args": [base, index, rhs]
+                } }))
+            }
         }
         _ => None,
     }

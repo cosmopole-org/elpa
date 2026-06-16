@@ -352,10 +352,14 @@ pub struct NetRequest {
 }
 
 /// A network response handed back to the guest.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct NetResponse {
     pub status: u16,
     pub body: String,
+    /// Raw response bytes, when the provider fetched binary (e.g. a font file).
+    /// Text replies leave this `None` and use `body`; `text.atlas` reads it to
+    /// load a font by URL without lossy UTF-8 round-tripping.
+    pub bytes: Option<Vec<u8>>,
 }
 
 /// Pluggable network provider. The host installs one to grant a guest network
@@ -399,7 +403,16 @@ pub struct HostEnv {
     /// Deterministic PRNG state for `random.*` when randomness is enabled. A
     /// real host can reseed; this keeps the service self-contained and testable.
     rng_state: u64,
+    /// Rasterised font atlases keyed by `"<px>|<source>"`, so `text.atlas` builds
+    /// each (size, font) once and replays the cached reply on subsequent calls.
+    atlas_cache: BTreeMap<String, String>,
 }
+
+/// Bundled UI font (Liberation Sans, SIL OFL 1.1 — see `assets/fonts/LICENSE.txt`).
+/// A metric-compatible, professional sans-serif rasterised on the host into a
+/// coverage atlas the SDK samples for real, anti-aliased text.
+const FONT_REGULAR: &[u8] = include_bytes!("../assets/fonts/LiberationSans-Regular.ttf");
+const FONT_BOLD: &[u8] = include_bytes!("../assets/fonts/LiberationSans-Bold.ttf");
 
 impl Default for HostEnv {
     fn default() -> Self {
@@ -409,7 +422,7 @@ impl Default for HostEnv {
 
 impl HostEnv {
     pub fn new(fs: Box<dyn FileStore>, net: Box<dyn NetProvider>) -> Self {
-        HostEnv { toggles: EnvToggles::default(), fs, net, clock_ms: 0, rng_state: 0x9E3779B97F4A7C15 }
+        HostEnv { toggles: EnvToggles::default(), fs, net, clock_ms: 0, rng_state: 0x9E3779B97F4A7C15, atlas_cache: BTreeMap::new() }
     }
 
     pub fn toggles(&self) -> EnvToggles {
@@ -455,6 +468,7 @@ impl HostEnv {
             "net" => Some(self.service_net(call)),
             "time" => Some(self.service_time(call)),
             "random" => Some(self.service_random(call)),
+            "text" => Some(self.service_text(call)),
             _ => None,
         }
     }
@@ -556,6 +570,213 @@ impl HostEnv {
             other => err_reply(&format!("unknown random api: {other}")),
         }
     }
+
+    /// `text.atlas` — rasterise a UI font (regular + bold) into a single coverage
+    /// atlas and return it with per-glyph metrics, so the SDK can render real
+    /// anti-aliased text by sampling a texture instead of stroking capsules.
+    ///
+    /// Arg: `{ size: <px>, url?, boldUrl?, path?, boldPath? }`. With no source the
+    /// bundled font is used; `path`/`boldPath` load font bytes from the fabricated
+    /// filesystem; `url`/`boldUrl` fetch them through the host's `NetProvider`
+    /// (binary-safe via `NetResponse.bytes`). A failed/denied source falls back to
+    /// the bundled font, so the call never traps.
+    ///
+    /// Reply: `{ ok, source, width, height, pxSize, ascent, descent, lineHeight,
+    ///           data (base64 R8 coverage), regular:{ch:{...}}, bold:{ch:{...}} }`
+    /// where each glyph is `{ x, y, w, h, bx (left bearing), by (bottom vs
+    /// baseline, y-up), adv (advance) }` in atlas pixels.
+    fn service_text(&mut self, call: &HostCall) -> String {
+        let arg = first_arg(&call.payload).unwrap_or(Value::Null);
+        let px = arg
+            .get("size")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(44.0)
+            .clamp(8.0, 160.0)
+            .round() as u32;
+        // The cache key folds in the font source so switching fonts rebuilds.
+        let url = str_field(&arg, "url");
+        let bold_url = str_field(&arg, "boldUrl");
+        let path = str_field(&arg, "path");
+        let bold_path = str_field(&arg, "boldPath");
+        let src_key = format!(
+            "{}|{}|{}|{}",
+            url.as_deref().unwrap_or(""),
+            bold_url.as_deref().unwrap_or(""),
+            path.as_deref().unwrap_or(""),
+            bold_path.as_deref().unwrap_or("")
+        );
+        let cache_key = format!("{px}|{src_key}");
+        if let Some(cached) = self.atlas_cache.get(&cache_key) {
+            return cached.clone();
+        }
+        let (reg, bold, source) = self.resolve_font_bytes(&url, &bold_url, &path, &bold_path);
+        let reply = build_text_atlas(px as f32, &reg, &bold, &source);
+        self.atlas_cache.insert(cache_key, reply.clone());
+        reply
+    }
+
+    /// Resolve the (regular, bold) font bytes for `text.atlas`, honouring a
+    /// storage `path` or a `url` (each with an optional bold companion) and
+    /// falling back to the bundled font when a source is absent, disabled, or
+    /// fails. Returns the bytes plus a label describing what was used.
+    fn resolve_font_bytes(
+        &mut self,
+        url: &Option<String>,
+        bold_url: &Option<String>,
+        path: &Option<String>,
+        bold_path: &Option<String>,
+    ) -> (Vec<u8>, Vec<u8>, String) {
+        if let Some(p) = path {
+            if self.toggles.filesystem {
+                if let Ok(reg) = self.fs.read(p) {
+                    if !reg.is_empty() {
+                        let bold = bold_path
+                            .as_ref()
+                            .and_then(|bp| self.fs.read(bp).ok())
+                            .filter(|b| !b.is_empty())
+                            .unwrap_or_else(|| reg.clone());
+                        return (reg, bold, format!("path:{p}"));
+                    }
+                }
+            }
+        }
+        if let Some(u) = url {
+            if self.toggles.network {
+                if let Some(reg) = self.fetch_font(u) {
+                    let bold = bold_url
+                        .as_ref()
+                        .and_then(|bu| self.fetch_font(bu))
+                        .unwrap_or_else(|| reg.clone());
+                    return (reg, bold, format!("url:{u}"));
+                }
+            }
+        }
+        (FONT_REGULAR.to_vec(), FONT_BOLD.to_vec(), "bundled".to_string())
+    }
+
+    /// Fetch font bytes from a URL through the installed `NetProvider`; binary
+    /// comes back in `NetResponse.bytes` (preferred) or the raw `body`.
+    fn fetch_font(&mut self, url: &str) -> Option<Vec<u8>> {
+        let req = NetRequest { method: "GET".to_string(), url: url.to_string(), body: None };
+        let resp = self.net.fetch(&req).ok()?;
+        let bytes = resp.bytes.unwrap_or_else(|| resp.body.into_bytes());
+        if bytes.is_empty() {
+            None
+        } else {
+            Some(bytes)
+        }
+    }
+}
+
+/// Rasterise regular+bold printable ASCII into one shelf-packed R8 coverage
+/// atlas. Falls back to the bundled font if the supplied bytes fail to parse.
+fn build_text_atlas(px: f32, reg_bytes: &[u8], bold_bytes: &[u8], source: &str) -> String {
+    use base64::Engine;
+    use fontdue::{Font, FontSettings};
+
+    let load = |bytes: &[u8]| Font::from_bytes(bytes, FontSettings::default()).ok();
+    let (regular, bold, source) = match (load(reg_bytes), load(bold_bytes)) {
+        (Some(r), Some(b)) => (r, b, source.to_string()),
+        _ => {
+            // Bad custom font → fall back to the bundled one rather than fail.
+            let r = Font::from_bytes(FONT_REGULAR, FontSettings::default());
+            let b = Font::from_bytes(FONT_BOLD, FontSettings::default());
+            match (r, b) {
+                (Ok(r), Ok(b)) => (r, b, "bundled".to_string()),
+                _ => return err_reply("font load failed"),
+            }
+        }
+    };
+    let fonts: Vec<Font> = vec![regular, bold];
+    let weights = ["regular", "bold"];
+
+    struct G {
+        weight: usize,
+        ch: char,
+        w: usize,
+        h: usize,
+        bx: f32,
+        by: f32,
+        adv: f32,
+        bitmap: Vec<u8>,
+    }
+    let mut glyphs: Vec<G> = Vec::new();
+    for (wi, font) in fonts.iter().enumerate() {
+        for code in 32u32..=126 {
+            let ch = char::from_u32(code).unwrap();
+            let (m, bitmap) = font.rasterize(ch, px);
+            glyphs.push(G {
+                weight: wi,
+                ch,
+                w: m.width,
+                h: m.height,
+                bx: m.xmin as f32,
+                by: m.ymin as f32,
+                adv: m.advance_width,
+                bitmap,
+            });
+        }
+    }
+
+    // Shelf-pack into a fixed-width atlas, growing the height as needed.
+    let atlas_w: usize = 512;
+    let pad: usize = 1;
+    let mut pen_x = pad;
+    let mut pen_y = pad;
+    let mut row_h = 0usize;
+    let mut placed: Vec<(usize, usize)> = Vec::with_capacity(glyphs.len()); // (x,y) per glyph
+    for g in &glyphs {
+        if pen_x + g.w + pad > atlas_w {
+            pen_x = pad;
+            pen_y += row_h + pad;
+            row_h = 0;
+        }
+        placed.push((pen_x, pen_y));
+        pen_x += g.w + pad;
+        if g.h > row_h {
+            row_h = g.h;
+        }
+    }
+    let atlas_h = (pen_y + row_h + pad).next_power_of_two();
+    let mut data = vec![0u8; atlas_w * atlas_h];
+    for (i, g) in glyphs.iter().enumerate() {
+        let (gx, gy) = placed[i];
+        for row in 0..g.h {
+            let dst = (gy + row) * atlas_w + gx;
+            let src = row * g.w;
+            data[dst..dst + g.w].copy_from_slice(&g.bitmap[src..src + g.w]);
+        }
+    }
+
+    // Per-weight glyph metric maps.
+    let mut maps: [serde_json::Map<String, Value>; 2] = [Default::default(), Default::default()];
+    for (i, g) in glyphs.iter().enumerate() {
+        let (gx, gy) = placed[i];
+        maps[g.weight].insert(
+            g.ch.to_string(),
+            json!({ "x": gx, "y": gy, "w": g.w, "h": g.h, "bx": g.bx, "by": g.by, "adv": g.adv }),
+        );
+    }
+    let lm = fonts[0].horizontal_line_metrics(px).unwrap_or(fontdue::LineMetrics {
+        ascent: px * 0.9,
+        descent: -px * 0.2,
+        line_gap: 0.0,
+        new_line_size: px * 1.2,
+    });
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+    let mut obj = serde_json::Map::new();
+    obj.insert("ok".into(), Value::Bool(true));
+    obj.insert("source".into(), Value::String(source));
+    obj.insert("width".into(), json!(atlas_w));
+    obj.insert("height".into(), json!(atlas_h));
+    obj.insert("pxSize".into(), json!(px));
+    obj.insert("ascent".into(), json!(lm.ascent));
+    obj.insert("descent".into(), json!(lm.descent));
+    obj.insert("lineHeight".into(), json!(lm.new_line_size));
+    obj.insert("data".into(), Value::String(b64));
+    obj.insert(weights[0].into(), Value::Object(maps[0].clone()));
+    obj.insert(weights[1].into(), Value::Object(maps[1].clone()));
+    Value::Object(obj).to_string()
 }
 
 // ---- payload helpers --------------------------------------------------------
@@ -672,7 +893,7 @@ mod tests {
         assert!(r.contains("not provisioned"), "got {r}");
 
         env.set_net(Box::new(ClosureNet(|req: &NetRequest| {
-            Ok(NetResponse { status: 200, body: format!("fetched {}", req.url) })
+            Ok(NetResponse { status: 200, body: format!("fetched {}", req.url), bytes: None })
         })));
         let r = env.service(&hc("net.fetch", r#"[{"url":"https://x"}]"#)).unwrap();
         assert!(r.contains("\"status\":200") && r.contains("fetched https://x"), "got {r}");

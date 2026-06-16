@@ -116,7 +116,7 @@ fn network_is_denied_until_provisioned() {
     app.set_capability(Capability::Network, true);
     app.env_mut().set_family("net", true);
     app.env_mut().set_net(Box::new(elpa::ClosureNet(|req: &elpa::NetRequest| {
-        Ok(elpa::NetResponse { status: 200, body: format!("body-of-{}", req.url) })
+        Ok(elpa::NetResponse { status: 200, body: format!("body-of-{}", req.url), bytes: None })
     })));
     app.start();
     let log = app.take_log();

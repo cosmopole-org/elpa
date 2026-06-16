@@ -29,6 +29,10 @@ let expand = 0.0;        // expansion tile
 let likes = 3;           // badge count
 let saved = "";          // last value persisted to storage
 
+// A custom SVG-path icon, registered once so it is usable by name anywhere a
+// built-in icon is (it is stroked from its path, like the rest of the icon set).
+registerIcon("download", "M12 3 L12 14 M7 10 L12 15 L17 10 M5 19 L19 19", 24.0);
+
 // A small reusable custom widget (a captioned control), defined once.
 let Labeled = defineComponent(function(props, update) {
     return Column({ gap: 1.0, cross: "start", children: [
@@ -121,6 +125,25 @@ function galBtnRow(update) {
         OutlinedButton({ label: "SNACK", onTap: () => { snackOn = 1.0; update(); } }),
     ] });
 }
+// Typography: real font sizing (named roles + explicit px) and weights, all from
+// the same stroke font.
+function galTypeDemo() {
+    return Labeled({ label: "TYPOGRAPHY (SIZE + WEIGHT)", child: Column({ gap: 1.2, cross: "start", children: [
+        Text("HEADLINE BOLD", { size: "headline", weight: "bold" }),
+        Text("TITLE MEDIUM", { size: "title", weight: "medium" }),
+        Text("BODY REGULAR", { size: "body" }),
+        Text("LABEL LIGHT", { size: "label", weight: "light" }),
+    ] }) });
+}
+// SVG-path icons: a registered one (by name) and two inline paths (one all-line,
+// one with cubic Béziers), each stroked into the icon box.
+function galSvgRow() {
+    return Labeled({ label: "SVG ICONS (STROKED PATHS)", child: Row({ gap: 4.0, children: [
+        Icon({ icon: "download", size: 7.0, color: "primary" }),
+        Icon({ svg: "M12 21 C12 21 4 14 4 8 C4 5 6 3 9 3 C11 3 12 5 12 5 C12 5 13 3 15 3 C18 3 20 5 20 8 C20 14 12 21 12 21 Z", size: 7.0, color: "primary" }),
+        Icon({ svg: "M5 12 H19 M13 6 L19 12 L13 18", size: 7.0 }),
+    ] }) });
+}
 function galWidgets(update) {
     let k = [];
     push(k, Text("WIDGETS", { size: "title" }));
@@ -133,6 +156,8 @@ function galWidgets(update) {
     push(k, galProgRow());
     push(k, galBtnRow(update));
     push(k, Banner({ icon: "bell", message: "3 UPDATES AVAILABLE" }));
+    push(k, galTypeDemo());
+    push(k, galSvgRow());
     return ListView({ id: "widgetsList", width: 92.0, height: 70.0, gap: 3.0, children: k });
 }
 
@@ -226,6 +251,11 @@ function galKey(k, update) {
     if (k == "s") { snackOn = 1.0 - snackOn; }
     if (k == "p") { playing = 1.0 - playing; }
     if (k == "d") { dark = 1.0 - dark; }
+    // 'f' downloads a web font by URL and uses it as the main font; 'F' restores
+    // the bundled one. The runtime fetches and rasterises it; the UI repaints in
+    // the new face. (`useFont` repaints itself, so no `update()` is needed here.)
+    if (k == "f") { useFont("https://cdn.jsdelivr.net/gh/google/fonts/ofl/pacifico/Pacifico-Regular.ttf"); return 0; }
+    if (k == "F") { useDefaultFont(); return 0; }
     update();
 }
 function galDialog(update) {
@@ -246,7 +276,7 @@ let App = defineComponent(function(props, update) {
             onAction: () => { dark = 1.0 - dark; update(); } }),
         fab: Fab({ onTap: () => { accent = (accent + 1) % 4; update(); } }),
         bottomBar: NavigationBar({ index: tab, items: items, onChange: (i) => { tab = i; update(); } }),
-        body: Center({ child: galBody(update) }),
+        body: galBody(update),
         drawer: Drawer({ open: menuOpen, header: "SECTIONS", index: tab, items: items,
             onSelect: (i) => { tab = i; menuOpen = 0.0; update(); },
             onClose: () => { menuOpen = 0.0; update(); } }),

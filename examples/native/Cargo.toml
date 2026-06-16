@@ -24,6 +24,7 @@ pollster = "0.3"
 wgpu = "29"
 log = "0.4"
 env_logger = "0.10"
+ureq = "3"
 
 # Android-only: winit's Android activity glue and a logcat-backed logger.
 [target.'cfg(target_os = "android")'.dependencies]

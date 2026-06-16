@@ -47,16 +47,26 @@ struct Out {
     @location(3) @interpolate(flat) fill: vec4<f32>,
     @location(4) @interpolate(flat) bcol: vec4<f32>,
     @location(5) @interpolate(flat) feather: f32,
+    @location(6) uv: vec2<f32>,
+    @location(7) @interpolate(flat) glyph: f32,
 };
+
+// One pipeline draws everything. A 'glyph' instance (flagged by bcol.x > 1.5)
+// repurposes the b vector as an atlas UV rect (u0,v0,u1,v1) and samples the font
+// coverage atlas; every other instance is the rounded-rect SDF as before.
+@group(0) @binding(1) var atlas: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
 
 @vertex
 fn vs(@builtin(vertex_index) vi: u32, in: In) -> Out {
     var corners = array<vec2<f32>, 6>(
         vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
         vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0));
+    let isGlyph = in.bcol.x > 1.5;
     let half = in.a.zw;
     let local = corners[vi] * half;
-    let rot = in.b.z;
+    var rot = 0.0;
+    if (!isGlyph) { rot = in.b.z; }
     let cr = cos(rot);
     let sr = sin(rot);
     let rotated = vec2<f32>(local.x * cr - local.y * sr, local.x * sr + local.y * cr);
@@ -70,6 +80,9 @@ fn vs(@builtin(vertex_index) vi: u32, in: In) -> Out {
     o.fill = in.fill;
     o.bcol = in.bcol;
     o.feather = in.b.w;
+    let cuv = corners[vi] * 0.5 + vec2<f32>(0.5, 0.5);
+    o.uv = mix(in.b.xy, in.b.zw, cuv);
+    o.glyph = select(0.0, 1.0, isGlyph);
     return o;
 }
 
@@ -80,6 +93,11 @@ fn sd_round_box(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
 
 @fragment
 fn fs(o: Out) -> @location(0) vec4<f32> {
+    // Sampled in uniform control flow (WGSL requirement), used only for glyphs.
+    let tex = textureSample(atlas, samp, o.uv).r;
+    if (o.glyph > 0.5) {
+        return vec4<f32>(o.fill.rgb, o.fill.a * tex);
+    }
     let r = min(o.params.x, min(o.half.x, o.half.y));
     let d = sd_round_box(o.p, o.half, r);
     let f = max(o.feather, 0.75);
@@ -95,7 +113,10 @@ function _pipelineResources() {
     return [
         { kind: "shader", id: "elpa.m3.shader", wgsl: _WGSL },
         { kind: "bindGroupLayout", id: "elpa.m3.bgl",
-          entries: [{ binding: 0, visibility: ["VERTEX"], ty: "uniform" }] },
+          entries: [
+              { binding: 0, visibility: ["VERTEX"], ty: "uniform" },
+              { binding: 1, visibility: ["FRAGMENT"], ty: "texture" },
+              { binding: 2, visibility: ["FRAGMENT"], ty: "sampler" }] },
         { kind: "pipelineLayout", id: "elpa.m3.layout", bind_group_layouts: ["elpa.m3.bgl"] },
         { kind: "renderPipeline", id: "elpa.m3.pipe", layout: "elpa.m3.layout",
           vertex: { module: "elpa.m3.shader", entry_point: "vs", buffers: [{
@@ -179,6 +200,12 @@ let _focusInput = 0; let _hasFocusInput = 0.0; // focused field's key handler (p
 let _scroll = {};                              // scroll offset (px) per scrollable id
 let _listRegions = {};                         // last painted scroll viewport per id
 let _scrollDragOn = 0.0; let _scrollDragId = ""; let _scrollDragY = 0.0;  // touch scroll
+let _scrollVel = 0.0;                          // smoothed drag velocity (px/frame)
+let _flingId = ""; let _flingV = 0.0;          // active momentum fling (id + velocity)
+let _atlas = 0; let _atlasUp = 0.0;            // font atlas reply (host) + upload-once flag
+let _fontSrc = 0; let _hasFont = 0.0;          // app-chosen font source (url/path) + presence flag
+let _fontVer = 0;                              // bumped per font swap → versions the atlas texture id
+let _running = 0.0;                            // 1 once runApp has mounted the tree
 let _darkTarget = 0.0; let _darkAnim = 0.0;    // theme
 let _accent = 0;                               // accent index
 let _anim = {}; let _target = {};              // eased 0..1 values by key
@@ -229,7 +256,7 @@ function defineComponent(fn) { return (props) => Component(fn, props); }
 
 // Mount the root component (a `defineComponent` constructor) and paint the first
 // frame — the analog of Flutter's `runApp(MyApp())`.
-function runApp(root) { _root = root({}); _renderApp(); }
+function runApp(root) { _root = root({}); _running = 1.0; _renderApp(); }
 
 // ---- Platform services (capability-gated host interfaces) --------------------
 // Thin app-facing wrappers over Elpa's `askHost` seam: the clock, the fabricated
@@ -305,7 +332,7 @@ function GridView(p) { p.kind = "gridView"; if (!has(p, "id")) { p.id = "grid"; 
 
 // ---- Material / content widgets ----------------------------------------------
 function Icon(p) { p.kind = "icon"; return p; }
-function IconButton(p) { p.kind = "iconButton"; if (!has(p, "id")) { p.id = p.icon; } return p; }
+function IconButton(p) { p.kind = "iconButton"; if (!has(p, "id")) { if (has(p, "icon")) { p.id = p.icon; } else { p.id = "iconBtn"; } } return p; }
 function Avatar(p) { p.kind = "avatar"; return p; }
 function Badge(p) { p.kind = "badge"; return p; }
 function ListTile(p) { p.kind = "listTile"; if (!has(p, "id")) { p.id = p.title; } return p; }
@@ -373,13 +400,58 @@ function _shadow(cx, cy, hw, hh, r, grow, drop, blur) {
     push(_curOut, 0.0); push(_curOut, 0.0); push(_curOut, 0.0); push(_curOut, 0.28);
     push(_curOut, 0.0); push(_curOut, 0.0); push(_curOut, 0.0); push(_curOut, 0.0);
 }
-function _paintText(str, cx, cy, cell, col) {
-    str = upper(str);
-    let nch = len(str); let adv = 5.0; let th = 0.92;
+// Pixel→screen scale for a glyph cell: the atlas is rasterised once at a fixed px
+// size; this maps it to the requested cell so a glyph's on-screen size tracks the
+// kit's vertical rhythm. (Tuned so text height ≈ the old 6·cell box.)
+function _textScale(cell) { if (_atlas == 0) { return cell * 0.2; } return cell * 6.6 / _atlas.pxSize; }
+// The glyph map for a weight — the atlas carries regular + bold; `thick` (the
+// resolved weight) ≥ ~1.1 selects bold.
+function _glyphMap(thick) { if (thick > 1.1) { return _atlas.bold; } return _atlas.regular; }
+// Emit one textured glyph quad. b = atlas UV rect (u0,v0,u1,v1); bcol.x = 2 marks
+// the instance a glyph so the shader samples the atlas instead of the SDF.
+function _glyph(cx, cy, hw, hh, u0, v0, u1, v1, col) {
+    push(_curOut, cx); push(_curOut, cy); push(_curOut, hw); push(_curOut, hh);
+    push(_curOut, u0); push(_curOut, v0); push(_curOut, u1); push(_curOut, v1);
+    push(_curOut, col[0]); push(_curOut, col[1]); push(_curOut, col[2]); push(_curOut, col[3]);
+    push(_curOut, 2.0); push(_curOut, 0.0); push(_curOut, 0.0); push(_curOut, 0.0);
+}
+// Real text: lay glyphs out from the font atlas with proportional advances and
+// anti-aliased coverage — the same way a browser/native UI draws text. Centred on
+// (cx,cy). Falls back to the stroke font only if no atlas is available.
+function _paintTextStyled(str, cx, cy, cell, col, thick, font) {
+    if (_atlas == 0) { _paintTextCapsules(str, cx, cy, cell, col, thick, font); return 0; }
+    let g = _glyphMap(thick); let sc = _textScale(cell);
+    let aw = _atlas.width; let ah = _atlas.height; let n = len(str);
+    let tw = 0.0;
+    for (let i = 0; i < n; i++) { let ch = charAt(str, i); if (has(g, ch)) { tw = tw + g[ch].adv * sc; } }
+    let penX = cx - tw / 2.0;
+    let baseline = cy + (_atlas.ascent + _atlas.descent) * sc / 2.0;
+    for (let i = 0; i < n; i++) {
+        let ch = charAt(str, i);
+        if (has(g, ch)) {
+            let gg = g[ch];
+            if (gg.w > 0.0) {
+                let gw = gg.w * sc; let gh = gg.h * sc;
+                let glx = penX + gg.bx * sc;
+                let gtop = baseline - (gg.by + gg.h) * sc;
+                _glyph(glx + gw / 2.0, gtop + gh / 2.0, gw / 2.0, gh / 2.0,
+                       gg.x / aw, gg.y / ah, (gg.x + gg.w) / aw, (gg.y + gg.h) / ah, col);
+            }
+            penX = penX + gg.adv * sc;
+        }
+    }
+}
+// Fallback stroke-font rasteriser (only when no atlas is available, e.g. a host
+// without the `text.atlas` call). `thick` is the capsule weight; `font` an
+// optional custom stroke-glyph map.
+function _paintTextCapsules(str, cx, cy, cell, col, thick, font) {
+    let glyphs = _GLYPHS;
+    if (font != 0) { glyphs = font; } else { str = upper(str); }
+    let nch = len(str); let adv = 5.0; let th = thick;
     for (let ci = 0; ci < nch; ci++) {
         let ch = charAt(str, ci);
-        if (has(_GLYPHS, ch)) {
-            let segs = _GLYPHS[ch];
+        if (has(glyphs, ch)) {
+            let segs = glyphs[ch];
             let gc = (ci - (nch - 1.0) / 2.0) * adv;
             for (let si = 0; si < len(segs); si++) {
                 let s = segs[si];
@@ -392,6 +464,39 @@ function _paintText(str, cx, cy, cell, col) {
         }
     }
 }
+function _paintText(str, cx, cy, cell, col) { _paintTextStyled(str, cx, cy, cell, col, 0.92, 0); }
+// Load the host-rasterised font atlas (regular + bold + metrics) for the current
+// font source — the bundled font by default, or the app-chosen URL/storage path.
+function _loadAtlas() {
+    let req = { size: 48.0 };
+    if (_hasFont > 0.5) {
+        if (has(_fontSrc, "url")) { req.url = _fontSrc.url; }
+        if (has(_fontSrc, "boldUrl")) { req.boldUrl = _fontSrc.boldUrl; }
+        if (has(_fontSrc, "path")) { req.path = _fontSrc.path; }
+        if (has(_fontSrc, "boldPath")) { req.boldPath = _fontSrc.boldPath; }
+    }
+    let r = askHost("text.atlas", [req]);
+    if (isNull(r)) { return 0; }
+    if (!has(r, "ok")) { return 0; }
+    _atlas = r; _atlasUp = 0.0; return 0;
+}
+// ---- App-facing font control -------------------------------------------------
+// Choose the app's main font. The runtime fetches/loads it, rasterises a fresh
+// atlas, and the whole UI repaints in the new face. Sources degrade gracefully:
+// if a URL can't be fetched (network off/denied) or a path is missing, the host
+// falls back to the bundled font, so these never crash the app.
+//   useFont("https://…/Roboto.ttf")            — download by URL
+//   useFontBold(regularUrl, boldUrl)           — download a regular + bold pair
+//   useFontFromPath("/fonts/app.ttf")          — load from storage
+//   useFontFromPathBold(regularPath, boldPath) — load a regular + bold pair
+//   useDefaultFont()                           — back to the bundled font
+// (Each helper has a fixed arity — the VM binds call arguments positionally.)
+function _applyFont(src, has2) { _fontSrc = src; _hasFont = has2; _atlas = 0; _atlasUp = 0.0; _fontVer = _fontVer + 1; if (_running > 0.5) { _renderApp(); } }
+function useFont(url) { _applyFont({ url: url }, 1.0); }
+function useFontBold(url, boldUrl) { _applyFont({ url: url, boldUrl: boldUrl }, 1.0); }
+function useFontFromPath(path) { _applyFont({ path: path }, 1.0); }
+function useFontFromPathBold(path, boldPath) { _applyFont({ path: path, boldPath: boldPath }, 1.0); }
+function useDefaultFont() { _applyFont(0, 0.0); }
 function _addTap(cx, cy, hw, hh, id, onTap) { push(_curTaps, { cx: cx, cy: cy, hw: hw, hh: hh, id: id, onTap: onTap }); }
 function _addDrag(cx, cy, hw, hh, onChanged, left, width) {
     push(_curDrags, { cx: cx, cy: cy, hw: hw, hh: hh,
@@ -410,7 +515,11 @@ function _ring(cx, cy, r, w, col) { _rect(cx, cy, r, r, r, w, 0.0, _CLEAR, col);
 // A tiny vector icon set: each icon is drawn from capsules/discs/rings inside a
 // box of half-extent `r` centered at (cx,cy). Unknown names fall back to a dot.
 function _icon(name, cx, cy, r, col) {
-    let t = r * 0.26;
+    // Standard Material stroke weight: ~2dp on a 24dp grid → ≈ r/6. (The old
+    // value, 0.26·r, was noticeably heavier than the spec.) A custom/SVG icon
+    // registered under this name takes precedence and is stroked from its path.
+    let t = r * 0.18;
+    if (has(_SVGICONS, name)) { let g = _SVGICONS[name]; _iconSvg(g.d, cx, cy, r, t, col, g.vb); return 0; }
     if (name == "add") { _seg(cx - r * 0.62, cy, cx + r * 0.62, cy, t, col); _seg(cx, cy - r * 0.62, cx, cy + r * 0.62, t, col); return 0; }
     if (name == "close") { _seg(cx - r * 0.5, cy - r * 0.5, cx + r * 0.5, cy + r * 0.5, t, col); _seg(cx - r * 0.5, cy + r * 0.5, cx + r * 0.5, cy - r * 0.5, t, col); return 0; }
     if (name == "check") { _seg(cx - r * 0.55, cy + r * 0.05, cx - r * 0.12, cy + r * 0.5, t, col); _seg(cx - r * 0.12, cy + r * 0.5, cx + r * 0.6, cy - r * 0.45, t, col); return 0; }
@@ -432,6 +541,134 @@ function _icon(name, cx, cy, r, col) {
     return 0;
 }
 
+// --------------------------------------------------------------- SVG icons ----
+// Full SVG-path icon support, scoped to what a stroke-only (rounded-rect SDF)
+// renderer can honour: a path's outline is *stroked* (this kit cannot fill an
+// arbitrary polygon — every primitive is a rounded rect). The path grammar
+// covers M/L/H/V/C/Q/Z in both absolute and relative forms, with cubic/quadratic
+// Béziers flattened to line segments; unsupported commands (S/T/A) are skipped.
+// Apps draw one with `Icon({ svg: "M..", viewBox: 24 })` or register a named icon
+// with `registerIcon(name, d, viewBox)` so it works anywhere a name does.
+let _DIGITS = { "0": 1, "1": 1, "2": 1, "3": 1, "4": 1, "5": 1, "6": 1, "7": 1, "8": 1, "9": 1 };
+let _PATHCMD = { M: 1, m: 1, L: 1, l: 1, H: 1, h: 1, V: 1, v: 1, C: 1, c: 1, Q: 1, q: 1, S: 1, s: 1, T: 1, t: 1, A: 1, a: 1, Z: 1, z: 1 };
+let _SVGICONS = {};
+
+// Register a named SVG icon (usable wherever an icon name is — list tiles, nav,
+// Icon/IconButton). `viewBox` is the square path coordinate extent (default 24).
+function registerIcon(name, d, viewBox) { let vb = 24.0; if (viewBox != 0) { vb = viewBox; } _SVGICONS[name] = { d: d, vb: vb }; }
+
+// Tokenise a path `d` into command letters and numeric strings (handles comma /
+// whitespace separators, implicit signs, and exponents), without leaning on
+// string ordering or regex (neither is in the VM's JS subset).
+function _svgTok(d) {
+    let toks = []; let numStr = ""; let n = len(d);
+    for (let i = 0; i < n; i++) {
+        let c = charAt(d, i);
+        let isNum = 0.0;
+        if (has(_DIGITS, c)) { isNum = 1.0; }
+        if (c == ".") { isNum = 1.0; }
+        if (c == "e") { isNum = 1.0; }
+        if (c == "E") { isNum = 1.0; }
+        if (isNum > 0.5) { numStr = concat(numStr, c); }
+        else {
+            if (c == "-") {
+                let afterE = 0.0;
+                if (len(numStr) > 0) { let lc = charAt(numStr, len(numStr) - 1.0); if (lc == "e") { afterE = 1.0; } if (lc == "E") { afterE = 1.0; } }
+                if (afterE > 0.5) { numStr = concat(numStr, c); }
+                else { if (len(numStr) > 0) { push(toks, numStr); } numStr = "-"; }
+            } else {
+                if (len(numStr) > 0) { push(toks, numStr); numStr = ""; }
+                if (c == "+") { numStr = ""; }
+                else {
+                    let sep = 0.0;
+                    if (c == " ") { sep = 1.0; } if (c == ",") { sep = 1.0; }
+                    if (c == "\n") { sep = 1.0; } if (c == "\t") { sep = 1.0; } if (c == "\r") { sep = 1.0; }
+                    if (sep < 0.5) { push(toks, c); }
+                }
+            }
+        }
+    }
+    if (len(numStr) > 0) { push(toks, numStr); }
+    return toks;
+}
+function _flatC(p0, p1, p2, p3, steps, out) {
+    for (let i = 1; i <= steps; i++) {
+        let t = num(i) / steps; let u = 1.0 - t;
+        let x = u * u * u * p0[0] + 3.0 * u * u * t * p1[0] + 3.0 * u * t * t * p2[0] + t * t * t * p3[0];
+        let y = u * u * u * p0[1] + 3.0 * u * u * t * p1[1] + 3.0 * u * t * t * p2[1] + t * t * t * p3[1];
+        push(out, [x, y]);
+    }
+}
+function _flatQ(p0, p1, p2, steps, out) {
+    for (let i = 1; i <= steps; i++) {
+        let t = num(i) / steps; let u = 1.0 - t;
+        let x = u * u * p0[0] + 2.0 * u * t * p1[0] + t * t * p2[0];
+        let y = u * u * p0[1] + 2.0 * u * t * p1[1] + t * t * p2[1];
+        push(out, [x, y]);
+    }
+}
+// Parse a path into a list of polylines (each a list of [x,y] points).
+function _svgPolys(d) {
+    let toks = _svgTok(d); let nt = len(toks);
+    let polys = []; let cur = [];
+    let px = 0.0; let py = 0.0; let sx = 0.0; let sy = 0.0;
+    let cmd = ""; let rel = 0.0; let i = 0;
+    for (let g = 0; g <= nt; g++) {
+        if (i >= nt) { g = nt + 1; }
+        else {
+            let tk = toks[i];
+            if (has(_PATHCMD, tk)) { cmd = upper(tk); rel = 0.0; if (sel(tk, cmd) < 0.5) { rel = 1.0; } i = i + 1; }
+            if (cmd == "M") {
+                let x = num(toks[i]); let y = num(toks[i + 1]); i = i + 2;
+                if (rel > 0.5) { x = px + x; y = py + y; }
+                if (len(cur) > 0) { push(polys, cur); }
+                cur = []; push(cur, [x, y]); px = x; py = y; sx = x; sy = y;
+                cmd = "L";   // subsequent coordinate pairs are implicit line-to
+            } else { if (cmd == "L") {
+                let x = num(toks[i]); let y = num(toks[i + 1]); i = i + 2;
+                if (rel > 0.5) { x = px + x; y = py + y; }
+                push(cur, [x, y]); px = x; py = y;
+            } else { if (cmd == "H") {
+                let x = num(toks[i]); i = i + 1; if (rel > 0.5) { x = px + x; }
+                push(cur, [x, py]); px = x;
+            } else { if (cmd == "V") {
+                let y = num(toks[i]); i = i + 1; if (rel > 0.5) { y = py + y; }
+                push(cur, [px, y]); py = y;
+            } else { if (cmd == "C") {
+                let x1 = num(toks[i]); let y1 = num(toks[i + 1]); let x2 = num(toks[i + 2]);
+                let y2 = num(toks[i + 3]); let x = num(toks[i + 4]); let y = num(toks[i + 5]); i = i + 6;
+                if (rel > 0.5) { x1 = px + x1; y1 = py + y1; x2 = px + x2; y2 = py + y2; x = px + x; y = py + y; }
+                _flatC([px, py], [x1, y1], [x2, y2], [x, y], 12, cur); px = x; py = y;
+            } else { if (cmd == "Q") {
+                let x1 = num(toks[i]); let y1 = num(toks[i + 1]); let x = num(toks[i + 2]); let y = num(toks[i + 3]); i = i + 4;
+                if (rel > 0.5) { x1 = px + x1; y1 = py + y1; x = px + x; y = py + y; }
+                _flatQ([px, py], [x1, y1], [x, y], 12, cur); px = x; py = y;
+            } else { if (cmd == "Z") {
+                push(cur, [sx, sy]); px = sx; py = sy;
+                if (len(cur) > 0) { push(polys, cur); } cur = [];
+            } else {
+                // Unsupported command (S/T/A …): consume one number to make progress.
+                i = i + 1;
+            } } } } } } }
+        }
+    }
+    if (len(cur) > 0) { push(polys, cur); }
+    return polys;
+}
+// Stroke a parsed path into the icon box: map the viewBox (vb×vb, top-left origin)
+// onto the box centred at (cx,cy) with half-extent `r`, then draw each segment as
+// a round-capped capsule of width `t`.
+function _iconSvg(d, cx, cy, r, t, col, vb) {
+    let polys = _svgPolys(d); let sc = (2.0 * r) / vb; let ox = cx - r; let oy = cy - r;
+    for (let p = 0; p < len(polys); p++) {
+        let poly = polys[p];
+        for (let i = 0; i < len(poly) - 1; i++) {
+            let a = poly[i]; let b = poly[i + 1];
+            _seg(ox + a[0] * sc, oy + a[1] * sc, ox + b[0] * sc, oy + b[1] * sc, t, col);
+        }
+    }
+}
+
 // ---------------------------------------------------------- sizing / cells ----
 function _cell(size) {
     if (size == "headline") { return _u * 0.82; }
@@ -442,7 +679,38 @@ function _cell(size) {
     if (size == "micro") { return _u * 0.26; }
     return _u * 0.40;
 }
-function _textW(str, cell) { return len(str) * 5.0 * cell; }
+// Resolve a Text node's cell size (the per-glyph scale). Supports the named M3
+// roles (above), an explicit pixel font size (`px`, the rendered cap height), and
+// a numeric `size` interpreted in layout units — so apps get real font sizing.
+function _cellOf(node) {
+    if (has(node, "px")) { return node.px / 6.0; }
+    let s = "body"; if (has(node, "size")) { s = node.size; }
+    if (typeOf(s) == "number") { return _u * s; }
+    return _cell(s);
+}
+// Resolve a Text node's stroke weight (capsule thickness as a fraction of the
+// cell). Accepts the CSS-like names or a numeric 100–900; the default (0.92)
+// matches the kit's prior look so untouched text is unchanged.
+function _weightThick(node) {
+    if (!has(node, "weight")) { return 0.92; }
+    let w = node.weight;
+    if (typeOf(w) == "number") { return 0.5 + w / 1000.0; }
+    if (w == "thin") { return 0.6; }
+    if (w == "light") { return 0.72; }
+    if (w == "regular") { return 0.92; }
+    if (w == "medium") { return 1.05; }
+    if (w == "semibold") { return 1.18; }
+    if (w == "bold") { return 1.32; }
+    return 0.92;
+}
+// Proportional text width from the atlas advances (falls back to a monospace
+// estimate before the atlas loads). Uses the regular weight for measurement.
+function _textW(str, cell) {
+    if (_atlas == 0) { return len(str) * 5.0 * cell; }
+    let g = _atlas.regular; let sc = _textScale(cell); let w = 0.0;
+    for (let i = 0; i < len(str); i++) { let ch = charAt(str, i); if (has(g, ch)) { w = w + g[ch].adv * sc; } }
+    return w;
+}
 function _btnW(label) { return _textW(label, _cell("label")) + _u * 8.0; }
 function _chipW(label) { return _textW(label, _cell("caption")) + _u * 7.0; }
 function _gapPx(node) { if (has(node, "gap")) { return node.gap * _u; } return _u * 2.0; }
@@ -492,10 +760,20 @@ function _measureWrap(node) {
     }
     return { w: maxW, h: totalH + rowH };
 }
+// Intrinsic size of a node by kind. `_measure` wraps this to honour a parent's
+// forced allocation (`_fw`/`_fh`), so a `Container` placed in an `Expanded` slot
+// or a `GridView` cell fills the box the parent gave it instead of collapsing to
+// its (often zero) content size — the Flutter "tight constraints" behaviour.
 function _measure(node) {
+    let m = _measureKind(node);
+    if (has(node, "_fw")) { if (node._fw >= 0.0) { m.w = node._fw; } }
+    if (has(node, "_fh")) { if (node._fh >= 0.0) { m.h = node._fh; } }
+    return m;
+}
+function _measureKind(node) {
     let k = node.kind;
     if (k == "comp") { return _measure(node._sub); }
-    if (k == "text") { let c = _cell(node.size); return { w: _textW(node.text, c), h: 6.0 * c }; }
+    if (k == "text") { let c = _cellOf(node); return { w: _textW(node.text, c), h: 6.0 * c }; }
     if (k == "filledButton") { return { w: _btnW(node.label), h: _u * 5.5 }; }
     if (k == "outlinedButton") { return { w: _btnW(node.label), h: _u * 5.5 }; }
     if (k == "fab") { return { w: _u * 8.4, h: _u * 8.4 }; }
@@ -704,7 +982,7 @@ function _paint(node, cx, cy) {
     node._out = []; node._taps = []; node._drags = [];
     node._self = node._out; node._kids = [];
     _curOut = node._out; _curTaps = node._taps; _curDrags = node._drags;
-    if (k == "text") { _paintText(node.text, cx, cy, _cell(node.size), _textInk(node)); return 0; }
+    if (k == "text") { let fnt = 0; if (has(node, "font")) { fnt = node.font; } _paintTextStyled(node.text, cx, cy, _cellOf(node), _textInk(node), _weightThick(node), fnt); return 0; }
     if (k == "appBar") { _paintAppBar(node, cx, cy); return 0; }
     if (k == "filledButton") { _paintFilled(node, cx, cy); return 0; }
     if (k == "outlinedButton") { _paintOutlined(node, cx, cy); return 0; }
@@ -762,13 +1040,18 @@ function _paintColumn(node, cx, cy) {
     let top = cy - main / 2.0; let kids = [];
     for (let i = 0; i < nc; i++) {
         let ch = node.children[i]; let chh = _measure(ch).h;
-        if (ch.kind == "expanded") { chh = 0.0; if (flexTotal > 0.0) { chh = extra * ch.flex / flexTotal; } }
+        if (ch.kind == "expanded") {
+            chh = 0.0; if (flexTotal > 0.0) { chh = extra * ch.flex / flexTotal; }
+            // Give the flex child tight vertical constraints so it fills its slot.
+            if (has(ch, "child")) { let cc = ch.child; cc._fh = chh; }
+        }
         let ccx = cx; let cw = _measure(ch).w;
         if (has(node, "cross")) {
             if (node.cross == "start") { ccx = cx - mz.w / 2.0 + cw / 2.0; }
             if (node.cross == "end") { ccx = cx + mz.w / 2.0 - cw / 2.0; }
         }
         _paint(ch, ccx, top + chh / 2.0); top = top + chh + gap; push(kids, ch);
+        if (ch.kind == "expanded") { if (has(ch, "child")) { let cc = ch.child; cc._fh = -1.0; } }
     }
     node._kids = kids; _compose(node);
 }
@@ -787,13 +1070,18 @@ function _paintRow(node, cx, cy) {
     let left = cx - main / 2.0; let kids = [];
     for (let i = 0; i < nc; i++) {
         let ch = node.children[i]; let cw = _measure(ch).w;
-        if (ch.kind == "expanded") { cw = 0.0; if (flexTotal > 0.0) { cw = extra * ch.flex / flexTotal; } }
+        if (ch.kind == "expanded") {
+            cw = 0.0; if (flexTotal > 0.0) { cw = extra * ch.flex / flexTotal; }
+            // Give the flex child tight horizontal constraints so it fills its slot.
+            if (has(ch, "child")) { let cc = ch.child; cc._fw = cw; }
+        }
         let ccy = cy; let chh2 = _measure(ch).h;
         if (has(node, "cross")) {
             if (node.cross == "start") { ccy = cy - mz.h / 2.0 + chh2 / 2.0; }
             if (node.cross == "end") { ccy = cy + mz.h / 2.0 - chh2 / 2.0; }
         }
         _paint(ch, left + cw / 2.0, ccy); left = left + cw + gap; push(kids, ch);
+        if (ch.kind == "expanded") { if (has(ch, "child")) { let cc = ch.child; cc._fw = -1.0; } }
     }
     node._kids = kids; _compose(node);
 }
@@ -813,12 +1101,23 @@ function _paintScaffold(node) {
     let aH = _u * 10.0;
     if (has(node, "onKey")) { _keyHandler = node.onKey; _hasKey = 1.0; }
     let kids = [];
-    if (has(node, "appBar")) { if (!isNull(node.appBar)) { _paint(node.appBar, _vw / 2.0, aH / 2.0); push(kids, node.appBar); } }
+    // Paint the body first so the top app bar and bottom navigation draw *over*
+    // it: this single-pass kit has no per-widget scissor, so scrolling list items
+    // that extend past the viewport edges are covered by the bars (M3 also layers
+    // the app bar above scrolling content) instead of bleeding across them.
     if (has(node, "body")) { if (!isNull(node.body)) {
         let bodyTop = aH; let bodyH = _vh - aH;
         if (has(node, "bottomBar")) { bodyH = bodyH - _u * 11.0; }
+        // A scrollable body fills the whole body region (tight vertical constraint)
+        // so its viewport adapts to the screen — no fixed-height list stranded in a
+        // sea of whitespace on tall phones, no overflow on short ones. Other body
+        // widgets (e.g. a Card) keep their intrinsic size and are centred.
+        let bk = node.body.kind;
+        if (bk == "listView") { let bn = node.body; bn._fh = bodyH; }
+        if (bk == "gridView") { let bn = node.body; bn._fh = bodyH; }
         _paint(node.body, _vw / 2.0, bodyTop + bodyH / 2.0); push(kids, node.body);
     } }
+    if (has(node, "appBar")) { if (!isNull(node.appBar)) { _paint(node.appBar, _vw / 2.0, aH / 2.0); push(kids, node.appBar); } }
     if (has(node, "bottomBar")) { if (!isNull(node.bottomBar)) { _paint(node.bottomBar, _vw / 2.0, _vh - _u * 5.5); push(kids, node.bottomBar); } }
     if (has(node, "fab")) { if (!isNull(node.fab)) { _paint(node.fab, _vw - _u * 9.0, _vh - _u * 9.0); push(kids, node.fab); } }
     if (has(node, "drawer")) { if (!isNull(node.drawer)) { _paint(node.drawer, _vw / 2.0, _vh / 2.0); push(kids, node.drawer); } }
@@ -826,21 +1125,31 @@ function _paintScaffold(node) {
     if (has(node, "dialog")) { if (!isNull(node.dialog)) { _paint(node.dialog, _vw / 2.0, _vh / 2.0); push(kids, node.dialog); } }
     node._kids = kids; _compose(node);
 }
+// M3 small top app bar: a *surface* bar (not a saturated primary block — that is
+// the Material 2 look) with on-surface nav icon + left-aligned title, an
+// on-surface-variant trailing action, and a hairline divider separating it from
+// the scrolling body.
 function _paintAppBar(node, cx, cy) {
-    _rect(_vw / 2.0, cy, _vw / 2.0, cy, 0.0, 0.0, 0.0, _acc(1.0), _CLEAR);
-    let lineCx = _u * 6.0; let lw = _u * 2.0; let lh = _u * 0.4; let sp = _u * 1.3;
-    _rect(lineCx, cy - sp, lw, lh, lh, 0.0, 0.0, _onAcc(0.95), _CLEAR);
-    _rect(lineCx, cy, lw, lh, lh, 0.0, 0.0, _onAcc(0.95), _CLEAR);
-    _rect(lineCx, cy + sp, lw, lh, lh, 0.0, 0.0, _onAcc(0.95), _CLEAR);
-    _rect(_vw - _u * 6.0, cy, _u * 2.6, _u * 2.6, _u * 2.6, 0.0, 0.0, _onAcc(0.9), _CLEAR);
-    _paintText(node.title, _vw / 2.0, cy, _cell("title"), _onAcc(0.98));
+    let bot = cy * 2.0;
+    _rect(_vw / 2.0, cy, _vw / 2.0, cy, 0.0, 0.0, 0.0, _surfaceContainer(1.0), _CLEAR);
+    _rect(_vw / 2.0, bot - _u * 0.05, _vw / 2.0, _u * 0.05, 0.0, 0.0, 0.0, _outlineVar(0.8), _CLEAR);
+    let onS = _onSurface(1.0); let onSV = _onSurface(0.7);
+    // The nav (menu) icon goes through the standard icon set, so its stroke weight,
+    // round caps and proportions match every other icon rather than being a
+    // bespoke set of bars.
+    let lineCx = _u * 6.0;
+    _icon("menu", lineCx, cy, _u * 2.6, onS);
+    // Trailing action rendered as a small accent avatar (theme/profile affordance).
+    _disc(_vw - _u * 6.0, cy, _u * 2.4, _acc(1.0));
+    _paintTextLeft(node.title, _u * 11.0, cy, _cell("title"), onS);
     if (has(node, "onMenu")) { _addTap(lineCx, cy, _u * 3.0, _u * 3.0, "appMenu", node.onMenu); }
     if (has(node, "onAction")) { _addTap(_vw - _u * 6.0, cy, _u * 3.0, _u * 3.0, "appAction", node.onAction); }
 }
+// M3 filled button: a fully-rounded accent pill at *elevation 0* (no drop shadow
+// — that was a Material 2 trait); hover/press add a tonal state layer.
 function _paintFilled(node, cx, cy) {
     let mz = _measure(node); let hw = mz.w / 2.0; let hh = mz.h / 2.0;
     let st = _hover(cx, cy, hw, hh) * 0.08 + _pressVal(node.id) * 0.12;
-    _shadow(cx, cy, hw, hh, hh, _u * 0.2, _u * 0.6, _u * 1.8);
     _rect(cx, cy, hw, hh, hh, 0.0, 0.0, _brighten(_acc(1.0), st), _CLEAR);
     _paintText(node.label, cx, cy, _cell("label"), _onAcc(1.0));
     _addTap(cx, cy, hw, hh, node.id, node.onTap);
@@ -857,8 +1166,9 @@ function _paintFab(node, cx, cy) {
     let st = _hover(cx, cy, r, r) * 0.08 + _pressVal("fab") * 0.12;
     _shadow(cx, cy, r, r, rad, _u * 0.4, _u * 1.2, _u * 3.0);
     _rect(cx, cy, r, r, rad, 0.0, 0.0, _brighten(_acc(1.0), st), _CLEAR);
-    _rect(cx, cy, r * 0.42, r * 0.10, r * 0.10, 0.0, 0.0, _onAcc(1.0), _CLEAR);
-    _rect(cx, cy, r * 0.10, r * 0.42, r * 0.10, 0.0, 0.0, _onAcc(1.0), _CLEAR);
+    // The "+" goes through the standard icon set (matching weight/caps/size to the
+    // rest), sized as a ~24dp icon inside the 56dp FAB.
+    _icon("add", cx, cy, r * 0.43, _onAcc(1.0));
     _addTap(cx, cy, r, r, "fab", node.onTap);
 }
 function _paintSwitch(node, cx, cy) {
@@ -1067,7 +1377,12 @@ function _paintGridView(node, cx, cy) {
     for (let i = 0; i < nc; i++) {
         let col = i % cols; let row = floor(num(i) / cols);
         let cxi = left + col * (cellW + gap) + cellW / 2.0; let cyi = top + row * (cellH + gap) + cellH / 2.0;
-        if (cyi + cellH / 2.0 >= cy - hh) { if (cyi - cellH / 2.0 <= cy + hh) { _paint(node.children[i], cxi, cyi); push(kids, node.children[i]); } }
+        if (cyi + cellH / 2.0 >= cy - hh) { if (cyi - cellH / 2.0 <= cy + hh) {
+            // Tight constraints: each cell fills its grid box.
+            let cell = node.children[i]; cell._fw = cellW; cell._fh = cellH;
+            _paint(cell, cxi, cyi); push(kids, cell);
+            cell._fw = -1.0; cell._fh = -1.0;
+        } }
     }
     node._kids = kids; _compose(node);
 }
@@ -1103,9 +1418,18 @@ function _paintExpansion(node, cx, cy) {
 }
 
 // --------------------------------------------------- material / content paints
+// Draw an icon node, honouring an inline `svg` path (stroked) or a name (built-in
+// or registered). Shared by Icon / IconButton so both accept SVG.
+function _drawIcon(node, cx, cy, r, col) {
+    if (has(node, "svg")) {
+        let vb = 24.0; if (has(node, "viewBox")) { vb = node.viewBox; }
+        _iconSvg(node.svg, cx, cy, r, r * 0.18, col, vb); return 0;
+    }
+    _icon(node.icon, cx, cy, r, col); return 0;
+}
 function _paintIcon(node, cx, cy) {
     let r = _iconR(node); let col = _onSurface(1.0); if (has(node, "color")) { col = _colorRole(node.color, 1.0); }
-    _icon(node.icon, cx, cy, r, col);
+    _drawIcon(node, cx, cy, r, col);
 }
 function _paintIconButton(node, cx, cy) {
     let r = _iconR(node); let hw = r + _u * 1.2;
@@ -1114,7 +1438,7 @@ function _paintIconButton(node, cx, cy) {
     if (sel2 > 0.5) { _rect(cx, cy, hw, hw, hw, 0.0, 0.0, _acc(0.16), _CLEAR); }
     if (st > 0.001) { _rect(cx, cy, hw, hw, hw, 0.0, 0.0, _onSurface(st), _CLEAR); }
     let col = _onSurface(0.85); if (sel2 > 0.5) { col = _acc(1.0); } if (has(node, "color")) { col = _colorRole(node.color, 1.0); }
-    _icon(node.icon, cx, cy, r, col);
+    _drawIcon(node, cx, cy, r, col);
     _addTap(cx, cy, hw, hw, node.id, node.onTap);
 }
 function _paintAvatar(node, cx, cy) {
@@ -1450,9 +1774,16 @@ function _repaintAll() {
 
 // --------------------------------------------------------------- render -------
 function _bufF32(id, usage, data) { return { kind: "buffer", id: id, size: len(data) * 4, usage: usage, data_f32: data }; }
+// The responsive layout unit (1% of the *shorter* viewport side). Widgets are
+// sized in these units, and the apps lay content out to roughly 90 of them wide;
+// deriving the unit from the shorter side keeps that content inside the screen in
+// *both* orientations — on a tall phone the width governs (so nothing overflows
+// horizontally), on a wide desktop the height governs (the prior behaviour).
+function _unit() { return min(_vw, _vh) * 0.01; }
 function _renderApp() {
+    if (_atlas == 0) { _loadAtlas(); }
     let si = askHost("gpu.surfaceInfo", []);
-    _vw = num(si.width); _vh = num(si.height); _u = _vh * 0.01;
+    _vw = num(si.width); _vh = num(si.height); _u = _unit();
     _hasKey = 0.0; _hasWheel = 0.0; _hasFocusInput = 0.0;
     _mount(_root, _NULL);
     _paint(_root, _vw * 0.5, _vh * 0.5);
@@ -1460,31 +1791,59 @@ function _renderApp() {
     _submit();
 }
 function _repaint() { _renderApp(); }
+// The atlas texture id is versioned per font swap, so when the app changes fonts
+// (and the atlas may change size) the shared bind group's descriptor changes too
+// and the renderer recreates it against the new texture instead of keeping a
+// stale view.
+function _atlasId() { return concat("elpa.m3.atlas.", str(_fontVer)); }
+// The font-atlas texture + sampler (linear, for smooth scaling) that back the
+// glyph instances. Sized to the loaded atlas (a 1×1 stand-in before it loads).
+function _atlasTexRes() {
+    let w = 1; let h = 1; if (_atlas != 0) { w = _atlas.width; h = _atlas.height; }
+    return [
+        { kind: "texture", id: _atlasId(), size: { width: w, height: h }, format: "r8unorm", usage: ["TEXTURE_BINDING", "COPY_DST"] },
+        { kind: "sampler", id: "elpa.m3.samp", mag_filter: "linear", min_filter: "linear", mipmap_filter: "linear" },
+    ];
+}
+// Globals uniform + the shared bind group (uniform + atlas texture + sampler).
+function _frameBindings() {
+    return [
+        _bufF32("elpa.m3.globals", ["UNIFORM", "COPY_DST"], [_vw, _vh, 0.0, 0.0]),
+        { kind: "bindGroup", id: "elpa.m3.gb", layout: "elpa.m3.bgl", entries: [
+            { binding: 0, resource: { type: "buffer", buffer: "elpa.m3.globals" } },
+            { binding: 1, resource: { type: "textureView", texture: _atlasId() } },
+            { binding: 2, resource: { type: "sampler", sampler: "elpa.m3.samp" } } ] },
+    ];
+}
+// Upload the atlas pixels exactly once per font (the texture keeps its contents
+// across frames); returns the encoder command list to prepend to the frame.
+function _atlasUploadCmds() {
+    if (_atlas == 0) { return []; }
+    if (_atlasUp > 0.5) { return []; }
+    _atlasUp = 1.0;
+    return [{ op: "writeTexture", texture: _atlasId(), origin: { x: 0, y: 0, z: 0 },
+        size: { width: _atlas.width, height: _atlas.height }, data_b64: _atlas.data }];
+}
 function _submit() {
     let bg = _colorBg();
-    let res = concat(_pipelineResources(), [
-        _bufF32("elpa.m3.globals", ["UNIFORM", "COPY_DST"], [_vw, _vh, 0.0, 0.0]),
-        { kind: "bindGroup", id: "elpa.m3.gb", layout: "elpa.m3.bgl",
-          entries: [{ binding: 0, resource: { type: "buffer", buffer: "elpa.m3.globals" } }] },
+    let res = concat(concat(_pipelineResources(), _atlasTexRes()), concat(_frameBindings(), [
         // The instance buffer is re-declared every frame with fresh geometry.
         // Marking it COPY_DST lets the renderer's resource cache refill the same
         // GPU allocation in place (a queue write) whenever the instance *count*
         // is unchanged — the steady state while animating — instead of freeing
         // and reallocating a buffer each frame.
         _bufF32("elpa.m3.inst", ["VERTEX", "COPY_DST"], _inst),
-    ]);
-    askHost("gpu.submit", [{
-        resources: res,
-        commands: [{ op: "renderPass", id: "elpa.m3.pass",
-            color_attachments: [{ view: { kind: "surface" }, load: "clear",
-                clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
-            commands: [
-                { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" },
-                { cmd: "setPipeline", pipeline: "elpa.m3.pipe" },
-                { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst", offset: 0 },
-                { cmd: "draw", vertex_count: 6, instance_count: len(_inst) / 16, first_vertex: 0, first_instance: 0 },
-            ] }],
-    }]);
+    ]));
+    let pass = { op: "renderPass", id: "elpa.m3.pass",
+        color_attachments: [{ view: { kind: "surface" }, load: "clear",
+            clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
+        commands: [
+            { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" },
+            { cmd: "setPipeline", pipeline: "elpa.m3.pipe" },
+            { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst", offset: 0 },
+            { cmd: "draw", vertex_count: 6, instance_count: len(_inst) / 16, first_vertex: 0, first_instance: 0 },
+        ] };
+    askHost("gpu.submit", [{ resources: res, commands: concat(_atlasUploadCmds(), [pass]) }]);
 }
 
 // Submit a layered frame: a cached "static" buffer (non-animating widgets, whose
@@ -1499,27 +1858,22 @@ function _submitLayered(animating) {
     if (len(dyn) < 1) { _submit(); return 0; }
 
     let bg = _colorBg();
-    let res = concat(_pipelineResources(), [
-        _bufF32("elpa.m3.globals", ["UNIFORM", "COPY_DST"], [_vw, _vh, 0.0, 0.0]),
-        { kind: "bindGroup", id: "elpa.m3.gb", layout: "elpa.m3.bgl",
-          entries: [{ binding: 0, resource: { type: "buffer", buffer: "elpa.m3.globals" } }] },
+    let res = concat(concat(_pipelineResources(), _atlasTexRes()), concat(_frameBindings(), [
         _bufF32("elpa.m3.inst.static", ["VERTEX", "COPY_DST"], stat),
         _bufF32("elpa.m3.inst.dyn", ["VERTEX", "COPY_DST"], dyn),
-    ]);
-    askHost("gpu.submit", [{
-        resources: res,
-        commands: [{ op: "renderPass", id: "elpa.m3.pass",
-            color_attachments: [{ view: { kind: "surface" }, load: "clear",
-                clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
-            commands: [
-                { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" },
-                { cmd: "setPipeline", pipeline: "elpa.m3.pipe" },
-                { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst.static", offset: 0 },
-                { cmd: "draw", vertex_count: 6, instance_count: len(stat) / 16, first_vertex: 0, first_instance: 0 },
-                { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst.dyn", offset: 0 },
-                { cmd: "draw", vertex_count: 6, instance_count: len(dyn) / 16, first_vertex: 0, first_instance: 0 },
-            ] }],
-    }]);
+    ]));
+    let pass = { op: "renderPass", id: "elpa.m3.pass",
+        color_attachments: [{ view: { kind: "surface" }, load: "clear",
+            clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
+        commands: [
+            { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" },
+            { cmd: "setPipeline", pipeline: "elpa.m3.pipe" },
+            { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst.static", offset: 0 },
+            { cmd: "draw", vertex_count: 6, instance_count: len(stat) / 16, first_vertex: 0, first_instance: 0 },
+            { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst.dyn", offset: 0 },
+            { cmd: "draw", vertex_count: 6, instance_count: len(dyn) / 16, first_vertex: 0, first_instance: 0 },
+        ] };
+    askHost("gpu.submit", [{ resources: res, commands: concat(_atlasUploadCmds(), [pass]) }]);
     return 0;
 }
 
@@ -1551,6 +1905,8 @@ function onEvent(e) {
     let et = e.type; let px = e.nx * _vw; let py = e.ny * _vh;
     if (et == "pointermove") { _hx = px; _hy = py; }
     if (et == "pointerdown") {
+        // A new touch always halts any in-flight momentum (catch-to-stop).
+        _flingId = ""; _flingV = 0.0;
         let hit = 0.0;
         for (let i = 0; i < len(_taps); i++) {
             let t = _taps[i];
@@ -1562,15 +1918,29 @@ function onEvent(e) {
         }
         if (hit < 0.5) {
             let sid = _scrollIdAt(px, py);
-            if (len(sid) > 0) { _scrollDragOn = 1.0; _scrollDragId = sid; _scrollDragY = py; }
+            if (len(sid) > 0) { _scrollDragOn = 1.0; _scrollDragId = sid; _scrollDragY = py; _scrollVel = 0.0; }
             else { if (_focused != 0) { _focused = 0; } _repaint(); }
         }
     }
     if (et == "pointermove") {
-        if (_scrollDragOn > 0.5) { _scrollBy(px, _scrollDragY, _scrollDragY - py); _scrollDragY = py; _repaint(); }
+        if (_scrollDragOn > 0.5) {
+            let dy = _scrollDragY - py;
+            _scrollBy(px, _scrollDragY, dy);
+            // Track a smoothed finger velocity so release can keep the list moving.
+            _scrollVel = _scrollVel * 0.55 + dy * 0.45;
+            _scrollDragY = py; _repaint();
+        }
         else { if (_dragging > 0.5) { _activeDrag.onDrag(px); } else { _repaint(); } }
     }
-    if (et == "pointerup") { _dragging = 0.0; _scrollDragOn = 0.0; _repaint(); }
+    if (et == "pointerup") {
+        // On release, hand the gesture to a momentum fling if it was moving fast
+        // enough — the list keeps scrolling and decelerates smoothly instead of
+        // stopping dead under the finger.
+        if (_scrollDragOn > 0.5) {
+            if (abs(_scrollVel) > 0.6) { _flingId = _scrollDragId; _flingV = _scrollVel; }
+        }
+        _dragging = 0.0; _scrollDragOn = 0.0; _repaint();
+    }
     if (et == "wheel") {
         let h = _scrollBy(px, py, e.deltaY);
         if (h > 0.5) { _repaint(); } else { if (_hasWheel > 0.5) { _wheelFn(e.deltaY); } }
@@ -1580,6 +1950,24 @@ function onEvent(e) {
         else { if (_hasKey > 0.5) { _keyHandler(e.key); } }
     }
     if (et == "keyup") { _repaint(); }
+}
+// Advance one momentum-scroll step: move the flung list by the current velocity,
+// decelerate it, and stop when it slows below a threshold or reaches an edge.
+// Returns whether a fling is still active (so the frame knows to repaint).
+function _flingStep() {
+    if (len(_flingId) == 0) { return 0.0; }
+    if (!has(_listRegions, _flingId)) { _flingId = ""; _flingV = 0.0; return 0.0; }
+    let rg = _listRegions[_flingId];
+    let off = 0.0; if (has(_scroll, _flingId)) { off = _scroll[_flingId]; }
+    off = off + _flingV;
+    let edge = 0.0;
+    if (off <= 0.0) { off = 0.0; edge = 1.0; }
+    if (off >= rg.maxOff) { off = rg.maxOff; edge = 1.0; }
+    _scroll[_flingId] = off;
+    _flingV = _flingV * 0.93;            // friction
+    if (edge > 0.5) { _flingV = 0.0; _flingId = ""; return 1.0; }
+    if (abs(_flingV) < 0.4) { _flingV = 0.0; _flingId = ""; }
+    return 1.0;
 }
 function onFrame(dt) {
     // Advance animations; collect the components whose keys are still moving, then
@@ -1603,14 +1991,22 @@ function onFrame(dt) {
         if (np != _press[k]) { _markDirty(dirty, k); }
         _press[k] = np;
     }
+    let flinging = _flingStep();
     if (themeMoving > 0.5) {
         for (let i = 0; i < len(dirty); i++) { let c = dirty[i]; c._dirtyFlag = 0.0; }
         _repaintAll();
         return 0;
     }
+    // A live fling pans a scroll viewport, so the whole frame is re-laid out (the
+    // same path a drag takes); do this before the cheaper per-component repaint.
+    if (flinging > 0.5) {
+        for (let i = 0; i < len(dirty); i++) { let c = dirty[i]; c._dirtyFlag = 0.0; }
+        _repaint();
+        return 0;
+    }
     if (len(dirty) > 0) { _repaintComps(dirty); }
 }
 function onResize(info) {
-    _vw = num(info.width); _vh = num(info.height); _u = _vh * 0.01;
+    _vw = num(info.width); _vh = num(info.height); _u = _unit();
     _renderApp();
 }
