@@ -206,7 +206,7 @@ pub const BUILTINS: &[&str] = &[
     // foundation — reflection / conversion
     "typeOf", "len", "str", "num", "int", "bool", "isNull", "jsonParse", "jsonStringify",
     // foundation — object
-    "keys", "values", "entries", "has", "get", "setKey", "delKey", "merge",
+    "keys", "values", "entries", "has", "get", "setKey", "delKey", "merge", "__setIndex",
     // foundation — array
     "push", "pop", "shift", "unshift", "slice", "concat", "reverse", "contains", "indexOf",
     "join", "range", "first", "last", "sort", "fill",
@@ -477,6 +477,37 @@ pub fn invoke(name: &str, args: &[Val]) -> Result<Val, String> {
             let key = expect_string(name, &args[1])?;
             o.borrow_mut().data.data.remove(&key);
             Ok(args[0].clone())
+        }
+        // Unified indexed store used to lower nested/computed assignment targets
+        // (`a.b.c = v`, `a[i].x = v`, `o.a[i] = v`). The container is whatever the
+        // base expression evaluated to — an object (string key) or an array
+        // (numeric index, the array grown with nulls if needed) — and because both
+        // are reference types the mutation is visible through every alias. Returns
+        // the assigned value so the expression form (`x = a.b.c = v`) yields `v`.
+        "__setIndex" => {
+            arity(name, args, 3)?;
+            let c = &args[0];
+            if c.typ == 8 {
+                let o = c.as_object();
+                let key = expect_string(name, &args[1])?;
+                o.borrow_mut().data.data.insert(key, args[2].clone());
+            } else if c.typ == 9 {
+                let a = c.as_array();
+                let idx = as_num(&args[1]).map_err(|_| {
+                    format!("{name}: array index must be a number")
+                })? as i64;
+                if idx >= 0 {
+                    let i = idx as usize;
+                    let mut b = a.borrow_mut();
+                    while b.data.len() <= i {
+                        b.data.push(vnull());
+                    }
+                    b.data[i] = args[2].clone();
+                }
+            } else {
+                return Err(format!("{name}: cannot assign into {}", type_name(c)));
+            }
+            Ok(args[2].clone())
         }
         "merge" => {
             arity(name, args, 2)?;

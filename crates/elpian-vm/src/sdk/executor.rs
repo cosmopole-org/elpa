@@ -446,8 +446,14 @@ impl Operation for CallFunction {
         } else if state == ExecStates::CallFuncExtractParam {
             self.params.push(data.val());
         }
-        if let Some(func) = &self.func {
-            if func.borrow().params.len() == self.params.len() {
+        if self.func.is_some() {
+            // Collect exactly as many argument values as the *call site* provided
+            // (`param_count`), not as many as the function declares. JavaScript
+            // calls are arity-flexible: extra arguments are ignored and missing
+            // ones bind to `undefined` (done when the frame is built). Gating on
+            // the declared param count desynced the arg stream whenever a function
+            // was called with fewer arguments than it declares.
+            if self.params.len() >= self.param_count.max(0) as usize {
                 self.state = ExecStates::CallFuncFinished;
             }
         }
@@ -4319,9 +4325,9 @@ impl Executor {
                         let cond_val = regs[1].clone();
                         let mut condition = false;
                         if has_condition {
-                            if cond_val.typ == 6 {
-                                condition = cond_val.as_bool();
-                            }
+                            // JS truthiness — any non-falsy value (object, number,
+                            // non-empty string, …) takes the branch, not just `true`.
+                            condition = cond_val.truthy();
                         }
                         if !has_condition {
                             let branch_true_start = self.extract_i64() as usize;
@@ -4373,10 +4379,8 @@ impl Executor {
                     {
                         let regs = self.registers.last().unwrap().borrow().get_data();
                         let cond_val = regs[0].clone();
-                        let mut condition = false;
-                        if cond_val.typ == 6 {
-                            condition = cond_val.as_bool();
-                        }
+                        // JS truthiness for the loop guard (see if-statement above).
+                        let condition = cond_val.truthy();
                         let branch_true_start = self.extract_i64() as usize;
                         let branch_true_end = self.extract_i64() as usize;
                         let branch_after_start = self.extract_i64() as usize;
@@ -4596,23 +4600,19 @@ impl Executor {
                         let data = self.registers.last().unwrap().borrow().get_data();
                         let val = data[0].clone();
                         self.registers.pop();
-                        if val.typ == 6 {
-                            main_reg = Some(Val {
-                                typ: 6,
-                                data: Payload::from(!val.as_bool()),
-                            });
-                        } else {
-                            panic!(
-                            "elpian error: not operator (!) can not be applied to non-bool value"
-                        );
-                        }
+                        // `!x` is the boolean negation of JS truthiness, defined for
+                        // every value (not just booleans).
+                        main_reg = Some(Val {
+                            typ: 6,
+                            data: Payload::from(!val.truthy()),
+                        });
                         is_reg_state_final = false;
                         continue;
                     } else if self.registers.last().unwrap().borrow().get_state()
                         == ExecStates::CondBranchFinished
                     {
                         let regs = self.registers.last().unwrap().borrow().get_data();
-                        let condition = regs[0].as_bool();
+                        let condition = regs[0].truthy();
                         let branch_true_start = regs[1].as_i64() as usize;
                         let branch_false_start = regs[2].as_i64() as usize;
                         if condition {
