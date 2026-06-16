@@ -25,6 +25,7 @@ pub mod definition;
 pub mod geometry;
 pub mod hostcall;
 pub mod resource;
+pub mod scope;
 
 pub use command::{
     ColorAttachment, ComputeCommand, ComputePass, EncoderCommand, Frame, RenderCommand, RenderPass,
@@ -34,3 +35,4 @@ pub use definition::{Definition, DefinitionBody};
 pub use geometry::{Color, Extent3d, Origin3d, Rect};
 pub use hostcall::HostCall;
 pub use resource::{ResourceDesc, ResourceId};
+pub use scope::{layer_paint_pass_id, layer_texture_id, Layer};

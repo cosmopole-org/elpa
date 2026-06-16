@@ -82,6 +82,30 @@ Beyond the raw command tree, the VM can name and reuse drawing work:
 `examples/sdk` is exactly such a module, shipped as Elpian AST JSON: import it and
 draw `elpa.sdk.{rect,triangle,circle,cube,sphere}` by reference.
 
+## Scopes: decoupled, independently-cached layers
+
+Beyond caching *what* a frame draws, Elpa programs can decouple *where* it draws
+into independently-snapshotted **layers** (scopes) — a first-class optimization
+the program drives directly through the renderer's layer system:
+
+* **`scope.define(layer)`** registers a named layer: a region that paints into
+  its own offscreen **snapshot texture** instead of straight to the surface.
+* A frame references a layer with a **`useLayer`** command. The host expands it:
+  if the layer's snapshot is stale it splices the painting passes in (repainting
+  the snapshot); if the snapshot is still valid it splices **nothing** — the
+  resident snapshot texture stands in and the VM never re-ran the layer's drawing.
+* **`scope.invalidate(id)`** marks a snapshot stale so it repaints on next use.
+  Invalidation is *explicit*: the program — not a content heuristic — decides when
+  a layer repaints. The program composites the layers into the final image by
+  sampling each snapshot (`elpa.layer.<id>.tex`) in a surface pass.
+
+This lets a region repaint in isolation while everything around it holds its
+snapshot: a navigation drawer slides open while the body behind it is never
+re-rendered, or the body scrolls while the chrome around it stays cached, with the
+layers merged into the final frame by a cheap per-layer composite. The Material
+SDK (`examples/material`) builds exactly this — its scaffold decouples the body,
+chrome, drawer and overlays into separate snapshot layers — as the worked example.
+
 ## Build & test
 
 ```bash

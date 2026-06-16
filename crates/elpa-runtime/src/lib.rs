@@ -13,12 +13,14 @@
 //!      └──────────────── continue_execution ◀─────┘   (until done)
 //! ```
 
-use elpa_protocol::{Definition, Frame, HostCall};
+use elpa_protocol::{Definition, Frame, HostCall, Layer};
 use elpian_vm::api;
 
 pub mod definitions;
 pub mod host_env;
+pub mod scope;
 pub use definitions::{DefinitionStore, ExpandError};
+pub use scope::{LayerStore, ScopeStats};
 pub use host_env::{
     ClosureNet, DeniedNet, EnvToggles, FileStat, FileStore, HostEnv, MemoryFileStore, NativeFileStore,
     NetProvider, NetRequest, NetResponse,
@@ -159,6 +161,30 @@ pub fn undefine_target(call: &HostCall) -> Option<String> {
     }
 }
 
+/// Parse a `scope.define` host call's payload into a [`Layer`] to register.
+pub fn layer_from_define(call: &HostCall) -> Option<Layer> {
+    if call.api_name != "scope.define" {
+        return None;
+    }
+    serde_json::from_value(first_arg(&call.payload)?).ok()
+}
+
+/// Parse the target id of a `scope.invalidate` / `scope.release` host call.
+/// Accepts either a bare string id (`["drawer"]`) or an object
+/// (`[{"id":"drawer"}]`), mirroring [`undefine_target`].
+pub fn scope_target(call: &HostCall) -> Option<String> {
+    if call.api_name != "scope.invalidate" && call.api_name != "scope.release" {
+        return None;
+    }
+    match first_arg(&call.payload)? {
+        serde_json::Value::String(s) => Some(s),
+        serde_json::Value::Object(map) => {
+            map.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())
+        }
+        _ => None,
+    }
+}
+
 /// A request to import an external Elpian module, parsed from a `vm.import` call.
 ///
 /// The argument is either a bare source string (`["assets/shapes.json"]`) or an
@@ -242,6 +268,34 @@ mod tests {
         assert_eq!(undefine_target(&s).as_deref(), Some("quad"));
         let o = HostCall { payload: r#"[{"id":"quad"}]"#.into(), ..s };
         assert_eq!(undefine_target(&o).as_deref(), Some("quad"));
+    }
+
+    #[test]
+    fn layer_from_define_unwraps_arg() {
+        let call = HostCall {
+            machine_id: "m".into(),
+            api_name: "scope.define".into(),
+            payload: r#"[{"id":"drawer","width":1080,"height":2340,"commands":[]}]"#.into(),
+        };
+        let layer = layer_from_define(&call).unwrap();
+        assert_eq!(layer.id, "drawer");
+        assert_eq!(layer.texture_id(), "elpa.layer.drawer.tex");
+    }
+
+    #[test]
+    fn scope_target_accepts_string_or_object() {
+        let s = HostCall {
+            machine_id: "m".into(),
+            api_name: "scope.invalidate".into(),
+            payload: r#"["drawer"]"#.into(),
+        };
+        assert_eq!(scope_target(&s).as_deref(), Some("drawer"));
+        let o = HostCall {
+            api_name: "scope.release".into(),
+            payload: r#"[{"id":"drawer"}]"#.into(),
+            ..s
+        };
+        assert_eq!(scope_target(&o).as_deref(), Some("drawer"));
     }
 
     #[test]
