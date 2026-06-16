@@ -2099,18 +2099,26 @@ function _layerObj(scope, inst) {
     let bufId = concat(concat("elpa.layer.", scope), ".inst");
     let texId = concat(concat("elpa.layer.", scope), ".tex");
     let passId = concat(concat("elpa.layer.", scope), ".paint");
+    // An empty scope (e.g. the closed drawer, or no overlay) paints nothing — the
+    // pass just clears its snapshot to transparent. Emitting a draw over an empty
+    // (zero-length) instance buffer is invalid on a real GPU, so omit the draw and
+    // the vertex-buffer bind entirely when there is no geometry.
+    let drawCmds = [];
+    if (len(inst) > 0) {
+        drawCmds = [
+            { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" },
+            { cmd: "setPipeline", pipeline: "elpa.m3.pipe" },
+            { cmd: "setVertexBuffer", slot: 0, buffer: bufId, offset: 0 },
+            { cmd: "draw", vertex_count: 6, instance_count: len(inst) / 16, first_vertex: 0, first_instance: 0 },
+        ];
+    }
     return {
         id: scope, width: round(_vw), height: round(_vh), format: "bgra8unorm",
         resources: [],
         commands: [ { op: "renderPass", id: passId,
             color_attachments: [{ view: { kind: "texture", texture: texId }, load: "clear",
                 clear_color: { r: 0.0, g: 0.0, b: 0.0, a: 0.0 } }],
-            commands: [
-                { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" },
-                { cmd: "setPipeline", pipeline: "elpa.m3.pipe" },
-                { cmd: "setVertexBuffer", slot: 0, buffer: bufId, offset: 0 },
-                { cmd: "draw", vertex_count: 6, instance_count: len(inst) / 16, first_vertex: 0, first_instance: 0 },
-            ] } ]
+            commands: drawCmds } ]
     };
 }
 // Submit a layered frame. Each scope's geometry goes into its own (frame-level)
@@ -2130,10 +2138,13 @@ function _submitFrame() {
     let blit = [];
     for (let i = 0; i < len(scopes); i++) {
         let sp = scopes[i]; let id = sp.id; let inst = sp.inst;
-        // The scope's live instance buffer, declared every frame (COPY_DST → the
-        // resource cache refills it in place when it changes, no-ops when it does
-        // not). The layer's paint pass reads this buffer.
-        res = concat(res, [ _bufF32(concat(concat("elpa.layer.", id), ".inst"), ["VERTEX", "COPY_DST"], inst) ]);
+        // The scope's live instance buffer, declared every frame when it carries
+        // geometry (COPY_DST → the resource cache refills it in place when it
+        // changes, no-ops when it does not). An empty scope declares no buffer (a
+        // zero-length GPU buffer is invalid); its paint pass just clears.
+        if (len(inst) > 0) {
+            res = concat(res, [ _bufF32(concat(concat("elpa.layer.", id), ".inst"), ["VERTEX", "COPY_DST"], inst) ]);
+        }
         // Decide whether — and how — this scope repaints:
         //   • new, resized, or its instance *count* changed → re-`define` it, so
         //     the layer's paint pass carries the right `instance_count`;

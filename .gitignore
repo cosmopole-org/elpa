@@ -9,3 +9,6 @@ Cargo.lock.bak
 
 # wasm-bindgen output for the web example (build artifact).
 **/pkg/
+
+# Node / Playwright e2e harness (scripts/web-e2e.js) — installed locally, not vendored.
+node_modules/

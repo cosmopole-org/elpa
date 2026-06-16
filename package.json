@@ -1,0 +1,14 @@
+{
+  "name": "elpa-web-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "End-to-end visual test harness for the Elpa web example (examples/web): builds with Trunk, serves the bundle, loads it in headless Chromium (SwiftShader WebGL), and fails on a blank screen or a wasm panic.",
+  "scripts": {
+    "e2e": "node scripts/web-e2e.js",
+    "e2e:build-and-test": "scripts/web-e2e.sh"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.0",
+    "pngjs": "^7.0.0"
+  }
+}
