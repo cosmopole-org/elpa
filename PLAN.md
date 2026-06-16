@@ -449,19 +449,30 @@ scoping/layer API surfaced end-to-end to Elpian programs.
 
 - **`elpa-protocol`** — a [`Layer`] (`scope.rs`): id, snapshot size/format, and
   the resources + encoder passes that paint it. A host-expanded
-  `EncoderCommand::UseLayer { layer }` references it, like `useDefinition`.
+  `EncoderCommand::UseLayer { layer, transform?, opacity? }` references it, like
+  `useDefinition`. The optional `LayerTransform { tx, ty, sx, sy }` + `opacity`
+  make a snapshot's **placement data-only** (see below).
 - **`elpa-runtime`** — a `LayerStore` (`scope.rs`). `expand_layers` resolves each
   `useLayer`: the snapshot **texture** is merged into the frame every time (so the
   resident snapshot is never evicted); if the snapshot is **stale** the painting
   passes are spliced in and the layer marked clean; if **valid**, the reference
-  expands to *nothing*. Reported via `ScopeStats { layers_repainted, layers_reused }`.
+  expands to *nothing*. When the reference carries a transform/opacity, the layer's
+  32-byte transform uniform (`elpa.layer.<id>.xform`) is also kept resident and
+  refilled in place, so the composite pass can **slide/scale/fade a reused snapshot
+  with no repaint, no re-raster, no geometry re-emit** — a drawer slide is a
+  few-byte upload per frame. Reported via `ScopeStats { layers_repainted,
+  layers_reused, layers_transformed }`.
 - **`elpa-renderer`** — a `LayerTable` (`scope.rs`) + `Renderer::{register,
   invalidate,unregister}_layer`. A registered layer pass's validity is **explicit**
   (not content-hashed): reused with zero GPU work until invalidated. `FrameStats`
-  gains `layers_repainted` / `layers_reused`.
+  gains `layers_repainted` / `layers_reused`. A program that wants to scissor the
+  present to just the band a moving snapshot touches emits a `SetScissorRect` on
+  its composite surface pass — the renderer already accumulates those into the
+  presented dirty region (`collect_surface_dirty`).
 - **`elpa`** — routes `scope.define` / `scope.invalidate` / `scope.release` host
-  calls (and the `define_layer`/`invalidate_layer`/`release_layer` Rust API), and
-  runs a two-stage host expansion per `gpu.submit`: **layers first, then
+  calls (and the `define_layer`/`invalidate_layer`/`release_layer` Rust API, plus
+  `freeze_layer`/`thaw_layer` for the transient-snapshot lifecycle of a gesture),
+  and runs a two-stage host expansion per `gpu.submit`: **layers first, then
   definitions**, before the renderer ever sees the frame.
 
 **The flow.** A program declares a layer once, references it each frame with
@@ -495,8 +506,19 @@ declares a layer, reuses its snapshot across events, and forces a repaint on
 > instanced rounded-rect pass, so the per-frame compositing and the extra
 > CPU-side scope bookkeeping cost far more than the GPU rasterization they saved —
 > a measured regression of ~3× on heavy section switches. The kit therefore stays
-> single-pass; the scope API remains the opt-in primitive above, for the
+> single-pass; the GPU scope API remains the opt-in primitive above, for the
 > render-heavy cases that actually benefit.
+>
+> What the kit *does* use is the **CPU-side** version of the same idea, where it
+> pays for a cheap UI: the navigation drawer — which sits at the top of the tree —
+> is wrapped in its own internal component, so an open/close slide marks only the
+> drawer dirty instead of the root. `_repaintComps` then repaints just the drawer
+> subtree while the body is reassembled from cache (no paint-fn re-run), and under
+> `setLayered` the body keeps identical bytes in the static instance buffer the
+> renderer skips re-uploading. The gallery test
+> `drawer_slide_keeps_the_body_in_the_cached_static_layer` pins this: the slide
+> presents with `resources_created == 0`. Decouple the moving region — at the
+> layer (GPU snapshot vs. CPU repaint scope) that matches the workload.
 
 ---
 

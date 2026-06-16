@@ -98,6 +98,15 @@ the program drives directly through the renderer's layer system:
   Invalidation is *explicit*: the program — not a content heuristic — decides when
   a layer repaints. The program composites the layers into the final image by
   sampling each snapshot (`elpa.layer.<id>.tex`) in a surface pass.
+* **Placement is data-only.** A `useLayer` may carry a `transform`
+  (`{tx,ty,sx,sy}`) and `opacity`; the host keeps the layer's 32-byte transform
+  uniform (`elpa.layer.<id>.xform`) resident and refilled in place so the
+  composite pass can **slide, scale or fade a *reused* snapshot for free** — no
+  repaint, no re-rasterization, no geometry re-emit. A navigation-drawer slide or
+  a page transition becomes a few-byte upload per frame.
+* **`freeze_layer` / `thaw_layer`** wrap the transient-snapshot lifecycle: snapshot
+  a region for the duration of a gesture (the drawer slide), reuse it every frame,
+  then release it so the region renders directly — and stays interactive — again.
 
 This lets a region repaint in isolation while everything around it holds its
 snapshot — a heavy 3D scene behind a moving HUD, a large static map under an
@@ -110,8 +119,16 @@ final frame by a cheap per-layer composite.
 > (an offscreen target + a full-screen blit) costs more than just re-issuing a few
 > draws. The Material kit (`examples/material`) deliberately stays **single-pass**
 > (it draws the whole UI as one instanced rounded-rect pass); an experiment that
-> layered it measured ~3× *slower*, so the kit does not use scopes. The scope API
-> is proven end-to-end by the `crates/elpa` tests instead.
+> layered it measured ~3× *slower*, so the kit does not use GPU scopes. The scope
+> API is proven end-to-end by the `crates/elpa` tests instead.
+>
+> For a *cheap* single-pass UI the right tool is the **CPU-side** analog, and the
+> kit uses it for the drawer: the navigation drawer is wrapped in its own
+> component so an open/close slide marks **only** the drawer dirty (not the root),
+> repainting just the drawer subtree while the body is reassembled from cache —
+> and, under `setLayered`, the body stays in the static instance buffer the
+> renderer skips re-uploading. Same principle (decouple the moving region), at the
+> layer where it pays for this workload.
 
 ## Build & test
 

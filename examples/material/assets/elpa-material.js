@@ -281,6 +281,18 @@ function defineComponent(fn) { return (props) => Component(fn, props); }
 // frame — the analog of Flutter's `runApp(MyApp())`.
 function runApp(root) { _root = root({}); _running = 1.0; _renderApp(); }
 
+// An internal component that isolates an overlay (the navigation drawer + its
+// scrim) as its **own repaint unit**. The drawer sits at the very top of the
+// widget tree, so an un-isolated slide would register the *root* component as the
+// animation's subscriber (`_ease` keys on the painting component) — and the eased
+// open/close would then mark the whole app dirty, re-running every paint fn and
+// re-uploading every instance each frame. Wrapping the drawer here means the
+// slide marks only this component dirty: `_repaintComps` repaints just the drawer
+// subtree, the body is reassembled from cache (no fn re-run), and under
+// `setLayered` the body stays in the static buffer the renderer skips re-uploading.
+// It simply renders the widget it is handed (`props.child`).
+let _Overlay = defineComponent(function(props, update) { return props.child; });
+
 // ---- Platform services (capability-gated host interfaces) --------------------
 // Thin app-facing wrappers over Elpa's `askHost` seam: the clock, the fabricated
 // filesystem (native disk or browser storage), synchronous HTTP, and randomness.
@@ -953,6 +965,13 @@ function _mkUpdate(node) { return () => { _partial(node); }; }
 // Structural children of any node, in z-order — the single place that knows a
 // widget's child layout, used by both `_mount` and tree reassembly. `comp` is
 // handled separately (it runs its function to produce `_sub`).
+// Memoize the drawer's isolating `_Overlay` wrapper on the scaffold node so
+// `_mount` and `_paintScaffold` share one identity (and it survives the repaints
+// of a single open/close gesture, since no full re-render happens mid-animation).
+function _drawerHost(node) {
+    if (!has(node, "_dHost")) { node._dHost = _Overlay({ child: node.drawer }); }
+    return node._dHost;
+}
 function _structKids(node) {
     if (node.kind == "scaffold") {
         let a = [];
@@ -960,7 +979,7 @@ function _structKids(node) {
         if (has(node, "body")) { if (!isNull(node.body)) { push(a, node.body); } }
         if (has(node, "bottomBar")) { if (!isNull(node.bottomBar)) { push(a, node.bottomBar); } }
         if (has(node, "fab")) { if (!isNull(node.fab)) { push(a, node.fab); } }
-        if (has(node, "drawer")) { if (!isNull(node.drawer)) { push(a, node.drawer); } }
+        if (has(node, "drawer")) { if (!isNull(node.drawer)) { push(a, _drawerHost(node)); } }
         if (has(node, "snackbar")) { if (!isNull(node.snackbar)) { push(a, node.snackbar); } }
         if (has(node, "dialog")) { if (!isNull(node.dialog)) { push(a, node.dialog); } }
         return a;
@@ -1213,7 +1232,7 @@ function _paintScaffold(node) {
         }
         _paint(node.fab, fabX, fabY); push(kids, node.fab);
     } }
-    if (has(node, "drawer")) { if (!isNull(node.drawer)) { _paint(node.drawer, _vw / 2.0, _vh / 2.0); push(kids, node.drawer); } }
+    if (has(node, "drawer")) { if (!isNull(node.drawer)) { let dh = _drawerHost(node); _paint(dh, _vw / 2.0, _vh / 2.0); push(kids, dh); } }
     if (has(node, "snackbar")) { if (!isNull(node.snackbar)) { _paint(node.snackbar, _vw / 2.0, _vh / 2.0); push(kids, node.snackbar); } }
     if (has(node, "dialog")) { if (!isNull(node.dialog)) { _paint(node.dialog, _vw / 2.0, _vh / 2.0); push(kids, node.dialog); } }
     node._kids = kids; _compose(node);

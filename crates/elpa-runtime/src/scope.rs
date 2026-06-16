@@ -15,6 +15,12 @@
 //!   *nothing*: the painting passes are omitted entirely, the VM never re-ran the
 //!   layer's drawing logic, and the resident snapshot texture stands in for the
 //!   compositing pass to sample.
+//! * When the `useLayer` carries a [`LayerTransform`](elpa_protocol::LayerTransform)
+//!   or opacity, the layer's small **transform uniform**
+//!   ([`layer_xform_id`](elpa_protocol::layer_xform_id)) is also kept resident and
+//!   refilled in place. This makes a snapshot's placement *data-only*: a drawer
+//!   slide or scrim fade refreshes 32 bytes and the composite pass moves the same
+//!   cached texture — no repaint, no re-rasterization, no geometry re-emit.
 //!
 //! Invalidation is explicit ([`LayerStore::invalidate`]); a snapshot stays valid
 //! until the program says otherwise. This pairs with the renderer's
@@ -35,6 +41,9 @@ pub struct ScopeStats {
     pub layers_reused: usize,
     /// `useLayer` references to an id with no registered layer (dropped).
     pub layers_unknown: usize,
+    /// `useLayer` references that carried a transform/opacity, so the layer's
+    /// transform uniform was kept resident and refilled for the composite pass.
+    pub layers_transformed: usize,
 }
 
 /// A registered layer and whether its snapshot currently needs repainting.
@@ -146,13 +155,24 @@ impl LayerStore {
 
         for cmd in &frame.commands {
             match cmd {
-                EncoderCommand::UseLayer { layer } => {
+                EncoderCommand::UseLayer { layer, transform, opacity } => {
                     let Some(entry) = self.layers.get_mut(layer) else {
                         stats.layers_unknown += 1;
                         continue; // unknown layer: drop the reference
                     };
                     // The snapshot texture is kept resident every frame.
                     layer_resources.push(entry.layer.texture_desc());
+                    // A placed/faded reference keeps the layer's transform uniform
+                    // resident and refilled in place, so the program's composite
+                    // pass can slide/scale/fade the *resident* snapshot with no
+                    // repaint and no geometry re-emit. Identity uses emit nothing,
+                    // so a plain `useLayer` is byte-for-byte as before.
+                    if transform.is_some() || opacity.is_some() {
+                        let t = transform.unwrap_or_default();
+                        let a = opacity.unwrap_or(1.0);
+                        layer_resources.push(elpa_protocol::layer_xform_buffer(layer, &t, a));
+                        stats.layers_transformed += 1;
+                    }
                     if entry.dirty {
                         // Repaint: splice the painting resources + passes, clean it.
                         layer_resources.extend(entry.layer.resources.iter().cloned());
@@ -233,7 +253,7 @@ mod tests {
         Frame {
             resources: vec![],
             commands: vec![
-                EncoderCommand::UseLayer { layer: "drawer".into() },
+                EncoderCommand::UseLayer { layer: "drawer".into(), transform: None, opacity: None },
                 EncoderCommand::RenderPass(RenderPass {
                     id: Some("composite".into()),
                     color_attachments: vec![ColorAttachment {
@@ -336,11 +356,79 @@ mod tests {
         let mut store = LayerStore::new();
         let frame = Frame {
             resources: vec![],
-            commands: vec![EncoderCommand::UseLayer { layer: "ghost".into() }],
+            commands: vec![EncoderCommand::UseLayer { layer: "ghost".into(), transform: None, opacity: None }],
         };
         let (out, stats) = store.expand_layers(frame);
         assert_eq!(stats.layers_unknown, 1);
         assert!(out.commands.is_empty(), "the dangling reference is removed");
+    }
+
+    /// A frame that composites the drawer at a slide offset + scrim fade.
+    fn frame_placing_drawer(tx: f32, opacity: f32) -> Frame {
+        Frame {
+            resources: vec![],
+            commands: vec![EncoderCommand::UseLayer {
+                layer: "drawer".into(),
+                transform: Some(elpa_protocol::LayerTransform::translate(tx, 0.0)),
+                opacity: Some(opacity),
+            }],
+        }
+    }
+    fn xform_words(f: &Frame, layer: &str) -> Option<Vec<f32>> {
+        let id = elpa_protocol::layer_xform_id(layer);
+        f.resources.iter().find_map(|r| match r {
+            ResourceDesc::Buffer(b) if b.id == id => b.data_f32.clone(),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn placed_use_keeps_a_resident_transform_uniform_that_moves_without_repaint() {
+        let mut store = LayerStore::new();
+        store.declare(drawer_layer());
+
+        // First placed use: snapshot painted once, transform uniform materialized.
+        let (out, stats) = store.expand_layers(frame_placing_drawer(0.0, 0.0));
+        assert_eq!(stats.layers_repainted, 1);
+        assert_eq!(stats.layers_transformed, 1);
+        assert_eq!(xform_words(&out, "drawer"), Some(vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]));
+
+        // Animation frame: snapshot *reused* (no paint pass, no painting resource),
+        // but the transform uniform is refreshed in place to slide + fade it.
+        let (out, stats) = store.expand_layers(frame_placing_drawer(40.0, 0.5));
+        assert_eq!(stats.layers_reused, 1, "snapshot reused while it slides");
+        assert_eq!(stats.layers_repainted, 0);
+        assert_eq!(stats.layers_transformed, 1);
+        assert!(!paint_pass_present(&out), "no repaint while sliding");
+        assert!(!out.resources.iter().any(|r| r.id() == "drawerInst"), "no painting cost while sliding");
+        assert_eq!(xform_words(&out, "drawer"), Some(vec![40.0, 0.0, 1.0, 1.0, 0.5, 0.0, 0.0, 0.0]));
+        assert!(texture_ids(&out).contains(&"elpa.layer.drawer.tex".to_string()), "snapshot resident");
+    }
+
+    #[test]
+    fn identity_use_emits_no_transform_uniform() {
+        let mut store = LayerStore::new();
+        store.declare(drawer_layer());
+        let (out, stats) = store.expand_layers(frame_using_drawer());
+        assert_eq!(stats.layers_transformed, 0);
+        assert!(xform_words(&out, "drawer").is_none(), "identity placement costs nothing extra");
+    }
+
+    #[test]
+    fn transient_freeze_then_thaw_cycle() {
+        // The drawer-slide pattern: declare (freeze) a body layer at gesture start,
+        // reuse its snapshot for every animation frame, release (thaw) at the end.
+        let mut store = LayerStore::new();
+        store.declare(drawer_layer());
+        let (_o, s) = store.expand_layers(frame_using_drawer());
+        assert_eq!(s.layers_repainted, 1, "painted once on freeze");
+        for _ in 0..30 {
+            let (_o, s) = store.expand_layers(frame_using_drawer());
+            assert_eq!(s.layers_reused, 1, "reused every frame of the gesture");
+            assert_eq!(s.layers_repainted, 0);
+        }
+        assert!(store.release("drawer"), "thawed at gesture end");
+        assert!(!store.contains("drawer"));
     }
 
     #[test]

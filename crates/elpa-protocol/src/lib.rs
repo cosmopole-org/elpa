@@ -35,4 +35,7 @@ pub use definition::{Definition, DefinitionBody};
 pub use geometry::{Color, Extent3d, Origin3d, Rect};
 pub use hostcall::HostCall;
 pub use resource::{ResourceDesc, ResourceId};
-pub use scope::{layer_paint_pass_id, layer_texture_id, Layer};
+pub use scope::{
+    layer_paint_pass_id, layer_texture_id, layer_xform_buffer, layer_xform_id, Layer,
+    LayerTransform,
+};
