@@ -907,7 +907,7 @@ function _measureKind(node) {
     if (k == "textField") { let w = _u * 50.0; if (has(node, "width")) { w = node.width * _u; } return { w: w, h: _du() * 7.5 }; }
     if (k == "tabs") { return { w: len(node.tabs) * _u * 14.0, h: _du() * 6.0 }; }
     if (k == "navBar") { return { w: len(node.items) * _u * 14.0, h: _du() * 11.0 }; }
-    if (k == "segmented") { return { w: len(node.segments) * _u * 13.0, h: _du() * 5.5 }; }
+    if (k == "segmented") { let w = len(node.segments) * _u * 13.0; if (has(node, "width")) { w = node.width * _u; } return { w: w, h: _du() * 5.5 }; }
     if (k == "circularProgress") { let r = _u * 4.0; if (has(node, "radius")) { r = node.radius * _u; } return { w: r * 2.0, h: r * 2.0 }; }
     if (k == "snackbar") { return { w: _u * 60.0, h: _du() * 7.0 }; }
     if (k == "dialog") { return { w: _vw, h: _vh }; }
@@ -1117,6 +1117,26 @@ function _textInk(node) {
 // Vertical stack. Content-sized and centered by default (the original
 // behaviour); honours an explicit main-axis `height`, a `cross` alignment, and
 // `Expanded` children that share the leftover main extent by `flex`.
+// Main-axis distribution of the slack beyond the packed children — the Flutter
+// `MainAxisAlignment`. Only kicks in when the box is larger than its content
+// (an explicit width/height, or a parent's tight constraint) and no `Expanded`
+// child has already eaten the slack. `start` (default) leaves it all trailing;
+// the rest spread the children to fill the empty horizontal/vertical space.
+//   start | center | end | between | around | evenly
+function _mainDist(node, extra, nc) {
+    let lead = 0.0; let between = 0.0;
+    if (extra > 0.0) {
+        if (has(node, "main")) {
+            let m = node.main;
+            if (m == "center") { lead = extra / 2.0; }
+            if (m == "end") { lead = extra; }
+            if (m == "between") { if (nc > 1) { between = extra / (nc - 1); } else { lead = extra / 2.0; } }
+            if (m == "around") { let g = extra / nc; lead = g / 2.0; between = g; }
+            if (m == "evenly") { let g = extra / (nc + 1); lead = g; between = g; }
+        }
+    }
+    return { lead: lead, between: between };
+}
 function _paintColumn(node, cx, cy) {
     _beginSelf(node);
     let mz = _measure(node); let gap = _gapPx(node); let nc = len(node.children);
@@ -1128,7 +1148,8 @@ function _paintColumn(node, cx, cy) {
     }
     if (nc > 1) { fixed = fixed + gap * (nc - 1); }
     let extra = main - fixed; if (extra < 0.0) { extra = 0.0; }
-    let top = cy - main / 2.0; let kids = [];
+    let dist = { lead: 0.0, between: 0.0 }; if (flexTotal < 0.5) { dist = _mainDist(node, extra, nc); }
+    let top = cy - main / 2.0 + dist.lead; let kids = [];
     for (let i = 0; i < nc; i++) {
         let ch = node.children[i]; let chh = _measure(ch).h;
         if (ch.kind == "expanded") {
@@ -1141,7 +1162,7 @@ function _paintColumn(node, cx, cy) {
             if (node.cross == "start") { ccx = cx - mz.w / 2.0 + cw / 2.0; }
             if (node.cross == "end") { ccx = cx + mz.w / 2.0 - cw / 2.0; }
         }
-        _paint(ch, ccx, top + chh / 2.0); top = top + chh + gap; push(kids, ch);
+        _paint(ch, ccx, top + chh / 2.0); top = top + chh + gap + dist.between; push(kids, ch);
         if (ch.kind == "expanded") { if (has(ch, "child")) { let cc = ch.child; cc._fh = -1.0; } }
     }
     node._kids = kids; _compose(node);
@@ -1158,7 +1179,8 @@ function _paintRow(node, cx, cy) {
     }
     if (nc > 1) { fixed = fixed + gap * (nc - 1); }
     let extra = main - fixed; if (extra < 0.0) { extra = 0.0; }
-    let left = cx - main / 2.0; let kids = [];
+    let dist = { lead: 0.0, between: 0.0 }; if (flexTotal < 0.5) { dist = _mainDist(node, extra, nc); }
+    let left = cx - main / 2.0 + dist.lead; let kids = [];
     for (let i = 0; i < nc; i++) {
         let ch = node.children[i]; let cw = _measure(ch).w;
         if (ch.kind == "expanded") {
@@ -1171,7 +1193,7 @@ function _paintRow(node, cx, cy) {
             if (node.cross == "start") { ccy = cy - mz.h / 2.0 + chh2 / 2.0; }
             if (node.cross == "end") { ccy = cy + mz.h / 2.0 - chh2 / 2.0; }
         }
-        _paint(ch, left + cw / 2.0, ccy); left = left + cw + gap; push(kids, ch);
+        _paint(ch, left + cw / 2.0, ccy); left = left + cw + gap + dist.between; push(kids, ch);
         if (ch.kind == "expanded") { if (has(ch, "child")) { let cc = ch.child; cc._fw = -1.0; } }
     }
     node._kids = kids; _compose(node);
@@ -1751,24 +1773,57 @@ function _paintDialog(node, cx, cy) {
         }
     }
 }
+// M3 navigation drawer: a slide-in panel with a header (an account-style block:
+// avatar over a tinted banner — or a real network image when `image` is wired —
+// plus a title and subtitle) and a body of destinations that can be grouped with
+// `{ section: "TEXT" }` captions and `{ divider: 1 }` rules. Only the real
+// destinations (`{ icon, label }`) count toward the selected `index`, so sections
+// and dividers can be interleaved freely.
 function _paintDrawer(node, cx, cy) {
     let open = 0.0; if (has(node, "open")) { open = node.open; }
     let a = _ease(concat("drawer:", _idOf(node)), open);
     if (a < 0.01) { return 0; }
-    let w = _u * 64.0;
+    let w = _u * 72.0; let cap = (_vw - _saL) * 0.86; if (w > cap) { w = cap; }
     _rect(_vw / 2.0, _vh / 2.0, _vw / 2.0, _vh / 2.0, 0.0, 0.0, 0.0, [0.0, 0.0, 0.0, 0.45 * a], _CLEAR);
     let pcx = 0.0 - w / 2.0 + a * w; let cy2 = _vh / 2.0; let hw = w / 2.0; let hh = _vh / 2.0;
     _rect(pcx, cy2, hw, hh, 0.0, 0.0, 0.0, _surfaceContainer(1.0), _CLEAR);
-    if (has(node, "header")) { _paintTextLeft(node.header, pcx - hw + _u * 4.0, _saT + _du() * 8.0, _cell("title"), _onSurface(1.0)); }
-    let items = node.items; let iy = _saT + _du() * 16.0;
+    let left = pcx - hw;
+    // ---- account header ----
+    let headerH = _saT + _du() * 26.0;
+    // An accent-tinted banner; a real network image fills it once that path is
+    // wired (the header content — avatar + names — draws over it either way).
+    _rect(pcx, headerH / 2.0, hw, headerH / 2.0, 0.0, 0.0, 0.0, _acc(0.16), _CLEAR);
+    let avR = _du() * 4.2; let avX = left + _u * 6.0 + avR; let avY = _saT + _du() * 8.0;
+    _disc(avX, avY, avR + _u * 0.4, _surfaceContainer(1.0));
+    _disc(avX, avY, avR, _acc(1.0));
+    let avIcon = "person"; if (has(node, "avatarIcon")) { avIcon = node.avatarIcon; }
+    _icon(avIcon, avX, avY, avR * 0.62, _onAcc(1.0));
+    if (has(node, "header")) { _paintTextLeftClip(node.header, left + _u * 6.0, avY + avR + _du() * 3.4, _cell("title"), _onSurface(1.0), hw * 2.0 - _u * 10.0); }
+    if (has(node, "subtitle")) { _paintTextLeftClip(node.subtitle, left + _u * 6.0, avY + avR + _du() * 6.6, _cell("caption"), _onSurface(0.6), hw * 2.0 - _u * 10.0); }
+    // ---- destinations (with section captions + dividers) ----
+    let items = node.items; let iy = headerH + _du() * 2.5; let rowH = _du() * 6.2; let navIdx = 0;
     for (let i = 0; i < len(items); i++) {
-        let it = items[i]; let sel2 = 0.0; if (has(node, "index")) { sel2 = sel(i, node.index); }
-        if (sel2 > 0.5) { _rect(pcx, iy, hw - _u * 2.0, _du() * 2.2, _u * 2.0, 0.0, 0.0, _acc(0.18), _CLEAR); }
-        let col = _onSurface(0.8); if (sel2 > 0.5) { col = _acc(1.0); }
-        if (has(it, "icon")) { _icon(it.icon, pcx - hw + _u * 5.0, iy, _du() * 1.7, col); }
-        _paintTextLeft(it.label, pcx - hw + _u * 9.0, iy, _cell("body"), col);
-        let ii = i; _addTap(pcx, iy, hw, _du() * 2.5, concat("drw", str(ii)), () => { node.onSelect(ii); });
-        iy = iy + _du() * 6.0;
+        let it = items[i];
+        if (has(it, "divider")) {
+            _rect(pcx, iy + _du() * 1.0, hw - _u * 4.0, _u * 0.05, 0.0, 0.0, 0.0, _outlineVar(1.0), _CLEAR);
+            iy = iy + _du() * 2.5;
+        } else { if (has(it, "section")) {
+            _paintTextLeft(it.section, left + _u * 6.0, iy + rowH * 0.45, _cell("caption"), _onSurface(0.5));
+            iy = iy + rowH * 0.85;
+        } else {
+            let myIdx = navIdx; navIdx = navIdx + 1;
+            let sel2 = 0.0; if (has(node, "index")) { sel2 = sel(myIdx, node.index); }
+            let icy = iy + rowH / 2.0;
+            // Full-width rounded selection pill (the M3 active indicator), inset
+            // from both edges so it reads as a contained highlight.
+            if (sel2 > 0.5) { _rect(pcx, icy, hw - _u * 3.0, rowH / 2.0 - _u * 0.5, rowH / 2.0, 0.0, 0.0, _acc(0.18), _CLEAR); }
+            let col = _onSurface(0.78); if (sel2 > 0.5) { col = _acc(1.0); }
+            if (has(it, "icon")) { _icon(it.icon, left + _u * 6.5, icy, _du() * 1.7, col); }
+            _paintTextLeftClip(it.label, left + _u * 11.0, icy, _cell("body"), col, hw * 2.0 - _u * 16.0);
+            let captured = myIdx;
+            _addTap(pcx, icy, hw - _u * 3.0, rowH / 2.0, concat("drw", str(i)), () => { node.onSelect(captured); });
+            iy = iy + rowH;
+        } }
     }
     let pr = pcx + hw; let scx = (pr + _vw) / 2.0; let sw = (_vw - pr) / 2.0;
     if (has(node, "onClose")) { _addTap(scx, _vh / 2.0, sw, _vh / 2.0, "drwScrim", node.onClose); }
