@@ -19,7 +19,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use elpa::{Elpa, InputEvent, NetProvider, NetRequest, NetResponse, SurfaceInfo, WgpuBackend};
+use elpa::{Elpa, Insets, InputEvent, NetProvider, NetRequest, NetResponse, SurfaceInfo, WgpuBackend};
 
 /// Blocking HTTP for desktop, so an Elpa app can download a font by URL
 /// (`useFont(url)`) through the host's `NetProvider` — Elpa's host-call model is
@@ -49,6 +49,43 @@ type App = Elpa<WgpuBackend<'static>>;
 
 const TARGET_FRAME_TIME: Duration = Duration::from_nanos(16_666_667);
 const MAX_ANIMATION_DT_MS: f64 = 100.0;
+
+/// The `AndroidApp` handle, stashed at `android_main` so the render loop can
+/// query the live content rectangle — and thus the system-bar insets — on every
+/// resize. winit hands it to `android_main` but does not otherwise surface it to
+/// the application handler.
+#[cfg(target_os = "android")]
+static ANDROID_APP: std::sync::OnceLock<winit::platform::android::activity::AndroidApp> =
+    std::sync::OnceLock::new();
+
+/// The platform safe-area insets (status bar / navigation bar / display cutout),
+/// in physical pixels, for a window of physical size `w`×`h`.
+///
+/// On Android the wgpu surface covers the whole window edge-to-edge, while the
+/// `android-activity` glue reports the *content rectangle* — the region the
+/// system leaves for app content between its bars. Their difference is exactly
+/// the space reserved for system UI, which is what the app must keep its chrome
+/// clear of. Desktop has no system insets, so this is always zero there.
+#[allow(unused_variables)]
+fn safe_area_insets(w: u32, h: u32) -> Insets {
+    #[cfg(target_os = "android")]
+    {
+        if let Some(app) = ANDROID_APP.get() {
+            let r = app.content_rect();
+            // An empty / not-yet-reported rect means the system hasn't told us
+            // where the content goes; treat it as no insets rather than reserving
+            // the entire window.
+            if r.right > r.left && r.bottom > r.top {
+                let top = r.top.max(0) as f64;
+                let left = r.left.max(0) as f64;
+                let right = (w as i32 - r.right).max(0) as f64;
+                let bottom = (h as i32 - r.bottom).max(0) as f64;
+                return Insets::new(top, right, bottom, left);
+            }
+        }
+    }
+    Insets::ZERO
+}
 
 /// Map a wgpu surface format to the protocol's format token so the app's
 /// pipeline target matches the surface.
@@ -142,7 +179,10 @@ impl ElpaApp {
         let backend = pollster::block_on(WgpuBackend::new(&instance, surface, w, h));
 
         let program = material_program(&format_token(backend.surface_format()));
-        let surface_info = SurfaceInfo::new(w, h, scale);
+        // Seed the first frame with the current safe-area insets so the UI lays
+        // out clear of the status / navigation bars from the very first paint
+        // (no flash of content drawn under the status bar on Android).
+        let surface_info = SurfaceInfo::new(w, h, scale).with_insets(safe_area_insets(w, h));
         let mut app = Elpa::new_from_js(backend, surface_info, &program)
             .expect("Material SDK demo JS compiles");
         // Grant network + a blocking fetcher so the app can download a font by URL
@@ -198,6 +238,11 @@ impl ApplicationHandler for ElpaApp {
                 let mut app = state.app.borrow_mut();
                 app.renderer_mut().backend_mut().resize(w, h); // reconfigure swapchain
                 app.resize(w, h, state.window.scale_factor()); // SurfaceInfo + app onResize
+                // A resize is also when the reserved system-bar regions change
+                // (rotation, bars showing/hiding), so re-report the insets. This
+                // no-ops when they are unchanged.
+                let ins = safe_area_insets(w, h);
+                app.set_safe_area_insets(ins.top, ins.right, ins.bottom, ins.left);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let scale = state.window.scale_factor();
@@ -344,6 +389,10 @@ fn android_main(android_app: winit::platform::android::activity::AndroidApp) {
     android_logger::init_once(
         android_logger::Config::default().with_max_level(log::LevelFilter::Info),
     );
+
+    // Keep a handle so the render loop can read the live content rectangle (the
+    // source of the safe-area insets) on resize; winit does not expose it again.
+    let _ = ANDROID_APP.set(android_app.clone());
 
     let event_loop = EventLoop::builder()
         .with_android_app(android_app)

@@ -103,6 +103,15 @@ APK packaging is configured under `[package.metadata.android]` in
   Windows, **Vulkan/GLES** on Android, **Metal** on macOS, **Vulkan/GLES** on
   Linux. The surface color format is read from the live surface and patched into
   the linked Material JavaScript so the pipeline target always matches.
+- **Safe area / status bar.** The Android surface is drawn edge-to-edge, so the
+  host reads the activity's content rectangle (`AndroidApp::content_rect`),
+  derives the system-bar insets (status bar, navigation / gesture bar, display
+  cutouts) and reports them through `SurfaceInfo`'s safe-area insets — at startup
+  and again on every resize/rotation via `Elpa::set_safe_area_insets`. The
+  Material kit's `Scaffold` then extends the app bar's surface under the status
+  bar while keeping its title/actions below it, and lifts the navigation bar
+  above the gesture inset; the `SafeArea` widget does the same for custom
+  content. On desktop the insets are always zero, so the layout is unchanged.
 - This crate is intentionally **excluded from the workspace** (it pulls the full
   wgpu + winit stack); build it on its own as shown above.
 
