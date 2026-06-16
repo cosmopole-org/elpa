@@ -160,6 +160,15 @@ asserts exactly that — while text is anti-aliased and proportional like a brow
   into a coverage atlas via the `text.atlas` host call; the SDK uploads it to a
   texture and samples it, so text is smooth and proportional at any size. (A host
   without `text.atlas` transparently falls back to the built-in stroke font.)
+* **App-chosen fonts** — an app can replace the main font at runtime:
+  `useFont(url)` / `useFontBold(regularUrl, boldUrl)` download a TrueType font and
+  use it; `useFontFromPath(path)` / `useFontFromPathBold(...)` load one from
+  storage; `useDefaultFont()` restores the bundled face. The runtime fetches
+  (through the host's `NetProvider`) or reads the bytes, rebuilds the atlas, and
+  the UI repaints in the new font; a failed/denied source falls back to the
+  bundled font. The web example wires a synchronous binary `XMLHttpRequest` and the
+  native example a blocking `ureq` client, so URL fonts work in the browser and on
+  desktop; both demos bind the `f` key to download a web font (`F` to restore).
 * **SVG icons** — `Icon({ svg: "M4 12 L10 18 L20 6", viewBox: 24 })` or register a
   named one with `registerIcon(name, d, viewBox)` (then use it anywhere a name
   works). The path grammar covers `M/L/H/V/C/Q/Z` (absolute + relative), with

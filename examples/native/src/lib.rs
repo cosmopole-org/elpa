@@ -19,7 +19,24 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use elpa::{Elpa, InputEvent, SurfaceInfo, WgpuBackend};
+use elpa::{Elpa, InputEvent, NetProvider, NetRequest, NetResponse, SurfaceInfo, WgpuBackend};
+
+/// Blocking HTTP for desktop, so an Elpa app can download a font by URL
+/// (`useFont(url)`) through the host's `NetProvider` — Elpa's host-call model is
+/// synchronous, and `ureq` is a blocking client, so this is a direct fit.
+struct NativeNet;
+
+impl NetProvider for NativeNet {
+    fn fetch(&mut self, req: &NetRequest) -> Result<NetResponse, String> {
+        let mut resp = ureq::get(&req.url).call().map_err(|e| e.to_string())?;
+        let status = resp.status().as_u16();
+        let bytes = resp
+            .body_mut()
+            .read_to_vec()
+            .map_err(|e| e.to_string())?;
+        Ok(NetResponse { status, body: String::new(), bytes: Some(bytes) })
+    }
+}
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -128,6 +145,14 @@ impl ElpaApp {
         let surface_info = SurfaceInfo::new(w, h, scale);
         let mut app = Elpa::new_from_js(backend, surface_info, &program)
             .expect("Material SDK demo JS compiles");
+        // Grant network + a blocking fetcher so the app can download a font by URL
+        // at runtime (the gallery's `f` key calls `useFont(...)`).
+        {
+            let mut toggles = app.env().toggles();
+            toggles.network = true;
+            app.env_mut().set_toggles(toggles);
+            app.env_mut().set_net(Box::new(NativeNet));
+        }
         app.start(); // run top-level program (init + first frame)
 
         self.state = Some(State {

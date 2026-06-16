@@ -55,6 +55,11 @@ let App = defineComponent(function(props, update) {
     setTheme(dark, accent);
     return Scaffold({
         onKey: (k) => {
+            // 'f' tells the runtime to download a font by URL and use it as the
+            // main font; 'F' restores the bundled one. (Needs the host to grant
+            // network — the web example does.)
+            if (k == "f") { useFont("https://cdn.jsdelivr.net/gh/google/fonts/ofl/pacifico/Pacifico-Regular.ttf"); return 0; }
+            if (k == "F") { useDefaultFont(); return 0; }
             if (k == "d") { dark = 1.0 - dark; }
             if (k == " ") { swOn = 1.0 - swOn; }
             if (k == "r") { swOn = 0.0; ck = 0.0; chip = 0.0; radio = 0; vol = 0.5; }

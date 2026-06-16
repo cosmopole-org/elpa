@@ -13,9 +13,30 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use elpa::{Elpa, InputEvent, SurfaceInfo, WgpuBackend};
+use elpa::{Elpa, InputEvent, NetProvider, NetRequest, NetResponse, SurfaceInfo, WgpuBackend};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+
+/// Synchronous binary `fetch` for the browser, used so an Elpa app can download a
+/// font by URL (`useFont(url)`) through the host's `NetProvider`. Elpa's host-call
+/// model is synchronous, so this uses a blocking `XMLHttpRequest` and the classic
+/// `x-user-defined` charset trick to read the raw bytes out of `responseText`
+/// (sync XHR can't return an ArrayBuffer). The URL must allow CORS.
+struct WebSyncNet;
+
+impl NetProvider for WebSyncNet {
+    fn fetch(&mut self, req: &NetRequest) -> Result<NetResponse, String> {
+        let xhr = web_sys::XmlHttpRequest::new().map_err(|_| "XHR unavailable".to_string())?;
+        xhr.open_with_async(&req.method, &req.url, false).map_err(|_| "XHR open failed".to_string())?;
+        // Map each byte to a char code 0..255 (high bytes land in U+F700..U+F7FF).
+        let _ = xhr.override_mime_type("text/plain; charset=x-user-defined");
+        xhr.send().map_err(|_| "XHR send failed (CORS / network?)".to_string())?;
+        let status = xhr.status().unwrap_or(0);
+        let text = xhr.response_text().ok().flatten().unwrap_or_default();
+        let bytes: Vec<u8> = text.chars().map(|c| (c as u32 & 0xFF) as u8).collect();
+        Ok(NetResponse { status, body: String::new(), bytes: Some(bytes) })
+    }
+}
 
 /// A live app instance with a canvas-backed wgpu surface (`'static`).
 type App = Elpa<WgpuBackend<'static>>;
@@ -110,6 +131,14 @@ async fn run() {
     let surface_info = SurfaceInfo::new(w, h, dpr);
     let mut app =
         Elpa::new_from_js(backend, surface_info, &program).expect("app JS compiles");
+    // Grant network + a synchronous binary fetcher so the app can download a font
+    // by URL at runtime (the gallery's `f` key calls `useFont(...)`).
+    {
+        let mut toggles = app.env().toggles();
+        toggles.network = true;
+        app.env_mut().set_toggles(toggles);
+        app.env_mut().set_net(Box::new(WebSyncNet));
+    }
     app.start(); // run the SDK + app, paint the first frame
 
     let app = Rc::new(RefCell::new(app));

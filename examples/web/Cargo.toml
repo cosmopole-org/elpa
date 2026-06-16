@@ -39,6 +39,7 @@ features = [
     "MouseEvent",
     "WheelEvent",
     "KeyboardEvent",
+    "XmlHttpRequest",
 ]
 
 [profile.release]

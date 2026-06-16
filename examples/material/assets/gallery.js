@@ -251,6 +251,11 @@ function galKey(k, update) {
     if (k == "s") { snackOn = 1.0 - snackOn; }
     if (k == "p") { playing = 1.0 - playing; }
     if (k == "d") { dark = 1.0 - dark; }
+    // 'f' downloads a web font by URL and uses it as the main font; 'F' restores
+    // the bundled one. The runtime fetches and rasterises it; the UI repaints in
+    // the new face. (`useFont` repaints itself, so no `update()` is needed here.)
+    if (k == "f") { useFont("https://cdn.jsdelivr.net/gh/google/fonts/ofl/pacifico/Pacifico-Regular.ttf"); return 0; }
+    if (k == "F") { useDefaultFont(); return 0; }
     update();
 }
 function galDialog(update) {
