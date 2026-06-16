@@ -277,6 +277,35 @@ impl<B: GpuBackend> Elpa<B> {
         self.layers.release(id)
     }
 
+    /// Begin a **transient freeze**: snapshot a region into a layer for the
+    /// duration of an animation — a navigation-drawer slide, a page transition, a
+    /// sheet expand — and reuse that snapshot on every frame so the region's
+    /// drawing logic never re-runs while it animates. Declares the layer only if
+    /// it is not already registered, so re-freezing an in-flight animation leaves
+    /// the resident snapshot valid (it keeps standing in) instead of forcing a
+    /// repaint. Returns whether a new freeze was started.
+    ///
+    /// This is the cost-flip for layering an otherwise-cheap UI: a freeze pays one
+    /// snapshot paint up front, then every animation frame skips the region's whole
+    /// CPU paint + instance emit + upload — and with a placed
+    /// [`UseLayer`](elpa_protocol::EncoderCommand::UseLayer) the region can still
+    /// slide/fade for free. Pair with [`Elpa::thaw_layer`] when the gesture settles.
+    pub fn freeze_layer(&mut self, layer: Layer) -> bool {
+        if self.layers.contains(&layer.id) {
+            return false;
+        }
+        self.define_layer(layer);
+        true
+    }
+
+    /// End a transient freeze (see [`Elpa::freeze_layer`]): release the layer and
+    /// its snapshot so the region renders directly — and stays interactive —
+    /// again. Named for the freeze/thaw lifecycle; equivalent to
+    /// [`Elpa::release_layer`].
+    pub fn thaw_layer(&mut self, id: &str) -> bool {
+        self.release_layer(id)
+    }
+
     /// The current layer store (count/lookup/validity of registered scopes).
     pub fn layers(&self) -> &LayerStore {
         &self.layers
@@ -606,6 +635,9 @@ mod tests {
     fn i(v: i64) -> serde_json::Value {
         json!({ "type": "i64", "data": { "value": v } })
     }
+    fn f(v: f64) -> serde_json::Value {
+        json!({ "type": "f64", "data": { "value": v } })
+    }
     fn obj(m: serde_json::Value) -> serde_json::Value {
         json!({ "type": "object", "data": { "value": m } })
     }
@@ -874,6 +906,23 @@ mod tests {
         }))
     }
 
+    /// Like [`layer_using_frame`] but the `useLayer` carries a slide offset + scrim
+    /// fade, so the host keeps the layer's transform uniform resident for the
+    /// composite pass to place the snapshot.
+    fn placed_layer_frame() -> serde_json::Value {
+        obj(json!({
+            "commands": arr(vec![
+                obj(json!({ "op": s("useLayer"), "layer": s("drawer"),
+                    "transform": obj(json!({ "tx": f(40.0) })), "opacity": f(0.5) })),
+                obj(json!({
+                    "op": s("renderPass"), "id": s("composite"),
+                    "color_attachments": arr(vec![ obj(json!({ "view": obj(json!({ "kind": s("surface") })) })) ]),
+                    "commands": arr(vec![ obj(json!({ "cmd": s("draw"), "vertex_count": i(6) })) ])
+                })),
+            ])
+        }))
+    }
+
     /// A drawer layer whose paint pass renders one draw into its snapshot texture.
     fn drawer_layer() -> Layer {
         use protocol::command::{ColorAttachment, RenderPass, TargetView};
@@ -969,6 +1018,63 @@ mod tests {
         assert!(app.layers().contains("drawer"));
         assert!(app.renderer().is_layer("elpa.layer.drawer.paint"));
         assert!(app.release_layer("drawer"));
+        assert!(!app.layers().contains("drawer"));
+        assert!(!app.renderer().is_layer("elpa.layer.drawer.paint"));
+    }
+
+    #[test]
+    fn placed_layer_slides_a_reused_snapshot_without_repainting() {
+        // The program submits a placed `useLayer` (slide + scrim fade) then
+        // composites; the host keeps the snapshot resident and materializes the
+        // transform uniform for the composite pass to place it.
+        let submit = host_call("gpu.submit", vec![placed_layer_frame()]);
+        let program = json!({
+            "type": "program",
+            "body": [
+                submit.clone(),
+                { "type": "functionDefinition", "data": {
+                    "name": "onEvent", "params": ["e"], "body": [ submit ] } }
+            ]
+        })
+        .to_string();
+
+        let mut app =
+            Elpa::new(HeadlessBackend::default(), SurfaceInfo::new(800, 600, 1.0), &program).unwrap();
+        app.define_layer(drawer_layer());
+
+        // First frame freezes the snapshot (one paint) and emits the transform
+        // uniform carrying the slide offset + scrim alpha.
+        app.start();
+        assert_eq!(app.last_scope_stats().layers_repainted, 1);
+        assert_eq!(app.last_scope_stats().layers_transformed, 1);
+        let xform = protocol::scope::layer_xform_id("drawer");
+        let frame = app.last_frame().unwrap();
+        let words = frame.resources.iter().find_map(|r| match r {
+            protocol::ResourceDesc::Buffer(b) if b.id == xform => b.data_f32.clone(),
+            _ => None,
+        });
+        assert_eq!(words, Some(vec![40.0, 0.0, 1.0, 1.0, 0.5, 0.0, 0.0, 0.0]));
+
+        // A subsequent submit reuses the snapshot (no repaint) but still re-declares
+        // the transform uniform so the snapshot can keep moving for free.
+        app.send_event(&InputEvent::PointerDown { x: 1.0, y: 1.0, button: 0 });
+        assert_eq!(app.last_scope_stats().layers_reused, 1);
+        assert_eq!(app.last_scope_stats().layers_repainted, 0);
+        assert_eq!(app.last_scope_stats().layers_transformed, 1, "uniform still resident while sliding");
+        assert!(app.last_frame().unwrap().resources.iter().any(|r| *r.id() == xform));
+    }
+
+    #[test]
+    fn freeze_is_idempotent_and_thaw_releases() {
+        let mut app =
+            Elpa::new(HeadlessBackend::default(), SurfaceInfo::new(8, 8, 1.0), &app_ast()).unwrap();
+        // First freeze registers the layer; re-freezing an in-flight animation is a
+        // no-op so the resident snapshot is not forced to repaint.
+        assert!(app.freeze_layer(drawer_layer()), "freeze starts the snapshot");
+        assert!(!app.freeze_layer(drawer_layer()), "re-freeze leaves the snapshot valid");
+        assert!(app.layers().contains("drawer"));
+        // Thaw releases it from both stores so the region renders directly again.
+        assert!(app.thaw_layer("drawer"));
         assert!(!app.layers().contains("drawer"));
         assert!(!app.renderer().is_layer("elpa.layer.drawer.paint"));
     }

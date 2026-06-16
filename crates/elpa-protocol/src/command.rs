@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::geometry::{Color, Extent3d, Origin3d, Rect};
 use crate::resource::{ResourceDesc, ResourceId};
+use crate::scope::LayerTransform;
 
 /// A reference to a render target: either the swapchain surface or a texture
 /// resource the app declared (an offscreen / cacheable layer).
@@ -62,7 +63,21 @@ pub enum EncoderCommand {
     /// still valid it expands to *nothing* — the resident snapshot texture is
     /// reused and the VM never re-ran the layer's drawing. Either way the layer's
     /// snapshot texture is kept resident for the compositing pass to sample.
-    UseLayer { layer: String },
+    ///
+    /// An optional `transform` / `opacity` makes the snapshot's **placement**
+    /// data-only: when either is present the host also keeps the layer's
+    /// transform uniform ([`layer_xform_id`](crate::scope::layer_xform_id))
+    /// resident and refilled, so the program's composite pass can slide/scale/fade
+    /// the resident snapshot with no repaint and no geometry re-emit. Absent (the
+    /// default), the layer composites at its identity placement and no uniform is
+    /// emitted, so existing frames are byte-for-byte unchanged.
+    UseLayer {
+        layer: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transform: Option<LayerTransform>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        opacity: Option<f32>,
+    },
     CopyBufferToBuffer {
         src: ResourceId,
         src_offset: u64,
