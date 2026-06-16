@@ -227,6 +227,54 @@ fn drawer_opens_and_animates() {
     assert!(app.take_log().is_empty(), "no host errors animating the drawer");
 }
 
+/// The gallery with `setLayered(1.0)` injected — the static/dynamic instance-layer
+/// split the renderer's cache exploits during animation.
+fn layered_instance() -> Elpa<HeadlessBackend> {
+    let program = format!(
+        "{}\n{}",
+        elpa_material::MODULE_JS,
+        elpa_material::GALLERY_JS.replace("runApp(App)", "setLayered(1.0); runApp(App)"),
+    );
+    Elpa::new_from_js(HeadlessBackend::default(), SurfaceInfo::new(900, 1400, 1.0), &program)
+        .expect("gallery compiles")
+}
+
+#[test]
+fn drawer_slide_keeps_the_body_in_the_cached_static_layer() {
+    // The point of isolating the drawer in its own component: opening it sits at
+    // the top of the tree, but the slide must NOT re-emit/re-upload the whole app
+    // every frame. With layering on, the drawer is the only animating component,
+    // so it alone lands in the dynamic buffer; the body + chrome keep identical
+    // bytes in the static buffer, which the resource cache then skips re-uploading
+    // (created == 0) even as the drawer eases in and the frame presents.
+    let mut app = layered_instance();
+    app.start();
+    let _ = app.take_log();
+
+    // Open the drawer (hamburger, top-left).
+    app.send_event(&InputEvent::PointerDown { x: 54.0, y: 45.0, button: 0 });
+
+    let mut saw_body_cached = false;
+    for _ in 0..10 {
+        app.animate(16.0);
+        let s = app.last_stats();
+        if s.presented && s.resources_created == 0 && s.resources_updated >= 1 {
+            let frame = app.last_frame().unwrap();
+            let has_static = frame.resources.iter().any(|r| r.id() == "elpa.m3.inst.static");
+            let has_dyn = frame.resources.iter().any(|r| r.id() == "elpa.m3.inst.dyn");
+            if has_static && has_dyn {
+                saw_body_cached = true;
+            }
+        }
+    }
+    assert!(
+        saw_body_cached,
+        "the body stayed in the cached static layer while only the drawer slid"
+    );
+    assert!(app.trap_reason().is_none(), "no trap animating the layered drawer");
+    assert!(app.take_log().is_empty(), "no host errors animating the layered drawer");
+}
+
 #[test]
 fn storage_round_trips_through_the_host() {
     // The media section's "SAVE NAME" button persists the field through the
