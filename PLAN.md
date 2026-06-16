@@ -472,12 +472,31 @@ re-upload — while a changed one repaints in isolation. Invalidation is explici
 the *program* owns the decoupling, which is what makes a navigation drawer slide
 open while the body behind it never re-renders.
 
-**Worked example.** `examples/material` decomposes its scaffold into `body`,
-`chrome`, `drawer` and `overlay` snapshot layers, each painted by the shared SDF
-pipeline into its own transparent (→ premultiplied) target and merged by a
-per-layer full-screen blit (`elpa.m3.blit.*`). Scrolling repaints only `body`;
-opening the drawer repaints only `drawer`; the rest hold their snapshots — proven
-by `examples/material/tests/{run,gallery}.rs` against the `ScopeStats` counters.
+**When it helps — and when it does not.** Layering pays off when a region is
+**expensive to render and changes rarely**: a complex 3D scene behind a HUD, a
+large static map under a moving overlay, a heavy chart that updates once a second.
+There the snapshot saves real per-frame GPU rasterization (and, with the host's
+omit-when-clean path, real VM work). It is the *wrong* tool for a region that is
+already cheap to draw: compositing a snapshot costs a full-screen textured blit
+plus an offscreen target, which is **more** work than simply re-issuing a few
+draws. Decoupling also turns one scissored surface pass into N offscreen passes +
+a full-surface composite, which can defeat the dirty-rect partial-present (§10).
+Measure before reaching for it.
+
+**Worked example.** The scope store, expansion, snapshot reuse and explicit
+invalidation are proven end-to-end in `crates/elpa/src/lib.rs` (a small program
+declares a layer, reuses its snapshot across events, and forces a repaint on
+`scope.invalidate`) and at each layer of the stack (`elpa-protocol`,
+`elpa-renderer`, `elpa-runtime` unit tests).
+
+> **Note — the Material kit does *not* layer.** An early experiment routed the
+> whole Material UI through scopes (one snapshot per scaffold region). For that
+> workload it was a net loss: the kit already draws the entire UI as **one** cheap
+> instanced rounded-rect pass, so the per-frame compositing and the extra
+> CPU-side scope bookkeeping cost far more than the GPU rasterization they saved —
+> a measured regression of ~3× on heavy section switches. The kit therefore stays
+> single-pass; the scope API remains the opt-in primitive above, for the
+> render-heavy cases that actually benefit.
 
 ---
 

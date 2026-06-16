@@ -12,19 +12,14 @@ use elpa::{Elpa, HeadlessBackend, Insets, SurfaceInfo};
 /// the first four being cx, cy, half-w, half-h).
 fn instances(app: &Elpa<HeadlessBackend>) -> Vec<f32> {
     let frame = app.last_frame().expect("a frame was submitted");
-    let order = ["body", "chrome", "drawer", "overlay", "root"];
-    let mut out = Vec::new();
-    for scope in order {
-        let id = format!("elpa.layer.{scope}.inst");
-        if let Some(d) = frame.resources.iter().find_map(|r| match r {
-            ResourceDesc::Buffer(b) if b.id == id => b.data_f32.clone(),
+    frame
+        .resources
+        .iter()
+        .find_map(|r| match r {
+            ResourceDesc::Buffer(b) if b.id == "elpa.m3.inst" => b.data_f32.clone(),
             _ => None,
-        }) {
-            out.extend(d);
-        }
-    }
-    assert!(!out.is_empty(), "at least one scope instance buffer present");
-    out
+        })
+        .expect("instance buffer present")
 }
 
 /// Render the gallery on a phone-sized surface with the given safe-area insets
