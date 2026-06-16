@@ -3,13 +3,21 @@
 //! storage path — via the SDK helpers `useFont` / `useFontFromPath`. Proven here
 //! end to end on a headless VM: the helper triggers a `text.atlas` rebuild from
 //! the chosen source and the rendered glyphs change accordingly.
+//!
+//! The runtime no longer bundles a font: the *default* font is itself downloaded
+//! through the network provider as the runtime loads its first frame. These tests
+//! serve real TrueType fixtures from a `ClosureNet`/storage instead of hitting the
+//! network, and prove that with no provider at all text still renders (the kit's
+//! built-in stroke-vector fallback) rather than trapping.
 
 use elpa::protocol::{EncoderCommand, ResourceDesc};
 use elpa::{ClosureNet, Elpa, EnvToggles, HeadlessBackend, NetResponse, SurfaceInfo};
 
-// A real TrueType font to stand in for the "downloaded"/"stored" one (distinct
-// metrics from the bundled regular face, so the rendered text measurably moves).
-const CUSTOM_TTF: &[u8] = include_bytes!("../../../crates/elpa-runtime/assets/fonts/LiberationSans-Bold.ttf");
+// Two real TrueType faces with distinct metrics: one stands in for the runtime's
+// *downloaded default* font, the other for an app-chosen custom font — so a swap
+// measurably moves the rendered text.
+const DEFAULT_TTF: &[u8] = include_bytes!("../../../crates/elpa-runtime/tests/fonts/LiberationSans-Regular.ttf");
+const CUSTOM_TTF: &[u8] = include_bytes!("../../../crates/elpa-runtime/tests/fonts/LiberationSans-Bold.ttf");
 
 fn instances(app: &Elpa<HeadlessBackend>) -> Vec<f32> {
     let frame = app.last_frame().expect("a frame");
@@ -32,6 +40,15 @@ fn atlas_b64(app: &Elpa<HeadlessBackend>) -> Option<String> {
     })
 }
 
+// Grant network and wire a provider that returns `bytes` for any request — so the
+// runtime can "download" a font (the default or a custom URL) offline in tests.
+fn serve_font(app: &mut Elpa<HeadlessBackend>, bytes: &'static [u8]) {
+    app.env_mut().set_toggles(EnvToggles::all_on());
+    app.env_mut().set_net(Box::new(ClosureNet(move |_req| {
+        Ok(NetResponse { status: 200, body: String::new(), bytes: Some(bytes.to_vec()) })
+    })));
+}
+
 fn app_with(body_call: &str) -> String {
     format!(
         "{}\n let App = defineComponent(function(props, update) {{ return Scaffold({{ appBar: AppBar({{ title: \"FONT\" }}), body: Text(\"Hello World\", {{ size: \"title\" }}) }}); }}); {} runApp(App);",
@@ -41,25 +58,22 @@ fn app_with(body_call: &str) -> String {
 
 #[test]
 fn use_font_by_url_changes_the_rendered_text() {
-    // Baseline with the bundled font.
+    // Baseline with the downloaded default font.
     let mut base = Elpa::new_from_js(HeadlessBackend::default(), SurfaceInfo::new(800, 600, 1.0), &app_with(""))
         .expect("compiles");
+    serve_font(&mut base, DEFAULT_TTF);
     base.start();
-    let base_atlas = atlas_b64(&base).expect("bundled atlas uploaded");
+    let base_atlas = atlas_b64(&base).expect("default atlas uploaded");
     let base_inst = instances(&base);
 
-    // Same app, but it asks the runtime to download a font by URL.
+    // Same app, but it asks the runtime to download a *different* font by URL.
     let mut app = Elpa::new_from_js(
         HeadlessBackend::default(),
         SurfaceInfo::new(800, 600, 1.0),
         &app_with("useFont(\"https://fonts.test/Custom.ttf\");"),
     )
     .expect("compiles");
-    // Grant network and wire a provider that returns the font bytes (binary).
-    app.env_mut().set_toggles(EnvToggles::all_on());
-    app.env_mut().set_net(Box::new(ClosureNet(|_req| {
-        Ok(NetResponse { status: 200, body: String::new(), bytes: Some(CUSTOM_TTF.to_vec()) })
-    })));
+    serve_font(&mut app, CUSTOM_TTF);
     app.start();
 
     assert!(app.trap_reason().is_none(), "no trap using a URL font: {:?}", app.trap_reason());
@@ -72,8 +86,9 @@ fn use_font_by_url_changes_the_rendered_text() {
 fn use_font_from_storage_path_changes_the_rendered_text() {
     let mut base = Elpa::new_from_js(HeadlessBackend::default(), SurfaceInfo::new(800, 600, 1.0), &app_with(""))
         .expect("compiles");
+    serve_font(&mut base, DEFAULT_TTF);
     base.start();
-    let base_atlas = atlas_b64(&base).expect("bundled atlas");
+    let base_atlas = atlas_b64(&base).expect("default atlas");
 
     let mut app = Elpa::new_from_js(
         HeadlessBackend::default(),
@@ -81,7 +96,8 @@ fn use_font_from_storage_path_changes_the_rendered_text() {
         &app_with("useFontFromPath(\"/fonts/app.ttf\");"),
     )
     .expect("compiles");
-    // Stage the font in the fabricated filesystem (binary-safe) before start.
+    // Stage the font in the fabricated filesystem (binary-safe) before start; the
+    // font comes from storage, so no network is needed for this app.
     app.env_mut().fs_mut().write("/fonts/app.ttf", CUSTOM_TTF).expect("stage font");
     app.start();
 
@@ -90,15 +106,18 @@ fn use_font_from_storage_path_changes_the_rendered_text() {
 }
 
 #[test]
-fn missing_font_source_falls_back_to_bundled() {
-    // A URL with no network provisioned must not crash — it falls back to bundled.
+fn no_font_source_and_no_network_degrades_to_vector_text() {
+    // A URL with no network provisioned must not crash. There is no bundled font
+    // to fall back to, so no atlas is built — the kit renders text with its
+    // built-in stroke-vector fallback instead.
     let mut app = Elpa::new_from_js(
         HeadlessBackend::default(),
         SurfaceInfo::new(800, 600, 1.0),
         &app_with("useFont(\"https://unreachable.test/x.ttf\");"),
     )
     .expect("compiles");
-    app.start(); // network is off by default → host falls back to the bundled font
+    app.start(); // network is off by default → no custom font and no default font
     assert!(app.trap_reason().is_none(), "graceful fallback, no trap");
-    assert!(atlas_b64(&app).is_some(), "still renders text with the bundled font");
+    assert!(atlas_b64(&app).is_none(), "no font atlas without a network provider");
+    assert!(!instances(&app).is_empty(), "still renders text via the vector fallback");
 }

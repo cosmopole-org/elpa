@@ -150,25 +150,35 @@ asserts exactly that — while text is anti-aliased and proportional like a brow
 
 ### Responsive layout, typography & SVG icons
 
-* **Responsive** — the layout unit is 1% of the **shorter** viewport side, so the
-  same tree fits both phone-portrait and desktop-landscape without overflowing;
-  a `ListView`/`GridView` used as the scaffold `body` fills the body region so its
+* **Responsive** — layout follows Material's **window size classes**, keyed off
+  the *logical* (dp) viewport width, not the raw pixel count: **compact** (phones,
+  &lt; 600dp), **medium** (&lt; 840dp) and **expanded** (tablets/desktop). Phones
+  get larger type and taller, easier-to-tap chrome; a wide window lays content out
+  in a centred reading column instead of one edge-to-edge sheet. So the UI truly
+  adapts to the device rather than being one design scaled up and down. Apps can go
+  further with `sizeClass()` / `isCompact()` / `isExpanded()` / `screenWidth()`
+  (e.g. the gallery's grid drops from 3 columns to 2 on a phone). A
+  `ListView`/`GridView` used as the scaffold `body` fills the body region so its
   viewport adapts to the screen.
 * **Typography** — `Text("Hello", { px: 22.0, weight: "bold" })`,
   `Text("...", { size: "title", weight: "medium" })`. Glyphs come from a real
-  TrueType font (Liberation Sans, regular + bold) that the host rasterises **once**
-  into a coverage atlas via the `text.atlas` host call; the SDK uploads it to a
-  texture and samples it, so text is smooth and proportional at any size. (A host
-  without `text.atlas` transparently falls back to the built-in stroke font.)
-* **App-chosen fonts** — an app can replace the main font at runtime:
+  TrueType font (**Roboto**, regular + bold) that the host rasterises **once** into
+  a coverage atlas via the `text.atlas` host call; the SDK uploads it to a texture
+  and samples it, so text is smooth and proportional at any size. The named roles
+  scale with the size class so text stays readable on small screens. (A host
+  without `text.atlas`, or one with no network to fetch the font, transparently
+  falls back to the built-in stroke font.)
+* **App-chosen fonts** — the runtime ships **no** bundled font: the default font is
+  itself downloaded (through the host's `NetProvider`) as the runtime loads its
+  first frame, then cached. An app can also replace the main font at runtime:
   `useFont(url)` / `useFontBold(regularUrl, boldUrl)` download a TrueType font and
   use it; `useFontFromPath(path)` / `useFontFromPathBold(...)` load one from
-  storage; `useDefaultFont()` restores the bundled face. The runtime fetches
-  (through the host's `NetProvider`) or reads the bytes, rebuilds the atlas, and
-  the UI repaints in the new font; a failed/denied source falls back to the
-  bundled font. The web example wires a synchronous binary `XMLHttpRequest` and the
-  native example a blocking `ureq` client, so URL fonts work in the browser and on
-  desktop; both demos bind the `f` key to download a web font (`F` to restore).
+  storage; `useDefaultFont()` restores the downloaded default face. The runtime
+  fetches or reads the bytes, rebuilds the atlas, and the UI repaints in the new
+  font; a failed/denied custom source falls back to the default font. The web
+  example wires a synchronous binary `XMLHttpRequest` and the native example a
+  blocking `ureq` client, so URL fonts work in the browser and on desktop; both
+  demos bind the `f` key to download a web font (`F` to restore the default).
 * **SVG icons** — `Icon({ svg: "M4 12 L10 18 L20 6", viewBox: 24 })` or register a
   named one with `registerIcon(name, d, viewBox)` (then use it anywhere a name
   works). The path grammar covers `M/L/H/V/C/Q/Z` (absolute + relative), with
