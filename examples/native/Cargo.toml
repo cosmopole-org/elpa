@@ -51,4 +51,13 @@ target_sdk_version = 30
 [package.metadata.android.application]
 label = "Elpa Material"
 
+# Network access. The Elpa host grants the sandbox the `network` toggle and a
+# blocking fetcher (see `src/lib.rs`), but on Android an app also needs the
+# platform INTERNET permission or every socket call fails with EPERM — so the
+# gallery's `f`-key `useFont(url)` download (and any `httpGet`) only works once
+# this is declared in the manifest. The font/test URLs are HTTPS
+# (cdn.jsdelivr.net, example.com), so no cleartext-traffic exception is needed.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
+
 [workspace]
