@@ -191,7 +191,8 @@ let _dpr = 1.0;                               // device pixel ratio (physical/lo
 let _lw = 1.0; let _lh = 1.0;                 // logical (dp/CSS) viewport size
 let _class = 2;                               // M3 window size class: 0 compact, 1 medium, 2 expanded
 let _type = 1.0;                              // responsive type scale (larger on small screens)
-let _dens = 1.0;                              // responsive chrome density (taller bars on phones)
+let _dens = 1.0;                              // responsive chrome density (taller bars, bigger touch targets on phones)
+let _sp = 1.0;                                // responsive spacing scale (more generous gaps/padding on phones)
 let _saT = 0.0; let _saR = 0.0; let _saB = 0.0; let _saL = 0.0; // safe-area insets (physical px): status bar, nav/gesture bar, cutouts
 let _root = 0;                                 // root component node
 let _NULL = { kind: "null" };                  // tree-root sentinel parent
@@ -396,7 +397,7 @@ function _padOf(node) {
     if (has(node, "padR")) { r = node.padR; }
     if (has(node, "padT")) { t = node.padT; }
     if (has(node, "padB")) { b = node.padB; }
-    return { l: l * _u, r: r * _u, t: t * _u, b: b * _u };
+    return { l: l * _u * _sp, r: r * _u * _sp, t: t * _u * _sp, b: b * _u * _sp };
 }
 
 // The active safe-area insets for a SafeArea node, in physical px (the same unit
@@ -763,7 +764,12 @@ function _textW(str, cell) {
 }
 function _btnW(label) { return _textW(label, _cell("label")) + _u * 8.0; }
 function _chipW(label) { return _textW(label, _cell("caption")) + _u * 7.0; }
-function _gapPx(node) { if (has(node, "gap")) { return node.gap * _u; } return _u * 2.0; }
+function _gapPx(node) { if (has(node, "gap")) { return node.gap * _u * _sp; } return _u * 2.0 * _sp; }
+// Density unit: the layout unit scaled by the responsive chrome density, used for
+// interactive/chrome dimensions and touch targets so they hit Material's mobile
+// sizes (≥48dp tap, 56dp FAB, 56–80dp bars) on phones while collapsing to the
+// plain unit on desktop (_dens == 1.0).
+function _du() { return _u * _dens; }
 
 function _hover(cx, cy, hw, hh) { if (_inRect(_hx, _hy, cx, cy, hw, hh)) { return 1.0; } return 0.0; }
 // Reading a press/ease value records that the component currently being painted
@@ -824,19 +830,19 @@ function _measureKind(node) {
     let k = node.kind;
     if (k == "comp") { return _measure(node._sub); }
     if (k == "text") { let c = _cellOf(node); return { w: _textW(node.text, c), h: 6.0 * c }; }
-    if (k == "filledButton") { return { w: _btnW(node.label), h: _u * 5.5 }; }
-    if (k == "outlinedButton") { return { w: _btnW(node.label), h: _u * 5.5 }; }
-    if (k == "fab") { return { w: _u * 8.4, h: _u * 8.4 }; }
-    if (k == "switch") { return { w: _u * 8.4, h: _u * 4.8 }; }
-    if (k == "checkbox") { return { w: _u * 4.4, h: _u * 4.4 }; }
-    if (k == "radio") { return { w: _u * 4.4, h: _u * 4.4 }; }
-    if (k == "slider") { return { w: _u * 62.0, h: _u * 5.0 }; }
-    if (k == "chip") { return { w: _chipW(node.label), h: _u * 4.2 }; }
+    if (k == "filledButton") { return { w: _btnW(node.label), h: _du() * 5.5 }; }
+    if (k == "outlinedButton") { return { w: _btnW(node.label), h: _du() * 5.5 }; }
+    if (k == "fab") { return { w: _du() * 8.4, h: _du() * 8.4 }; }
+    if (k == "switch") { return { w: _du() * 8.4, h: _du() * 4.8 }; }
+    if (k == "checkbox") { return { w: _du() * 4.4, h: _du() * 4.4 }; }
+    if (k == "radio") { return { w: _du() * 4.4, h: _du() * 4.4 }; }
+    if (k == "slider") { return { w: _u * 62.0, h: _du() * 5.0 }; }
+    if (k == "chip") { return { w: _chipW(node.label), h: _du() * 4.2 }; }
     if (k == "progress") { return { w: _u * 62.0, h: _u * 2.0 }; }
     if (k == "divider") { return { w: _u * 62.0, h: _u * 0.4 }; }
     if (k == "column") { return _measureColumn(node); }
     if (k == "row") { return _measureRow(node); }
-    if (k == "card") { let c = _measure(node.child); return { w: c.w + _u * 8.0, h: c.h + _u * 8.0 }; }
+    if (k == "card") { let c = _measure(node.child); return { w: c.w + _u * 8.0 * _sp, h: c.h + _u * 8.0 * _sp }; }
     if (k == "scaffold") { return { w: _vw, h: _vh }; }
     if (k == "container") {
         let cw = 0.0; let ch = 0.0;
@@ -875,7 +881,7 @@ function _measureKind(node) {
     }
     if (k == "badge") { if (has(node, "child")) { return _measure(node.child); } return { w: _u * 4.0, h: _u * 4.0 }; }
     if (k == "expansionTile") {
-        let hh = _u * 7.0; let w = _u * 50.0; if (has(node, "width")) { w = node.width * _u; }
+        let hh = _du() * 7.0; let w = _u * 50.0; if (has(node, "width")) { w = node.width * _u; }
         let h = hh;
         if (has(node, "expanded")) { if (node.expanded > 0.5) { if (has(node, "child")) {
             let m = _measure(node.child); h = hh + m.h + _u * 2.0; if (m.w + _u * 4.0 > w) { w = m.w + _u * 4.0; }
@@ -883,18 +889,18 @@ function _measureKind(node) {
         return { w: w, h: h };
     }
     if (k == "icon") { let r = _iconR(node); return { w: r * 2.0, h: r * 2.0 }; }
-    if (k == "iconButton") { let r = _iconR(node); return { w: r * 2.0 + _u * 2.4, h: r * 2.0 + _u * 2.4 }; }
+    if (k == "iconButton") { let r = _iconR(node); return { w: r * 2.0 + _du() * 2.4, h: r * 2.0 + _du() * 2.4 }; }
     if (k == "avatar") { let r = _u * 3.2; if (has(node, "radius")) { r = node.radius * _u; } return { w: r * 2.0, h: r * 2.0 }; }
-    if (k == "listTile") { let w = _u * 56.0; if (has(node, "width")) { w = node.width * _u; } return { w: w, h: _u * 9.0 }; }
-    if (k == "textField") { let w = _u * 50.0; if (has(node, "width")) { w = node.width * _u; } return { w: w, h: _u * 7.5 }; }
-    if (k == "tabs") { return { w: len(node.tabs) * _u * 14.0, h: _u * 6.0 }; }
-    if (k == "navBar") { return { w: len(node.items) * _u * 14.0, h: _u * 11.0 * _dens }; }
-    if (k == "segmented") { return { w: len(node.segments) * _u * 13.0, h: _u * 5.5 }; }
+    if (k == "listTile") { let w = _u * 56.0; if (has(node, "width")) { w = node.width * _u; } return { w: w, h: _du() * 9.0 }; }
+    if (k == "textField") { let w = _u * 50.0; if (has(node, "width")) { w = node.width * _u; } return { w: w, h: _du() * 7.5 }; }
+    if (k == "tabs") { return { w: len(node.tabs) * _u * 14.0, h: _du() * 6.0 }; }
+    if (k == "navBar") { return { w: len(node.items) * _u * 14.0, h: _du() * 11.0 }; }
+    if (k == "segmented") { return { w: len(node.segments) * _u * 13.0, h: _du() * 5.5 }; }
     if (k == "circularProgress") { let r = _u * 4.0; if (has(node, "radius")) { r = node.radius * _u; } return { w: r * 2.0, h: r * 2.0 }; }
-    if (k == "snackbar") { return { w: _u * 60.0, h: _u * 7.0 }; }
+    if (k == "snackbar") { return { w: _u * 60.0, h: _du() * 7.0 }; }
     if (k == "dialog") { return { w: _vw, h: _vh }; }
     if (k == "drawer") { return { w: _vw, h: _vh }; }
-    if (k == "banner") { return { w: _u * 60.0, h: _u * 8.0 }; }
+    if (k == "banner") { return { w: _u * 60.0, h: _du() * 8.0 }; }
     if (k == "dataTable") {
         let cw = _u * 14.0; if (has(node, "colWidth")) { cw = node.colWidth * _u; }
         return { w: len(node.columns) * cw, h: _u * 5.0 * (len(node.rows) + 1) };
@@ -1186,8 +1192,27 @@ function _paintScaffold(node) {
         _paint(node.body, bodyCx, bodyTop + bodyH / 2.0); push(kids, node.body);
     } }
     if (has(node, "appBar")) { if (!isNull(node.appBar)) { _paint(node.appBar, _vw / 2.0, aHTotal / 2.0); push(kids, node.appBar); } }
-    if (has(node, "bottomBar")) { if (!isNull(node.bottomBar)) { _paint(node.bottomBar, bodyCx, _vh - _saB - _u * 5.5 * _dens); push(kids, node.bottomBar); } }
-    if (has(node, "fab")) { if (!isNull(node.fab)) { _paint(node.fab, _vw - _saR - _u * 9.0, _vh - _saB - _u * 9.0); push(kids, node.fab); } }
+    // The bottom navigation bar spans the full screen width (edge to edge, clear
+    // of side cutouts) like a real mobile nav bar, rather than floating at its
+    // intrinsic content width — so force a tight full-width constraint on it.
+    if (has(node, "bottomBar")) { if (!isNull(node.bottomBar)) {
+        let bn = node.bottomBar; bn._fw = _vw - _saL - _saR;
+        _paint(bn, bodyCx, _vh - _saB - _u * 5.5 * _dens); bn._fw = -1.0; push(kids, bn);
+    } }
+    if (has(node, "fab")) { if (!isNull(node.fab)) {
+        // M3 places the FAB 16dp from the screen edges, clearing the bottom
+        // navigation bar. On desktop (the dense scale) this is the historical
+        // `_u*9` inset; on phones/tablets the chrome is taller, so lift the FAB to
+        // rest just above the (now ≈80dp) nav bar instead of overlapping it.
+        let fabR = _du() * 4.2;
+        let fabX = _vw - _saR - _u * 9.0; let fabY = _vh - _saB - _u * 9.0;
+        if (isExpanded() < 0.5) {
+            fabX = _vw - _saR - _u * 4.0 - fabR;
+            fabY = _vh - _saB - _u * 4.0 - fabR;
+            if (has(node, "bottomBar")) { if (!isNull(node.bottomBar)) { fabY = _vh - _saB - barH - _u * 4.0 - fabR; } }
+        }
+        _paint(node.fab, fabX, fabY); push(kids, node.fab);
+    } }
     if (has(node, "drawer")) { if (!isNull(node.drawer)) { _paint(node.drawer, _vw / 2.0, _vh / 2.0); push(kids, node.drawer); } }
     if (has(node, "snackbar")) { if (!isNull(node.snackbar)) { _paint(node.snackbar, _vw / 2.0, _vh / 2.0); push(kids, node.snackbar); } }
     if (has(node, "dialog")) { if (!isNull(node.dialog)) { _paint(node.dialog, _vw / 2.0, _vh / 2.0); push(kids, node.dialog); } }
@@ -1210,10 +1235,10 @@ function _paintAppBar(node, cx, cy) {
     // round caps and proportions match every other icon rather than being a
     // bespoke set of bars.
     let lineCx = _saL + _u * 6.0;
-    _icon("menu", lineCx, ccy, _u * 2.6, onS);
+    _icon("menu", lineCx, ccy, _du() * 2.6, onS);
     // Trailing action rendered as a small accent avatar (theme/profile affordance).
     let actCx = _vw - _saR - _u * 6.0;
-    _disc(actCx, ccy, _u * 2.4, _acc(1.0));
+    _disc(actCx, ccy, _du() * 2.4, _acc(1.0));
     _paintTextLeft(node.title, _saL + _u * 11.0, ccy, _cell("title"), onS);
     if (has(node, "onMenu")) { _addTap(lineCx, ccy, _u * 3.0, _u * 3.0, "appMenu", node.onMenu); }
     if (has(node, "onAction")) { _addTap(actCx, ccy, _u * 3.0, _u * 3.0, "appAction", node.onAction); }
@@ -1235,7 +1260,7 @@ function _paintOutlined(node, cx, cy) {
     _addTap(cx, cy, hw, hh, node.id, node.onTap);
 }
 function _paintFab(node, cx, cy) {
-    let r = _u * 4.2; let rad = r * 0.45;
+    let r = _du() * 4.2; let rad = r * 0.45;
     let st = _hover(cx, cy, r, r) * 0.08 + _pressVal("fab") * 0.12;
     _shadow(cx, cy, r, r, rad, _u * 0.4, _u * 1.2, _u * 3.0);
     _rect(cx, cy, r, r, rad, 0.0, 0.0, _brighten(_acc(1.0), st), _CLEAR);
@@ -1245,41 +1270,42 @@ function _paintFab(node, cx, cy) {
     _addTap(cx, cy, r, r, "fab", node.onTap);
 }
 function _paintSwitch(node, cx, cy) {
-    let hw = _u * 4.2; let hh = _u * 2.4;
+    let u = _du();
+    let hw = u * 4.2; let hh = u * 2.4;
     let a = _ease(concat("sw:", node.id), node.value);
-    let bw = (1.0 - a) * _u * 0.22;
+    let bw = (1.0 - a) * u * 0.22;
     _rect(cx, cy, hw, hh, hh, bw, 0.0, _mixCol(_surfaceHighest(1.0), _acc(1.0), a), _mixCol(_outline(1.0), _acc(1.0), a));
     let rOff = hh * 0.55; let rOn = hh * 0.82; let tr = rOff + (rOn - rOff) * a;
     let left = cx - hw; let right = cx + hw;
     let tx = (left + hh) + ((right - hh) - (left + hh)) * a;
     _rect(tx, cy, tr, tr, tr, 0.0, 0.0, _mixCol(_outline(1.0), _WHITE, a), _CLEAR);
-    _addTap(cx, cy, hw + _u * 2.0, hh + _u * 2.0, node.id, node.onTap);
+    _addTap(cx, cy, hw + u * 2.0, hh + u * 2.0, node.id, node.onTap);
 }
 function _paintCheckbox(node, cx, cy) {
-    let h = _u * 2.2;
+    let u = _du(); let h = u * 2.2;
     let a = _ease(concat("ck:", node.id), node.value);
-    _rect(cx, cy, h, h, h * 0.28, _u * 0.22, 0.0, _acc(a), _mixCol(_outline(1.0), _acc(1.0), a));
+    _rect(cx, cy, h, h, h * 0.28, u * 0.22, 0.0, _acc(a), _mixCol(_outline(1.0), _acc(1.0), a));
     let white = [1.0, 1.0, 1.0, a];
     _rect(cx - h * 0.22, cy + h * 0.12, h * 0.25, h * 0.08, h * 0.08, 0.0, -2.356, white, _CLEAR);
     _rect(cx + h * 0.22, cy - h * 0.12, h * 0.50, h * 0.08, h * 0.08, 0.0, -0.997, white, _CLEAR);
-    _addTap(cx, cy, h + _u * 2.0, h + _u * 2.0, node.id, node.onTap);
+    _addTap(cx, cy, h + u * 2.0, h + u * 2.0, node.id, node.onTap);
 }
 function _paintRadio(node, cx, cy) {
-    let h = _u * 2.2;
+    let u = _du(); let h = u * 2.2;
     let a = _ease(concat("rb:", node.id), node.selected);
-    _rect(cx, cy, h, h, h, _u * 0.22, 0.0, _CLEAR, _mixCol(_outline(1.0), _acc(1.0), a));
+    _rect(cx, cy, h, h, h, u * 0.22, 0.0, _CLEAR, _mixCol(_outline(1.0), _acc(1.0), a));
     let dr = h * 0.55 * a;
     _rect(cx, cy, dr, dr, dr, 0.0, 0.0, _acc(1.0), _CLEAR);
-    _addTap(cx, cy, h + _u * 2.0, h + _u * 2.0, node.id, node.onTap);
+    _addTap(cx, cy, h + u * 2.0, h + u * 2.0, node.id, node.onTap);
 }
 function _paintSlider(node, cx, cy) {
     let hw = _u * 31.0; let hh = _u * 0.8; let val = node.value;
     let left = cx - hw; let width = hw * 2.0;
     _rect(cx, cy, hw, hh, hh, 0.0, 0.0, _surfaceHighest(1.0), _CLEAR);
     _rect(left + val * width / 2.0, cy, val * width / 2.0, hh, hh, 0.0, 0.0, _acc(1.0), _CLEAR);
-    let baseR = _u * 1.4; let tw = baseR * 0.42 * (1.0 + _dragging * 0.2); let th = baseR * (1.4 + _dragging * 0.25);
+    let baseR = _du() * 1.4; let tw = baseR * 0.42 * (1.0 + _dragging * 0.2); let th = baseR * (1.4 + _dragging * 0.25);
     _rect(left + val * width, cy, tw, th, tw, 0.0, 0.0, _acc(1.0), _CLEAR);
-    _addDrag(cx, cy, hw, _u * 5.0, node.onChanged, left, width);
+    _addDrag(cx, cy, hw, _du() * 5.0, node.onChanged, left, width);
     _registerWheel(node.onChanged, val);
 }
 function _paintChip(node, cx, cy) {
@@ -1472,7 +1498,7 @@ function _paintBadge(node, cx, cy) {
     node._kids = kids; _compose(node);
 }
 function _paintExpansion(node, cx, cy) {
-    let mz = _measure(node); let hw = mz.w / 2.0; let hh = mz.h / 2.0; let hdrH = _u * 7.0;
+    let mz = _measure(node); let hw = mz.w / 2.0; let hh = mz.h / 2.0; let hdrH = _du() * 7.0;
     _beginSelf(node);
     _rect(cx, cy, hw, hh, _u * 1.4, 0.0, 0.0, _surfaceContainer(1.0), _CLEAR);
     let hcy = cy - hh + hdrH / 2.0;
@@ -1505,7 +1531,7 @@ function _paintIcon(node, cx, cy) {
     _drawIcon(node, cx, cy, r, col);
 }
 function _paintIconButton(node, cx, cy) {
-    let r = _iconR(node); let hw = r + _u * 1.2;
+    let r = _iconR(node); let hw = r + _du() * 1.2;
     let st = _hover(cx, cy, hw, hw) * 0.10 + _pressVal(node.id) * 0.14;
     let sel2 = 0.0; if (has(node, "selected")) { sel2 = node.selected; }
     if (sel2 > 0.5) { _rect(cx, cy, hw, hw, hw, 0.0, 0.0, _acc(0.16), _CLEAR); }
@@ -1526,13 +1552,13 @@ function _paintListTile(node, cx, cy) {
     let st = _hover(cx, cy, hw, hh) * 0.05; if (has(node, "id")) { st = st + _pressVal(node.id) * 0.08; }
     if (st > 0.001) { _rect(cx, cy, hw, hh, _u * 1.0, 0.0, 0.0, _onSurface(st), _CLEAR); }
     let hasLead = has(node, "leading");
-    if (hasLead) { _icon(node.leading, cx - hw + _u * 4.5, cy, _u * 1.9, _onSurface(0.8)); }
+    if (hasLead) { _icon(node.leading, cx - hw + _u * 4.5, cy, _du() * 1.9, _onSurface(0.8)); }
     let tx = cx - hw + _u * 4.0; if (hasLead) { tx = cx - hw + _u * 9.0; }
     let hasSub = has(node, "subtitle");
-    let ty = cy; if (hasSub) { ty = cy - _u * 1.3; }
+    let ty = cy; if (hasSub) { ty = cy - _du() * 1.3; }
     _paintTextLeft(node.title, tx, ty, _cell("body"), _onSurface(1.0));
-    if (hasSub) { _paintTextLeft(node.subtitle, tx, cy + _u * 1.6, _cell("caption"), _onSurface(0.65)); }
-    if (has(node, "trailing")) { _icon(node.trailing, cx + hw - _u * 4.0, cy, _u * 1.7, _onSurface(0.7)); }
+    if (hasSub) { _paintTextLeft(node.subtitle, tx, cy + _du() * 1.6, _cell("caption"), _onSurface(0.65)); }
+    if (has(node, "trailing")) { _icon(node.trailing, cx + hw - _u * 4.0, cy, _du() * 1.7, _onSurface(0.7)); }
     if (has(node, "onTap")) { _addTap(cx, cy, hw, hh, _idOf(node), node.onTap); }
 }
 function _paintTextField(node, cx, cy) {
@@ -1581,9 +1607,9 @@ function _paintNavBar(node, cx, cy) {
     for (let i = 0; i < n; i++) {
         let it = node.items[i]; let tcx = left + i * tw + tw / 2.0; let on = sel(i, idx);
         let col = _onSurface(0.6); if (on > 0.5) { col = _acc(1.0); }
-        if (on > 0.5) { _rect(tcx, cy - _u * 1.3, _u * 5.0, _u * 1.6, _u * 1.6, 0.0, 0.0, _acc(0.18), _CLEAR); }
-        _icon(it.icon, tcx, cy - _u * 1.3, _u * 1.6, col);
-        if (has(it, "label")) { _paintText(it.label, tcx, cy + _u * 2.2, _cell("micro"), col); }
+        if (on > 0.5) { _rect(tcx, cy - _du() * 1.3, _du() * 5.0, _du() * 1.6, _du() * 1.6, 0.0, 0.0, _acc(0.18), _CLEAR); }
+        _icon(it.icon, tcx, cy - _du() * 1.3, _du() * 1.6, col);
+        if (has(it, "label")) { _paintText(it.label, tcx, cy + _du() * 2.2, _cell("micro"), col); }
         let ii = i; _addTap(tcx, cy, tw / 2.0, hh, concat("nav", str(ii)), () => { node.onChange(ii); });
     }
 }
@@ -1614,11 +1640,14 @@ function _paintBanner(node, cx, cy) {
     let mz = _measure(node); let hw = mz.w / 2.0; let hh = mz.h / 2.0;
     _rect(cx, cy, hw, hh, _u * 1.2, 0.0, 0.0, _acc(0.16), _CLEAR);
     let tx = cx - hw + _u * 3.0;
-    if (has(node, "icon")) { _icon(node.icon, cx - hw + _u * 4.0, cy, _u * 1.8, _acc(1.0)); tx = cx - hw + _u * 8.0; }
+    if (has(node, "icon")) { _icon(node.icon, cx - hw + _u * 4.0, cy, _du() * 1.8, _acc(1.0)); tx = cx - hw + _u * 8.0; }
     _paintTextLeft(node.message, tx, cy, _cell("body"), _onSurface(0.95));
 }
 function _paintSnackbar(node, cx, cy) {
-    let w = _u * 60.0; let cx2 = _vw / 2.0; let cy2 = _vh - _u * 9.0; let hw = w / 2.0; let hh = _u * 3.5;
+    // Phones get a near-full-width sheet (M3 mobile snackbar), the desktop the
+    // compact pill. It floats above the bottom safe-area / gesture inset.
+    let w = _u * 60.0; if (isCompact() > 0.5) { w = _vw - _saL - _saR - _u * 8.0; }
+    let cx2 = _vw / 2.0; let cy2 = _vh - _saB - _du() * 9.0; let hw = w / 2.0; let hh = _du() * 3.5;
     _shadow(cx2, cy2, hw, hh, _u * 1.2, _u * 0.3, _u * 0.8, _u * 2.0);
     _rect(cx2, cy2, hw, hh, _u * 1.2, 0.0, 0.0, [_mix(0.18, 0.92), _mix(0.18, 0.90), _mix(0.2, 0.94), 1.0], _CLEAR);
     _paintTextLeft(node.message, cx2 - hw + _u * 3.0, cy2, _cell("body"), [_mix(0.95, 0.1), _mix(0.95, 0.1), _mix(0.97, 0.12), 1.0]);
@@ -1641,7 +1670,7 @@ function _paintDialog(node, cx, cy) {
         for (let i = len(acts) - 1; i >= 0; i = i - 1) {
             let act = acts[i]; let bw = _btnW(act.label) / 2.0; let bcx = ax - bw;
             _paintText(act.label, bcx, cy2 + hh - _u * 4.0, _cell("label"), _acc(1.0));
-            _addTap(bcx, cy2 + hh - _u * 4.0, bw, _u * 2.6, concat("dlg", str(i)), act.onTap);
+            _addTap(bcx, cy2 + hh - _u * 4.0, bw, _du() * 2.6, concat("dlg", str(i)), act.onTap);
             ax = ax - bw * 2.0 - _u * 4.0;
         }
     }
@@ -1654,16 +1683,16 @@ function _paintDrawer(node, cx, cy) {
     _rect(_vw / 2.0, _vh / 2.0, _vw / 2.0, _vh / 2.0, 0.0, 0.0, 0.0, [0.0, 0.0, 0.0, 0.45 * a], _CLEAR);
     let pcx = 0.0 - w / 2.0 + a * w; let cy2 = _vh / 2.0; let hw = w / 2.0; let hh = _vh / 2.0;
     _rect(pcx, cy2, hw, hh, 0.0, 0.0, 0.0, _surfaceContainer(1.0), _CLEAR);
-    if (has(node, "header")) { _paintTextLeft(node.header, pcx - hw + _u * 4.0, _u * 8.0, _cell("title"), _onSurface(1.0)); }
-    let items = node.items; let iy = _u * 16.0;
+    if (has(node, "header")) { _paintTextLeft(node.header, pcx - hw + _u * 4.0, _saT + _du() * 8.0, _cell("title"), _onSurface(1.0)); }
+    let items = node.items; let iy = _saT + _du() * 16.0;
     for (let i = 0; i < len(items); i++) {
         let it = items[i]; let sel2 = 0.0; if (has(node, "index")) { sel2 = sel(i, node.index); }
-        if (sel2 > 0.5) { _rect(pcx, iy, hw - _u * 2.0, _u * 2.2, _u * 2.0, 0.0, 0.0, _acc(0.18), _CLEAR); }
+        if (sel2 > 0.5) { _rect(pcx, iy, hw - _u * 2.0, _du() * 2.2, _u * 2.0, 0.0, 0.0, _acc(0.18), _CLEAR); }
         let col = _onSurface(0.8); if (sel2 > 0.5) { col = _acc(1.0); }
-        if (has(it, "icon")) { _icon(it.icon, pcx - hw + _u * 5.0, iy, _u * 1.7, col); }
+        if (has(it, "icon")) { _icon(it.icon, pcx - hw + _u * 5.0, iy, _du() * 1.7, col); }
         _paintTextLeft(it.label, pcx - hw + _u * 9.0, iy, _cell("body"), col);
-        let ii = i; _addTap(pcx, iy, hw, _u * 2.5, concat("drw", str(ii)), () => { node.onSelect(ii); });
-        iy = iy + _u * 6.0;
+        let ii = i; _addTap(pcx, iy, hw, _du() * 2.5, concat("drw", str(ii)), () => { node.onSelect(ii); });
+        iy = iy + _du() * 6.0;
     }
     let pr = pcx + hw; let scx = (pr + _vw) / 2.0; let sw = (_vw - pr) / 2.0;
     if (has(node, "onClose")) { _addTap(scx, _vh / 2.0, sw, _vh / 2.0, "drwScrim", node.onClose); }
@@ -1863,11 +1892,14 @@ function _setMetrics(si) {
     // M3 window size classes by logical width: compact (phones), medium (small
     // tablets / large phones landscape), expanded (tablets / desktop).
     if (_lw < 600.0) { _class = 0; } else { if (_lw < 840.0) { _class = 1; } else { _class = 2; } }
-    // Phones get noticeably larger text and taller, easier-to-tap chrome; the
-    // desktop keeps the denser, information-rich scale. (Expanded == 1.0 so the
-    // headless reference surface is unchanged.)
-    if (_class == 0) { _type = 1.5; _dens = 1.3; }
-    else { if (_class == 1) { _type = 1.22; _dens = 1.12; } else { _type = 1.0; _dens = 1.0; } }
+    // Phones get noticeably larger text and properly-sized, easy-to-tap chrome
+    // (Material's ≥48dp touch targets, 56–80dp bars, 56dp FAB) plus more generous
+    // spacing, so the UI reads as a native mobile app rather than a dense desktop
+    // layout scaled down to fit. The desktop keeps the denser, information-rich
+    // scale. (Every responsive factor is 1.0 on the expanded class, so a wide
+    // window — and the headless reference surface — is byte-for-byte unchanged.)
+    if (_class == 0) { _type = 1.5; _dens = 1.8; _sp = 1.4; }
+    else { if (_class == 1) { _type = 1.22; _dens = 1.4; _sp = 1.2; } else { _type = 1.0; _dens = 1.0; _sp = 1.0; } }
     // Safe-area insets (physical px): the space the platform reserves for the
     // status bar (top), the navigation / gesture bar (bottom) and any display
     // cutouts (sides). The Scaffold and SafeArea widget keep chrome clear of

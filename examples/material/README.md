@@ -152,14 +152,21 @@ asserts exactly that — while text is anti-aliased and proportional like a brow
 
 * **Responsive** — layout follows Material's **window size classes**, keyed off
   the *logical* (dp) viewport width, not the raw pixel count: **compact** (phones,
-  &lt; 600dp), **medium** (&lt; 840dp) and **expanded** (tablets/desktop). Phones
-  get larger type and taller, easier-to-tap chrome; a wide window lays content out
-  in a centred reading column instead of one edge-to-edge sheet. So the UI truly
-  adapts to the device rather than being one design scaled up and down. Apps can go
-  further with `sizeClass()` / `isCompact()` / `isExpanded()` / `screenWidth()`
-  (e.g. the gallery's grid drops from 3 columns to 2 on a phone). A
-  `ListView`/`GridView` used as the scaffold `body` fills the body region so its
-  viewport adapts to the screen.
+  &lt; 600dp), **medium** (&lt; 840dp) and **expanded** (tablets/desktop). On a
+  phone the kit is laid out as a **native mobile UI**, not a dense desktop design
+  shrunk to fit: chrome and controls grow to Material's real touch sizes — ≥48dp
+  tap targets, a 56dp FAB lifted clear of the bottom bar, an edge-to-edge ≈80dp
+  bottom navigation bar, a ~64dp top app bar, 56–72dp list rows, ~40dp buttons —
+  type scales up for readability, and gaps/padding open out to the mobile spacing
+  rhythm. A wide window instead keeps the denser, information-rich scale and lays
+  content out in a centred reading column rather than one edge-to-edge sheet. So
+  the UI truly adapts to the device rather than being one design scaled up and
+  down. (Every responsive size/spacing factor is `1.0` on the expanded class, so a
+  wide window is the unchanged dense layout.) Apps can go further with
+  `sizeClass()` / `isCompact()` / `isExpanded()` / `screenWidth()` (e.g. the
+  gallery's grid drops from 3 columns to 2 on a phone). A `ListView`/`GridView`
+  used as the scaffold `body` fills the body region so its viewport adapts to the
+  screen.
 * **Typography** — `Text("Hello", { px: 22.0, weight: "bold" })`,
   `Text("...", { size: "title", weight: "medium" })`. Glyphs come from a real
   TrueType font (**Roboto**, regular + bold) that the host rasterises **once** into
