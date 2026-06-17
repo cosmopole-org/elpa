@@ -37,9 +37,14 @@ fn render(w: u32, h: u32, dpr: f64) -> Vec<f32> {
 // that are pure proportional rescales of each other compare *equal*. Any
 // difference therefore reflects a real layout adaptation, not just a size change.
 fn normalized_geometry(inst: &[f32], vw: f32, vh: f32) -> Vec<i32> {
+    // Sentinel marker in slot 0 of an image instance — those rows are
+    // interleaved in the buffer but skipped by the SDF draws (see
+    // `_planDraws` in the kit), so the geometry comparison skips them too.
+    const IMG_MARK: f32 = 424242.0;
     let mut out = Vec::new();
     let mut i = 0;
     while i + 4 <= inst.len() {
+        if inst[i] == IMG_MARK { i += 16; continue; }
         // Round to 1e-3 of the viewport so float noise doesn't masquerade as change.
         out.push((inst[i] / vw * 1000.0).round() as i32);
         out.push((inst[i + 1] / vh * 1000.0).round() as i32);

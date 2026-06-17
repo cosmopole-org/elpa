@@ -340,11 +340,16 @@ fn no_section_overflows_the_screen_horizontally_on_a_phone() {
 
     let vw = 1080.0_f32;
     let tol = 8.0_f32; // px of slack for stroke caps sitting on the margin
+    // Sentinel marker in slot 0 of an image instance — those rows are
+    // interleaved in the buffer but skipped by the SDF draws (see
+    // `_planDraws` in the kit), so the layout test must skip them too.
+    const IMG_MARK: f32 = 424242.0;
     for section in 0..4 {
         let inst = instances(&app);
         let mut i = 0;
         let (mut min_left, mut max_right) = (f32::MAX, f32::MIN);
         while i + 4 <= inst.len() {
+            if inst[i] == IMG_MARK { i += 16; continue; }
             let (cx, hw) = (inst[i], inst[i + 2]);
             min_left = min_left.min(cx - hw);
             max_right = max_right.max(cx + hw);
