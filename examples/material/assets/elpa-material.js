@@ -2343,26 +2343,34 @@ function _atlasUploadCmds() {
 // image draws, in paint order, so images sit at the right z. Also returns the
 // unique image-texture handles referenced this frame.
 function _planDraws(inst) {
-    let n = len(inst) / 16; let clean = []; let draws = []; let handles = []; let seen = {};
-    let cleanCount = 0; let runStart = 0; let runCount = 0;
+    // The SDF draws can be issued with `first_instance` / `instance_count` that
+    // step *over* the image sentinel slots in `inst`; the sentinels then sit in
+    // the GPU vertex buffer unread (no draw command targets their indices) and
+    // cost nothing. The previous implementation copied every non-sentinel
+    // instance's 16 floats into a freshly built `clean[]` so the SDF draws
+    // could be 0-based against the compacted buffer — that is a full O(16·N)
+    // VM copy *every single frame*, and once any widget registered an image
+    // handle (the navigation drawer's header banner is the gallery's trigger)
+    // every frame took this path, even ones where no image was actually on
+    // screen. Walk just to locate sentinels and emit ranges; pass the
+    // original `inst` through as the vertex buffer.
+    let n = len(inst) / 16; let draws = []; let handles = []; let seen = {};
+    let runStart = 0;
     for (let i = 0; i < n; i++) {
         let base = i * 16;
         if (inst[base] == _IMG_MARK) {
-            if (runCount > 0) { push(draws, { sdf: 1.0, first: runStart, count: runCount }); }
+            if (i > runStart) { push(draws, { sdf: 1.0, first: runStart, count: i - runStart }); }
             let handle = floor(inst[base + 1] + 0.5);
             push(draws, { sdf: 0.0, handle: handle,
                 cx: inst[base + 2], cy: inst[base + 3], hw: inst[base + 4], hh: inst[base + 5], r: inst[base + 6],
                 u0: inst[base + 7], v0: inst[base + 8], u1: inst[base + 9], v1: inst[base + 10],
                 tint: [inst[base + 11], inst[base + 12], inst[base + 13], inst[base + 14]] });
             if (!has(seen, str(handle))) { seen[str(handle)] = 1.0; push(handles, handle); }
-            runStart = cleanCount; runCount = 0;
-        } else {
-            for (let j = 0; j < 16; j++) { push(clean, inst[base + j]); }
-            cleanCount = cleanCount + 1; runCount = runCount + 1;
+            runStart = i + 1;
         }
     }
-    if (runCount > 0) { push(draws, { sdf: 1.0, first: runStart, count: runCount }); }
-    return { clean: clean, draws: draws, handles: handles };
+    if (n > runStart) { push(draws, { sdf: 1.0, first: runStart, count: n - runStart }); }
+    return { buf: inst, draws: draws, handles: handles };
 }
 // Declare an image handle's texture (and stage its one-time upload), deduped by
 // id across the frame. Returns the texture id.
@@ -2441,12 +2449,18 @@ function _submitPlain() {
 }
 function _submit() {
     _frameN = _frameN + 1;
+    // An app that never registered an image handle (`_imgHandleN == 0`) skips
+    // planning entirely — most apps never load an image. Once at least one
+    // handle exists, `_planDraws` is a single-float-per-instance walk (no
+    // copy, see its body) that falls back to `_submitPlain` when this frame
+    // happens to contain no image sentinels — which covers most drawer-closed
+    // / non-MEDIA-tab frames.
     if (_imgHandleN == 0) { _submitPlain(); return 0; }
     let bg = _colorBg();
     let plan = _planDraws(_inst);
     if (len(plan.handles) == 0) { _submitPlain(); return 0; }
     let res = concat(concat(_pipelineResources(), _atlasTexRes()), concat(_frameBindings(), [
-        _bufF32("elpa.m3.inst", ["VERTEX", "COPY_DST"], plan.clean),
+        _bufF32("elpa.m3.inst", ["VERTEX", "COPY_DST"], plan.buf),
     ]));
     _addImgPipeline(res);
     let uploads = _atlasUploadCmds();
@@ -2476,8 +2490,8 @@ function _submitLayered(animating) {
     // static buffer's bytes stay identical frame to frame, so the cache skips it.
     let ps = _planDraws(stat); let pd = _planDraws(dyn);
     let res = concat(concat(_pipelineResources(), _atlasTexRes()), concat(_frameBindings(), [
-        _bufF32("elpa.m3.inst.static", ["VERTEX", "COPY_DST"], ps.clean),
-        _bufF32("elpa.m3.inst.dyn", ["VERTEX", "COPY_DST"], pd.clean),
+        _bufF32("elpa.m3.inst.static", ["VERTEX", "COPY_DST"], ps.buf),
+        _bufF32("elpa.m3.inst.dyn", ["VERTEX", "COPY_DST"], pd.buf),
     ]));
     let uploads = _atlasUploadCmds();
     let declared = {};
