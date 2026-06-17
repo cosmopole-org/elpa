@@ -3700,6 +3700,33 @@ impl Executor {
             Some(Rc::new(RefCell::new(ValGroup::new(map))))
         }
     }
+    /// Capture only the closure's *free variables* (computed by the compiler)
+    /// from the enclosing non-global scopes — the innermost binding of each name
+    /// wins, matching lexical resolution. This replaces snapshotting the entire
+    /// scope chain: a closure pays only for the upvalues it actually uses, both
+    /// to create and to seed on each call. Names not found in an enclosing scope
+    /// (globals, or a closure's own not-yet-declared locals) are simply omitted
+    /// and resolve normally at run time.
+    fn capture_named(&self, names: &[String]) -> Option<Rc<RefCell<ValGroup>>> {
+        if self.ctx.memory.len() <= 1 || names.is_empty() {
+            return None;
+        }
+        let mut map: ValMap = ValMap::default();
+        for name in names {
+            for scope in self.ctx.memory[1..].iter().rev() {
+                let found = scope.borrow().memory.borrow().data.get(name).cloned();
+                if let Some(v) = found {
+                    map.insert(name.clone(), v);
+                    break;
+                }
+            }
+        }
+        if map.is_empty() {
+            None
+        } else {
+            Some(Rc::new(RefCell::new(ValGroup::new(map))))
+        }
+    }
     /// Resolve a class method for `receiver.key` through the object's `__proto`
     /// chain (set by a `class` constructor), returning the method *bound* to the
     /// receiver. Binding reuses the closure mechanism: the shared top-level method
@@ -5341,14 +5368,22 @@ impl Executor {
                         let p_name = self.extract_str();
                         param_names.push(p_name);
                     }
+                    // Free-variable list (compiler-computed): the enclosing names
+                    // this function references.
+                    let free_count = self.extract_i32();
+                    let mut free_names = vec![];
+                    for _i in 0..free_count {
+                        free_names.push(self.extract_str());
+                    }
                     let func_start = self.extract_i64() as usize;
                     let func_end = self.extract_i64() as usize;
                     let mut func =
                         Function::new(func_name.clone(), func_start, func_end, param_names);
                     // A function defined inside another function closes over the
-                    // enclosing locals (e.g. a factory returning a counter). At
-                    // top level there is nothing to capture and this is a no-op.
-                    func.captured = self.capture_env();
+                    // enclosing locals it uses (e.g. a factory returning a
+                    // counter). Capture just those free variables; at top level
+                    // there is nothing to capture and this is a no-op.
+                    func.captured = self.capture_named(&free_names);
                     self.define(
                         func_name.clone(),
                         Val {

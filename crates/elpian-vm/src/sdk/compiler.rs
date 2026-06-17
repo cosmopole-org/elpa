@@ -255,6 +255,139 @@ fn serialize_condition_chain(
     (result, baps)
 }
 
+// ---- free-variable (closure capture) analysis ------------------------------
+//
+// A closure only needs to snapshot the enclosing locals it actually references
+// — not the whole scope chain. For each `functionDefinition` the compiler walks
+// the body and computes the set of identifiers it uses that are *not* bound
+// within it (its own params, `let`/`const`/`var` declarations, and nested
+// function names), unioned transitively with the free variables of any nested
+// closures (so an upvalue needed only by an inner closure still flows through).
+// This list is serialised with the function; at runtime the executor captures
+// just these names from the enclosing frames (see `capture_named`) instead of
+// cloning every local — far cheaper to create a closure, and a smaller frame to
+// seed on every call. Names that turn out to be globals simply aren't found in
+// the enclosing scopes and resolve normally, exactly as before.
+
+/// Identifiers bound *at this function's own level*: nested-function names and
+/// `let`/`const`/`var` declarations, including those inside its `if`/`loop`/
+/// `switch` blocks — but never descending into a nested function's body (that is
+/// a separate scope). References to these resolve locally, so they are not free.
+fn collect_bound(node: &Value, bound: &mut std::collections::BTreeSet<String>) {
+    match node["type"].as_str().unwrap_or("") {
+        "definition" => {
+            if let Some(n) = node["data"]["leftSide"]["data"]["name"].as_str() {
+                bound.insert(n.to_string());
+            }
+        }
+        "functionDefinition" => {
+            if let Some(n) = node["data"]["name"].as_str() {
+                bound.insert(n.to_string());
+            }
+            // Do not descend: the nested function's locals are its own scope.
+        }
+        "ifStmt" => {
+            let d = &node["data"];
+            if let Some(b) = d["body"].as_array() { for s in b { collect_bound(s, bound); } }
+            if d.get("elseifStmt").is_some() { collect_bound(&d["elseifStmt"], bound); }
+            if let Some(e) = d.get("elseStmt") {
+                if let Some(b) = e["data"]["body"].as_array() { for s in b { collect_bound(s, bound); } }
+            }
+        }
+        "loopStmt" => {
+            if let Some(b) = node["data"]["body"].as_array() { for s in b { collect_bound(s, bound); } }
+        }
+        "switchStmt" => {
+            if let Some(cases) = node["data"]["cases"].as_array() {
+                for c in cases {
+                    if let Some(b) = c["body"]["body"].as_array() { for s in b { collect_bound(s, bound); } }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Identifiers *referenced* in `node` (and the free variables of nested
+/// closures, which must flow through this scope). A `definition`'s left side is
+/// a binding, not a use; a nested `functionDefinition` contributes its own free
+/// set rather than its raw identifiers.
+fn collect_used(node: &Value, used: &mut std::collections::BTreeSet<String>) {
+    match node["type"].as_str().unwrap_or("") {
+        "identifier" => {
+            if let Some(n) = node["data"]["name"].as_str() { used.insert(n.to_string()); }
+        }
+        "functionDefinition" => {
+            let nparams = node["data"]["params"].as_array().cloned().unwrap_or_default();
+            let nbody = node["data"]["body"].as_array().cloned().unwrap_or_default();
+            for f in free_vars(&nparams, &nbody) { used.insert(f); }
+        }
+        "indexer" => {
+            collect_used(&node["data"]["target"], used);
+            collect_used(&node["data"]["index"], used);
+        }
+        "functionCall" => {
+            collect_used(&node["data"]["callee"], used);
+            if let Some(args) = node["data"]["args"].as_array() { for a in args { collect_used(a, used); } }
+        }
+        "arithmetic" => {
+            collect_used(&node["data"]["operand1"], used);
+            collect_used(&node["data"]["operand2"], used);
+        }
+        "not" | "cast" => collect_used(&node["data"]["value"], used),
+        "definition" => collect_used(&node["data"]["rightSide"], used),
+        "assignment" => {
+            collect_used(&node["data"]["leftSide"], used);
+            collect_used(&node["data"]["rightSide"], used);
+        }
+        "returnOperation" => collect_used(&node["data"]["value"], used),
+        "object" => {
+            if let Some(obj) = node["data"]["value"].as_object() {
+                for (_k, v) in obj { collect_used(v, used); }
+            }
+        }
+        "array" => {
+            if let Some(arr) = node["data"]["value"].as_array() {
+                for v in arr { collect_used(v, used); }
+            }
+        }
+        "ifStmt" => {
+            let d = &node["data"];
+            collect_used(&d["condition"], used);
+            if let Some(b) = d["body"].as_array() { for s in b { collect_used(s, used); } }
+            if d.get("elseifStmt").is_some() { collect_used(&d["elseifStmt"], used); }
+            if let Some(e) = d.get("elseStmt") {
+                if let Some(b) = e["data"]["body"].as_array() { for s in b { collect_used(s, used); } }
+            }
+        }
+        "loopStmt" => {
+            collect_used(&node["data"]["condition"], used);
+            if let Some(b) = node["data"]["body"].as_array() { for s in b { collect_used(s, used); } }
+        }
+        "switchStmt" => {
+            collect_used(&node["data"]["value"], used);
+            if let Some(cases) = node["data"]["cases"].as_array() {
+                for c in cases {
+                    collect_used(&c["value"], used);
+                    if let Some(b) = c["body"]["body"].as_array() { for s in b { collect_used(s, used); } }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The free variables of a function: identifiers it (transitively) references,
+/// minus everything bound at its own level (params, locals, nested-fn names).
+fn free_vars(params: &[Value], body: &[Value]) -> Vec<String> {
+    let mut bound: std::collections::BTreeSet<String> =
+        params.iter().filter_map(|p| p.as_str().map(|s| s.to_string())).collect();
+    for stmt in body { collect_bound(stmt, &mut bound); }
+    let mut used: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for stmt in body { collect_used(stmt, &mut used); }
+    used.into_iter().filter(|n| !bound.contains(n)).collect()
+}
+
 pub fn compile_ast(program: serde_json::Value, start_point: usize) -> Vec<u8> {
     let mut result: Vec<u8> = vec![];
     let mut op_counter: i64 = 1;
@@ -399,6 +532,20 @@ pub fn compile_ast(program: serde_json::Value, start_point: usize) -> Vec<u8> {
                     let mut str_bytes = p_name.as_str().unwrap().as_bytes().to_vec();
                     let mut len_bytes = i32::to_be_bytes(str_bytes.len() as i32).to_vec();
                     result.append(&mut len_bytes);
+                    result.append(&mut str_bytes);
+                }
+                // Free-variable (closure capture) list: the enclosing names this
+                // function references, so the runtime captures only these rather
+                // than cloning the whole enclosing scope.
+                let empty_params = vec![];
+                let frees = free_vars(
+                    operation["data"]["params"].as_array().unwrap_or(&empty_params),
+                    operation["data"]["body"].as_array().unwrap_or(&empty_params),
+                );
+                result.append(&mut i32::to_be_bytes(frees.len() as i32).to_vec());
+                for f in frees.iter() {
+                    let mut str_bytes = f.as_bytes().to_vec();
+                    result.append(&mut i32::to_be_bytes(str_bytes.len() as i32).to_vec());
                     result.append(&mut str_bytes);
                 }
                 let func_start = start_point + result.len() + 8 + 8;
