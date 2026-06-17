@@ -6,24 +6,34 @@
 //! of the resources it references, so changing a buffer automatically
 //! invalidates every pass that reads it.
 
-use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
+use ahash::AHashMap as HashMap;
+use ahash::AHashSet;
 use std::hash::{Hash, Hasher};
 use std::io;
+use xxhash_rust::xxh3::Xxh3;
 
 use elpa_protocol::{ResourceDesc, ResourceId};
 
-/// An [`io::Write`] sink that folds every byte into a [`Hasher`] instead of
-/// buffering them. Lets us serialize a value *through* a hasher with no
+/// An [`io::Write`] sink that folds every byte into an [`Xxh3`] hasher instead
+/// of buffering them. Lets us serialize a value *through* a hasher with no
 /// intermediate `String`/`Vec` allocation — the serialized form is consumed as
 /// it is produced. (Hashing the raw UTF-8 of the JSON is just as stable a
 /// fingerprint as hashing the `String` was, and is never persisted across
 /// processes, so the exact algorithm is free to change.)
-struct HashWriter<'a>(&'a mut DefaultHasher);
+struct HashWriter(Xxh3);
 
-impl io::Write for HashWriter<'_> {
+impl HashWriter {
+    fn new() -> Self {
+        HashWriter(Xxh3::new())
+    }
+    fn finish(self) -> u64 {
+        self.0.digest()
+    }
+}
+
+impl io::Write for HashWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.write(buf);
+        self.0.update(buf);
         Ok(buf.len())
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -39,10 +49,10 @@ impl io::Write for HashWriter<'_> {
 /// allocation. For buffers specifically, prefer [`buffer_hash`], which skips
 /// formatting each element as text entirely.
 pub fn content_hash<T: serde::Serialize>(value: &T) -> u64 {
-    let mut h = DefaultHasher::new();
+    let mut w = HashWriter::new();
     // Serialization into a hasher cannot fail on our own types; ignore the Result.
-    let _ = serde_json::to_writer(HashWriter(&mut h), value);
-    h.finish()
+    let _ = serde_json::to_writer(&mut w, value);
+    w.finish()
 }
 
 /// Content hash of a resource descriptor, specialized so a buffer's bulk data is
@@ -54,7 +64,7 @@ pub fn content_hash<T: serde::Serialize>(value: &T) -> u64 {
 pub fn descriptor_hash(desc: &ResourceDesc) -> u64 {
     match desc {
         ResourceDesc::Buffer(b) => {
-            let mut h = DefaultHasher::new();
+            let mut h = ahash::AHasher::default();
             // Domain tag so a buffer can never collide with a JSON-hashed desc.
             b"buffer".hash(&mut h);
             b.id.hash(&mut h);
@@ -135,11 +145,18 @@ impl ResourceCache {
         backend: &mut B,
     ) -> SyncReport {
         let mut report = SyncReport::default();
-        let mut live: std::collections::HashSet<ResourceId> =
-            std::collections::HashSet::with_capacity(resources.len());
-        for desc in resources {
+        // Precompute all descriptor hashes — pure work, parallelised on native.
+        #[cfg(not(target_arch = "wasm32"))]
+        let precomputed_hashes: Vec<u64> = {
+            use rayon::prelude::*;
+            resources.par_iter().map(descriptor_hash).collect()
+        };
+        #[cfg(target_arch = "wasm32")]
+        let precomputed_hashes: Vec<u64> = resources.iter().map(descriptor_hash).collect();
+
+        let mut live: AHashSet<ResourceId> = AHashSet::with_capacity(resources.len());
+        for (desc, h) in resources.iter().zip(precomputed_hashes.iter().copied()) {
             let id = desc.id();
-            let h = descriptor_hash(desc);
             live.insert(id.clone());
             if self.hashes.get(id) == Some(&h) {
                 continue; // identical to the resident copy — nothing to do

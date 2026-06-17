@@ -14,7 +14,7 @@
 //! forever. Because the realized frame is rebuilt host-side, the wire payload
 //! the VM sends stays tiny no matter how deep the composition.
 
-use std::collections::{HashMap, HashSet};
+use ahash::{AHashMap as HashMap, AHashSet as HashSet};
 
 use elpa_protocol::{
     Definition, DefinitionBody, EncoderCommand, Frame, RenderCommand, RenderPass, ResourceDesc,

@@ -105,6 +105,9 @@ impl Runtime {
 /// Parse a `gpu.submit` host call's payload into a [`Frame`]. The VM wraps
 /// `askHost` arguments in a JSON array, so the payload is `[<frame>]`; this
 /// unwraps it.
+///
+/// On native targets this uses `simd-json` for faster JSON parsing; on wasm it
+/// falls back to `serde_json` (simd is unavailable there).
 pub fn frame_from_submit(call: &HostCall) -> Option<Frame> {
     if call.api_name != "gpu.submit" {
         return None;
@@ -115,13 +118,28 @@ pub fn frame_from_submit(call: &HostCall) -> Option<Frame> {
     // (plus owned `String` keys) for every object node in the frame, hundreds per
     // submit, on the hot per-frame path. The VM wraps `askHost` arguments in a
     // one-element array, so the payload is normally `[<frame>]`.
-    if let Ok(mut frames) = serde_json::from_str::<Vec<Frame>>(&call.payload) {
-        if !frames.is_empty() {
-            return Some(frames.remove(0));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // simd-json operates on a mutable byte slice (it does in-place parsing).
+        let mut buf = call.payload.clone().into_bytes();
+        if let Ok(mut frames) = simd_json::from_slice::<Vec<Frame>>(&mut buf) {
+            if !frames.is_empty() {
+                return Some(frames.remove(0));
+            }
         }
+        // Fallback: a bare (unwrapped) frame object.
+        let mut buf2 = call.payload.clone().into_bytes();
+        return simd_json::from_slice::<Frame>(&mut buf2).ok();
     }
-    // Fallback: a bare (unwrapped) frame object.
-    serde_json::from_str::<Frame>(&call.payload).ok()
+    #[cfg(target_arch = "wasm32")]
+    {
+        if let Ok(mut frames) = serde_json::from_str::<Vec<Frame>>(&call.payload) {
+            if !frames.is_empty() {
+                return Some(frames.remove(0));
+            }
+        }
+        serde_json::from_str::<Frame>(&call.payload).ok()
+    }
 }
 
 /// Unwrap the single argument of an `askHost` payload. The VM wraps call

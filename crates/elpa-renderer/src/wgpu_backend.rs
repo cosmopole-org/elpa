@@ -14,8 +14,7 @@
 //!
 //! Built only under the `wgpu-backend` feature.
 
-use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
+use ahash::AHashMap as HashMap;
 use std::hash::{Hash, Hasher};
 
 use base64::Engine;
@@ -739,7 +738,7 @@ impl<'s> WgpuBackend<'s> {
 
         // Structural fingerprint: the commands (which carry no buffer *contents*,
         // so an in-place data refill leaves it unchanged) plus the target formats.
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = ahash::AHasher::default();
         crate::cache::content_hash(&pass.commands).hash(&mut hasher);
         for f in &formats {
             format!("{f:?}").hash(&mut hasher);
