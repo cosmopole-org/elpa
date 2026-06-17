@@ -390,6 +390,31 @@ fn class_method_calls_sibling_method_via_this() {
 }
 
 #[test]
+fn class_method_builds_closures_in_loop_capturing_this() {
+    // The SDK shape: a paint method loops, building per-iteration tap closures
+    // that capture both the loop local and `this`, and stores them; calling them
+    // later mutates `this`. Exercises closure capture of `this` inside a method.
+    let js = "
+        class Bar {
+            constructor() { this.total = 0; this.taps = []; }
+            build(n) {
+                for (let i = 0; i < n; i++) {
+                    let amount = (i + 1) * 10;
+                    push(this.taps, () => { this.total = this.total + amount; });
+                }
+            }
+            fireAll() { for (let i = 0; i < len(this.taps); i++) { this.taps[i](); } }
+        }
+        function f() {
+            let b = new Bar();
+            b.build(3);          // closures add 10, 20, 30
+            b.fireAll();
+            return b.total;      // 60
+        }";
+    assert_eq!(run_js_and_call("js-class-loop-closure", js, "f"), "60");
+}
+
+#[test]
 fn class_inheritance_super_and_override() {
     // `extends` + `super(...)`: the child inherits `area`, overrides `name`, and
     // chains the parent constructor. Inherited and overridden dispatch both work.
