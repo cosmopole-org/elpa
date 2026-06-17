@@ -264,6 +264,7 @@ let _curOut = []; let _curTaps = []; let _curDrags = [];  // paint targets
 let _inst = []; let _taps = []; let _drags = [];          // current frame (root)
 let _dragging = 0.0; let _activeDrag = 0;      // active slider drag
 let _hx = -1000.0; let _hy = -1000.0;          // hover pointer
+let _hoverSig = ""; let _hoverIds = [];        // tap ids currently under the pointer
 let _keyHandler = 0; let _hasKey = 0.0;        // app key handler (per render)
 let _wheelFn = 0; let _hasWheel = 0.0;         // app wheel handler (per render)
 let _focused = 0;                              // id of the focused TextField (0 = none)
@@ -2299,6 +2300,8 @@ function _renderApp() {
     _mount(_root, _NULL);
     _paint(_root, _vw * 0.5, _vh * 0.5);
     _inst = _root._out; _taps = _root._taps; _drags = _root._drags;
+    // The tap set was just rebuilt; recompute the hover set on the next move.
+    _hoverSig = ""; _hoverIds = [];
     _submit();
 }
 function _repaint() { _renderApp(); }
@@ -2513,6 +2516,38 @@ function _scrollIdAt(px, py) {
     }
     return "";
 }
+// Collect the tap ids whose hit-rect contains the pointer. These are exactly the
+// widgets that show a hover state layer, and every such widget registered its id
+// in `_keySubs` (via `_pressVal`) when it painted, so each maps back to its owning
+// component for a scoped repaint.
+function _hoverIdsAt(px, py) {
+    let ids = [];
+    for (let i = 0; i < len(_taps); i++) {
+        let t = _taps[i];
+        if (_inRect(px, py, t.cx, t.cy, t.hw, t.hh)) { push(ids, t.id); }
+    }
+    return ids;
+}
+// A pointer move with no drag only ever changes hover highlighting. Recomputing
+// the whole tree (mount + paint + submit) on every move was the dominant input
+// cost. Instead: if the set of hovered widgets is unchanged, do nothing at all;
+// when it changes, repaint *only* the components owning the widgets entering or
+// leaving hover (the cheap scoped path). Falls back to a full repaint only when a
+// changed widget has no registered subscriber (so its visual can't be scoped).
+function _hoverRepaint(px, py) {
+    let ids = _hoverIdsAt(px, py);
+    let sig = "";
+    for (let i = 0; i < len(ids); i++) { sig = concat(concat(sig, "|"), ids[i]); }
+    if (sig == _hoverSig) { return 0; }
+    let dirty = []; let full = 0.0;
+    let prev = _hoverIds;
+    for (let i = 0; i < len(prev); i++) { if (!has(_keySubs, prev[i])) { full = 1.0; } _markDirty(dirty, prev[i]); }
+    for (let i = 0; i < len(ids); i++) { if (!has(_keySubs, ids[i])) { full = 1.0; } _markDirty(dirty, ids[i]); }
+    _hoverSig = sig; _hoverIds = ids;
+    if (full > 0.5) { _repaint(); return 0; }
+    if (len(dirty) > 0) { _repaintComps(dirty); }
+    return 0;
+}
 function onEvent(e) {
     let et = e.type; let px = e.nx * _vw; let py = e.ny * _vh;
     if (et == "pointermove") { _hx = px; _hy = py; }
@@ -2542,7 +2577,7 @@ function onEvent(e) {
             _scrollVel = _scrollVel * 0.55 + dy * 0.45;
             _scrollDragY = py; _repaint();
         }
-        else { if (_dragging > 0.5) { _activeDrag.onDrag(px); } else { _repaint(); } }
+        else { if (_dragging > 0.5) { _activeDrag.onDrag(px); } else { _hoverRepaint(px, py); } }
     }
     if (et == "pointerup") {
         // On release, hand the gesture to a momentum fling if it was moving fast
