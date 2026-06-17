@@ -7,7 +7,7 @@
 //!
 //! ## What the kit is
 //!
-//! * [`MODULE_JS`] — **the SDK**. A widget framework: the rounded-rect SDF
+//! * [`module_js`] — **the SDK**. A widget framework: the rounded-rect SDF
 //!   pipeline, a glyph font (digits + symbols) and vector icon set, a responsive
 //!   layout coordinator, the per-widget M3 colors/sizes, ~50 widget constructors
 //!   spanning layout (`Container`, `Padding`, `SafeArea`, `Center`,
@@ -40,25 +40,46 @@
 //! Arrow functions / closures (tap callbacks, the component `update`) are part of
 //! the JavaScript subset Elpa's in-VM front-end supports.
 
-/// The Material SDK (the widget framework), as JavaScript source.
-pub const MODULE_JS: &str = include_str!("../assets/elpa-material.js");
+/// The Material SDK, as JavaScript source.
+///
+/// The framework is organised into single-responsibility modules under
+/// `assets/sdk/`, concatenated here in dependency order (data → engine services
+/// → the Widget base → the widget catalog → the runtime → the public API). The
+/// VM hoists every `class`/`function` declaration, so this is just textual
+/// concatenation; [`module_js`] joins them into the one source the VM compiles.
+pub const SDK_DATA_JS: &str = include_str!("../assets/sdk/00-data.js");
+pub const SDK_ENGINE_JS: &str = include_str!("../assets/sdk/10-engine.js");
+pub const SDK_WIDGET_JS: &str = include_str!("../assets/sdk/20-widget.js");
+pub const SDK_WIDGETS_LAYOUT_JS: &str = include_str!("../assets/sdk/30-widgets-layout.js");
+pub const SDK_WIDGETS_MATERIAL_JS: &str = include_str!("../assets/sdk/31-widgets-material.js");
+pub const SDK_WIDGETS_MEDIA_JS: &str = include_str!("../assets/sdk/32-widgets-media.js");
+pub const SDK_RUNTIME_JS: &str = include_str!("../assets/sdk/40-runtime.js");
+pub const SDK_API_JS: &str = include_str!("../assets/sdk/50-api.js");
 
-/// The interactive demo application, as JavaScript source. Uses [`MODULE_JS`].
+/// The Material SDK (the widget framework), as one JavaScript source — the eight
+/// `assets/sdk/*.js` modules concatenated in dependency order.
+pub fn module_js() -> String {
+    format!(
+        "{SDK_DATA_JS}\n{SDK_ENGINE_JS}\n{SDK_WIDGET_JS}\n{SDK_WIDGETS_LAYOUT_JS}\n{SDK_WIDGETS_MATERIAL_JS}\n{SDK_WIDGETS_MEDIA_JS}\n{SDK_RUNTIME_JS}\n{SDK_API_JS}"
+    )
+}
+
+/// The interactive demo application, as JavaScript source. Uses [`module_js`].
 pub const DEMO_JS: &str = include_str!("../assets/demo.js");
 
 /// The widget *gallery* application, as JavaScript source. Exercises the extended
 /// widget set (layout widgets, the broader Material catalog, charts, media) and
-/// the platform-service wrappers. Also uses [`MODULE_JS`].
+/// the platform-service wrappers. Also uses [`module_js`].
 pub const GALLERY_JS: &str = include_str!("../assets/gallery.js");
 
 /// The full program a host runs: the SDK linked ahead of the app, in one VM.
 /// Pass the result to [`Elpa::new_from_js`](elpa::Elpa::new_from_js).
 pub fn program() -> String {
-    format!("{MODULE_JS}\n{DEMO_JS}")
+    format!("{}\n{DEMO_JS}", module_js())
 }
 
 /// The SDK linked ahead of the widget gallery — the analog of [`program`] for
 /// [`GALLERY_JS`].
 pub fn gallery_program() -> String {
-    format!("{MODULE_JS}\n{GALLERY_JS}")
+    format!("{}\n{GALLERY_JS}", module_js())
 }

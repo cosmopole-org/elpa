@@ -356,3 +356,99 @@ fn statement_after_control_block_does_not_unbalance_in_called_fn() {
     let _ = api::execute_vm(id2.to_string());
     assert_eq!(api::execute_vm_func(id2.to_string(), "f".into(), 1).result_value, "\"hi3\"");
 }
+
+#[test]
+fn class_methods_and_this() {
+    // A plain class: constructor sets a field, a method reads `this` and an
+    // argument. `new C(...)` and a bare `C(...)` call construct identically.
+    let js = "
+        class Counter {
+            constructor(start) { this.n = start; }
+            add(k) { this.n = this.n + k; return this.n; }
+            get() { return this.n; }
+        }
+        function f() {
+            let c = new Counter(10);
+            c.add(5);
+            let d = Counter(100);   // construction without `new`
+            d.add(1);
+            return c.get() * 1000 + d.get();   // 15*1000 + 101 = 15101
+        }";
+    assert_eq!(run_js_and_call("js-class", js, "f"), "15101");
+}
+
+#[test]
+fn class_method_calls_sibling_method_via_this() {
+    let js = "
+        class Math2 {
+            constructor(b) { this.b = b; }
+            dbl(x) { return x * 2; }
+            calc(x) { return this.dbl(x) + this.b; }
+        }
+        function f() { let m = new Math2(7); return m.calc(10); }"; // 20 + 7 = 27
+    assert_eq!(run_js_and_call("js-class-self", js, "f"), "27");
+}
+
+#[test]
+fn class_method_builds_closures_in_loop_capturing_this() {
+    // The SDK shape: a paint method loops, building per-iteration tap closures
+    // that capture both the loop local and `this`, and stores them; calling them
+    // later mutates `this`. Exercises closure capture of `this` inside a method.
+    let js = "
+        class Bar {
+            constructor() { this.total = 0; this.taps = []; }
+            build(n) {
+                for (let i = 0; i < n; i++) {
+                    let amount = (i + 1) * 10;
+                    push(this.taps, () => { this.total = this.total + amount; });
+                }
+            }
+            fireAll() { for (let i = 0; i < len(this.taps); i++) { this.taps[i](); } }
+        }
+        function f() {
+            let b = new Bar();
+            b.build(3);          // closures add 10, 20, 30
+            b.fireAll();
+            return b.total;      // 60
+        }";
+    assert_eq!(run_js_and_call("js-class-loop-closure", js, "f"), "60");
+}
+
+#[test]
+fn class_inheritance_super_and_override() {
+    // `extends` + `super(...)`: the child inherits `area`, overrides `name`, and
+    // chains the parent constructor. Inherited and overridden dispatch both work.
+    let js = "
+        class Shape {
+            constructor(w, h) { this.w = w; this.h = h; }
+            area() { return this.w * this.h; }
+            name() { return 1; }
+        }
+        class Square extends Shape {
+            constructor(s) { super(s, s); this.s = s; }
+            name() { return 2; }
+        }
+        function f() {
+            let sq = new Square(5);
+            return sq.area() * 10 + sq.name();   // inherited area 25 → 250 + 2 = 252
+        }";
+    assert_eq!(run_js_and_call("js-class-inherit", js, "f"), "252");
+}
+
+#[test]
+fn class_fields_and_independent_instances() {
+    // Class-field initialisers run per instance; two instances don't share state.
+    let js = "
+        class Box {
+            tag = \"x\";
+            constructor(v) { this.v = v; }
+            bump() { this.v = this.v + 1; return this.v; }
+        }
+        function f() {
+            let a = new Box(1); let b = new Box(10);
+            a.bump(); a.bump();
+            b.bump();
+            return a.v * 100 + b.v;   // 3*100 + 11 = 311
+        }";
+    assert_eq!(run_js_and_call("js-class-fields", js, "f"), "311");
+}

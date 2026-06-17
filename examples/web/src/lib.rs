@@ -123,7 +123,7 @@ async fn run() {
     // 3. Assemble the Elpa instance over the live backend + the UI-kit app.
     //
     // The app is the **Material Design 3 widget gallery**, written in
-    // **JavaScript**: a Flutter-style widget SDK (`MODULE_JS`) linked ahead of an
+    // **JavaScript**: a Flutter-style widget SDK (`module_js()`) linked ahead of an
     // app (`GALLERY_JS`) that composes a widget tree and calls `runApp` — see
     // `elpa_material::gallery_program` (swap to `program()` for the smaller demo).
     // Elpa compiles the whole thing to its VM with `new_from_js`; the SDK's
