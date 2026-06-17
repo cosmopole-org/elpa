@@ -298,11 +298,12 @@ let _CLEAR = [0.0, 0.0, 0.0, 0.0];
 // source gets a stable texture handle whose contents the frame clock refreshes,
 // so advancing a video frame is just a texture re-upload, no relayout.
 let _media = {};            // key -> load/playback state
-let _imgTex = {};           // handle -> { w, h, ver, up, data }  (texture contents)
+let _imgTex = {};           // handle -> { w, h, ver, up, data, lastFrameN }  (texture contents)
 let _imgHandle = {};        // media key -> numeric texture handle
 let _imgHandleN = 0;        // handle allocator
 let _mediaChanged = 0.0;    // a frame advanced / load completed this tick
 let _IMG_MARK = 424242.0;   // sentinel marker in instance slot 0 (off-screen, unique)
+let _frameN = 0;            // submission counter — used to detect texture eviction
 // A 1x1 placeholder pixel (RGBA #F4F4F6FF) shown until the real pixels land,
 // pre-encoded as base64 (the VM JS subset has no base64 encoder).
 let _IMG_PLACEHOLDER = "9PT2/w==";
@@ -1547,7 +1548,7 @@ function _imgTexId(handle, w, h) { return concat(concat(concat(concat("elpa.m3.i
 // `{ url }` (network) or `{ path }` (storage); `video` marks an animated source.
 function _mediaEnsure(key, src, video) {
     let handle = _mediaHandle(key); let hk = str(handle);
-    if (!has(_imgTex, hk)) { _imgTex[hk] = { w: 1, h: 1, ver: 0, up: 0.0, data: _IMG_PLACEHOLDER }; }
+    if (!has(_imgTex, hk)) { _imgTex[hk] = { w: 1, h: 1, ver: 0, up: 0.0, data: _IMG_PLACEHOLDER, lastFrameN: -1 }; }
     if (!has(_media, key)) {
         _media[key] = { ready: 0.0, failed: 0.0, w: 1, h: 1, frames: 1, total: 0, video: video,
             handle: handle, startMs: now(), curIdx: -1 };
@@ -2347,6 +2348,10 @@ function _declareImageTex(handle, res, uploads, declared) {
     let t = _imgTex[str(handle)]; let id = _imgTexId(handle, t.w, t.h);
     if (has(declared, id)) { return id; }
     declared[id] = 1.0;
+    // If the texture was absent from the previous frame the renderer evicted it;
+    // force a re-upload so the recreated GPU texture is not left empty.
+    if (t.lastFrameN < _frameN - 1) { t.up = 0.0; }
+    t.lastFrameN = _frameN;
     push(res, { kind: "texture", id: id, size: { width: t.w, height: t.h }, format: "rgba8unorm", usage: ["TEXTURE_BINDING", "COPY_DST"] });
     if (t.up < 0.5) {
         push(uploads, { op: "writeTexture", texture: id, origin: { x: 0, y: 0, z: 0 },
@@ -2413,6 +2418,7 @@ function _submitPlain() {
     askHost("gpu.submit", [{ resources: res, commands: concat(_atlasUploadCmds(), [pass]) }]);
 }
 function _submit() {
+    _frameN = _frameN + 1;
     if (_imgHandleN == 0) { _submitPlain(); return 0; }
     let bg = _colorBg();
     let plan = _planDraws(_inst);
