@@ -12,3 +12,6 @@ Cargo.lock.bak
 
 # Node / Playwright e2e harness (scripts/web-e2e.js) — installed locally, not vendored.
 node_modules/
+
+# Claude Code agent worktree metadata (session-local, not source).
+.claude/

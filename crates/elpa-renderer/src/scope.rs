@@ -18,7 +18,7 @@
 //! * **invalid / forced** → the pass is recorded, repainting the snapshot, and
 //!   the snapshot is marked valid again (`layers_repainted`).
 
-use std::collections::HashSet;
+use ahash::AHashSet as HashSet;
 
 /// Tracks which offscreen passes are program-registered **layers** and whether
 /// each one's snapshot is currently valid (reusable) or must be repainted.

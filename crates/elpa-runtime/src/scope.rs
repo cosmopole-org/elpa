@@ -28,7 +28,7 @@
 //! passes here, and the renderer reuses the snapshot of any layer pass that *is*
 //! emitted, so the two halves agree that a clean layer costs nothing.
 
-use std::collections::{HashMap, HashSet};
+use ahash::{AHashMap as HashMap, AHashSet as HashSet};
 
 use elpa_protocol::{EncoderCommand, Frame, Layer, ResourceDesc};
 

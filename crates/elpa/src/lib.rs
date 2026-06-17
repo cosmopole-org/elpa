@@ -51,7 +51,7 @@ pub use elpa_runtime::{DefinitionStore, LayerStore, ScopeStats};
 #[cfg(feature = "wgpu")]
 pub use elpa_renderer::wgpu_backend::WgpuBackend;
 
-use std::collections::HashMap;
+use ahash::AHashMap as HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use elpa_runtime::{

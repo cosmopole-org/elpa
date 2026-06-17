@@ -14,9 +14,8 @@
 //!
 //! Built only under the `wgpu-backend` feature.
 
-use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use ahash::AHashMap as HashMap;
+use xxhash_rust::xxh3::Xxh3;
 
 use base64::Engine;
 use wgpu::util::DeviceExt;
@@ -739,13 +738,14 @@ impl<'s> WgpuBackend<'s> {
 
         // Structural fingerprint: the commands (which carry no buffer *contents*,
         // so an in-place data refill leaves it unchanged) plus the target formats.
-        let mut hasher = DefaultHasher::new();
-        crate::cache::content_hash(&pass.commands).hash(&mut hasher);
+        let mut h = Xxh3::new();
+        h.update(&crate::cache::content_hash(&pass.commands).to_le_bytes());
         for f in &formats {
-            format!("{f:?}").hash(&mut hasher);
+            h.update(format!("{f:?}").as_bytes());
+            h.update(b"\x00");
         }
-        sample_count.hash(&mut hasher);
-        let struct_hash = hasher.finish();
+        h.update(&(sample_count as u64).to_le_bytes());
+        let struct_hash = h.digest();
 
         if self.render_bundles.get(&id).map(|e| e.struct_hash) == Some(struct_hash) {
             return Some(id);

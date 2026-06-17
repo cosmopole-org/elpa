@@ -14,5 +14,11 @@ wgpu-backend = ["dep:wgpu", "dep:base64"]
 elpa-protocol = { path = "../elpa-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+ahash = { workspace = true }
+xxhash-rust = { workspace = true }
+bumpalo = { version = "3.16", features = ["collections"] }
 wgpu = { version = "29", optional = true }
 base64 = { version = "0.22", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon = "1.10"

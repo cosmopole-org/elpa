@@ -6,24 +6,33 @@
 //! of the resources it references, so changing a buffer automatically
 //! invalidates every pass that reads it.
 
-use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::io;
+
+use ahash::{AHashMap as HashMap, AHashSet as HashSet};
+use bumpalo::Bump;
+use xxhash_rust::xxh3::Xxh3;
 
 use elpa_protocol::{ResourceDesc, ResourceId};
 
-/// An [`io::Write`] sink that folds every byte into a [`Hasher`] instead of
-/// buffering them. Lets us serialize a value *through* a hasher with no
-/// intermediate `String`/`Vec` allocation — the serialized form is consumed as
-/// it is produced. (Hashing the raw UTF-8 of the JSON is just as stable a
-/// fingerprint as hashing the `String` was, and is never persisted across
-/// processes, so the exact algorithm is free to change.)
-struct HashWriter<'a>(&'a mut DefaultHasher);
+/// An [`io::Write`] sink that feeds every byte into an xxHash-3 streaming
+/// state instead of buffering them. Lets us serialize a value *through* a
+/// hasher with no intermediate `String`/`Vec` allocation. xxHash-3 uses SIMD
+/// internally and is significantly faster than the default SipHash for the
+/// content-hashing hot path.
+struct HashWriter(Xxh3);
 
-impl io::Write for HashWriter<'_> {
+impl HashWriter {
+    fn new() -> Self {
+        HashWriter(Xxh3::new())
+    }
+    fn finish(self) -> u64 {
+        self.0.digest()
+    }
+}
+
+impl io::Write for HashWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.write(buf);
+        self.0.update(buf);
         Ok(buf.len())
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -33,16 +42,14 @@ impl io::Write for HashWriter<'_> {
 
 /// Stable content hash of any serializable value (deterministic field order).
 ///
-/// Streams the value's JSON encoding straight into the hasher rather than
-/// allocating the whole string first, so hashing a large descriptor (e.g. a
-/// multi-megabyte instance buffer declared every frame) costs no transient
-/// allocation. For buffers specifically, prefer [`buffer_hash`], which skips
-/// formatting each element as text entirely.
+/// Streams the value's JSON encoding straight into an xxHash-3 hasher rather
+/// than allocating the whole string first, so hashing a large descriptor costs
+/// no transient allocation. For buffers specifically, prefer [`descriptor_hash`],
+/// which skips formatting each element as text entirely.
 pub fn content_hash<T: serde::Serialize>(value: &T) -> u64 {
-    let mut h = DefaultHasher::new();
-    // Serialization into a hasher cannot fail on our own types; ignore the Result.
-    let _ = serde_json::to_writer(HashWriter(&mut h), value);
-    h.finish()
+    let mut w = HashWriter::new();
+    let _ = serde_json::to_writer(&mut w, value);
+    w.finish()
 }
 
 /// Content hash of a resource descriptor, specialized so a buffer's bulk data is
@@ -54,20 +61,24 @@ pub fn content_hash<T: serde::Serialize>(value: &T) -> u64 {
 pub fn descriptor_hash(desc: &ResourceDesc) -> u64 {
     match desc {
         ResourceDesc::Buffer(b) => {
-            let mut h = DefaultHasher::new();
+            let mut h = Xxh3::new();
             // Domain tag so a buffer can never collide with a JSON-hashed desc.
-            b"buffer".hash(&mut h);
-            b.id.hash(&mut h);
-            b.size.hash(&mut h);
-            b.usage.hash(&mut h);
+            h.update(b"buffer");
+            h.update(b.id.as_bytes());
+            h.update(&b.size.to_le_bytes());
+            // Hash usage strings sequentially.
+            for u in &b.usage {
+                h.update(u.as_bytes());
+                h.update(b"\x00");
+            }
             match b.init_bytes() {
                 Some(bytes) => {
-                    1u8.hash(&mut h);
-                    bytes.hash(&mut h);
+                    h.update(b"\x01");
+                    h.update(&bytes);
                 }
-                None => 0u8.hash(&mut h),
+                None => h.update(b"\x00"),
             }
-            h.finish()
+            h.digest()
         }
         other => content_hash(other),
     }
@@ -134,12 +145,34 @@ impl ResourceCache {
         resources: &[ResourceDesc],
         backend: &mut B,
     ) -> SyncReport {
+        // Per-call bump arena: all temporary allocations within sync() are freed
+        // in O(1) when `arena` drops, without touching the global allocator.
+        let arena = Bump::new();
         let mut report = SyncReport::default();
-        let mut live: std::collections::HashSet<ResourceId> =
-            std::collections::HashSet::with_capacity(resources.len());
-        for desc in resources {
+        let mut live: HashSet<ResourceId> = HashSet::with_capacity_and_hasher(
+            resources.len(),
+            ahash::RandomState::new(),
+        );
+
+        // Phase 1 — compute all content hashes in parallel (pure, read-only).
+        // GPU mutations in phase 2 must stay sequential, but hashing is the
+        // expensive part for frames with many or large resources.
+        #[cfg(not(target_arch = "wasm32"))]
+        let new_hashes: Vec<(&ResourceDesc, u64)> = {
+            use rayon::prelude::*;
+            resources.par_iter().map(|d| (d, descriptor_hash(d))).collect()
+        };
+        // On wasm32 use an arena-backed vec to avoid global-allocator pressure.
+        #[cfg(target_arch = "wasm32")]
+        let new_hashes: bumpalo::collections::Vec<(&ResourceDesc, u64)> = {
+            let mut v = bumpalo::collections::Vec::new_in(&arena);
+            v.extend(resources.iter().map(|d| (d, descriptor_hash(d))));
+            v
+        };
+
+        // Phase 2 — sequential GPU mutations using the precomputed hashes.
+        for (desc, h) in new_hashes {
             let id = desc.id();
-            let h = descriptor_hash(desc);
             live.insert(id.clone());
             if self.hashes.get(id) == Some(&h) {
                 continue; // identical to the resident copy — nothing to do
@@ -171,9 +204,13 @@ impl ResourceCache {
             }
             report.created += 1;
         }
-        // Evict resources absent from this frame.
-        let dead: Vec<ResourceId> =
-            self.hashes.keys().filter(|k| !live.contains(*k)).cloned().collect();
+        // Evict resources absent from this frame. Collect into an arena vec to
+        // avoid a global-allocator round-trip for this short-lived list.
+        let dead: bumpalo::collections::Vec<ResourceId> = {
+            let mut v = bumpalo::collections::Vec::new_in(&arena);
+            v.extend(self.hashes.keys().filter(|k| !live.contains(*k)).cloned());
+            v
+        };
         for id in dead {
             backend.destroy_resource(&id);
             self.hashes.remove(&id);
