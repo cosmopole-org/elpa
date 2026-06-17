@@ -355,6 +355,7 @@ impl<B: GpuBackend> Elpa<B> {
 
     /// Advance one animation tick, calling the app's `onFrame(dtMs)`.
     pub fn animate(&mut self, dt_ms: f64) {
+        self.env.tick(dt_ms.max(0.0) as u64);
         let input = serde_json::json!(dt_ms).to_string();
         self.drive(Start::Func { name: "onFrame", input: &input });
     }
