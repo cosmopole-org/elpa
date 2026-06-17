@@ -1781,11 +1781,10 @@ impl JsParser {
         json!({ "type": "functionDefinition", "data": { "name": name, "params": params, "body": body } })
     }
 
-    // ---- classes (desugared to factory functions) ---------------------------
+    // ---- classes (desugared to shared prototype + factory constructor) -------
     //
-    // ES6 `class` syntax is lowered, entirely in the front-end, onto the value
-    // model the VM already runs — closures and plain objects — so no new opcode
-    // or executor change is needed. For
+    // ES6 `class` syntax is lowered, in the front-end, onto plain objects + a
+    // shared prototype. For
     //
     //     class C extends P {
     //         field = init;
@@ -1793,19 +1792,25 @@ impl JsParser {
     //         greet(n) { return this.x + n; }
     //     }
     //
-    // two `functionDefinition`s are emitted:
+    // it emits:
     //
-    //   * an *installer* `__install_C(this, a)` that (1) runs the parent
-    //     installer on the same object so inherited methods/fields land first,
-    //     (2) binds each method as a closure over `this` (overriding the parent),
-    //     (3) applies class-field initialisers, then (4) runs the constructor
-    //     body (with the leading `super(...)` removed — it became step 1);
-    //   * a *constructor* `C(a)` that makes a fresh object, tags it with its
-    //     class name, runs `__install_C`, and returns it.
+    //   * each method as a *shared, top-level* function `__m_C__greet(n)` (defined
+    //     once for the whole program, not per instance — so construction allocates
+    //     no closures and method calls pay no capture-copy cost). `this` is not a
+    //     declared parameter: when a method is read off an object the executor
+    //     binds it to the receiver (see `bind_proto_method` / the indexer), so the
+    //     body uses `this` as an ordinary local.
+    //   * a prototype object `__proto_C = { __parent: __proto_P, greet: __m_C__greet }`
+    //     built once, with `__parent` linking the inheritance chain.
+    //   * an initialiser `__init_C(this, a)` that chains to `__init_P` (the leading
+    //     `super(...)`), applies class-field initialisers, then runs the rest of
+    //     the constructor body — `this` is an explicit parameter here.
+    //   * a constructor `C(a)` = `let this = { __proto: __proto_C }; __init_C(this, a);
+    //     return this;`. `new C(a)` and a bare `C(a)` both run it.
     //
-    // `this` is therefore an ordinary local the executor resolves by name, and a
-    // method is just a closure stored in a field — both already supported. `new`
-    // is optional sugar (see `parse_unary`); `C(a)` constructs all the same.
+    // The executor change this relies on is small and isolated: on a field miss,
+    // the indexer resolves the name through the object's `__proto` chain and
+    // returns the method bound to the receiver. No new opcode.
     fn parse_class(&mut self) -> Vec<Value> {
         self.expect_ident("class");
         let name = self.expect_ident_name();
@@ -1855,8 +1860,6 @@ impl JsParser {
         // parsing; they belong at the head of the installer body.
         let field_lifted: Vec<Value> = self.lifted.split_off(lifted_mark);
 
-        let installer = format!("__install_{}", name);
-
         // Extract a leading `super(...)` call from the constructor body, if any.
         let mut super_args: Vec<Value> = vec![];
         let mut had_super = false;
@@ -1874,65 +1877,77 @@ impl JsParser {
             }
         }
 
-        // Build the installer body.
-        let mut inst_body: Vec<Value> = vec![];
-        // 1. parent installer (inherited methods/fields land first).
+        let mut out: Vec<Value> = vec![];
+
+        // 1. Methods as *shared, top-level* functions (defined once, not per
+        //    instance). `this` is supplied by the method-dispatch path — when a
+        //    method is read off an object it is bound to the receiver via the
+        //    closure machinery — so it is not a declared parameter; the body
+        //    references it as an ordinary local. A `__proto_<Class>` object maps
+        //    each method name to its function, with `__parent` linking the chain.
+        let mut proto_map = serde_json::Map::new();
+        if let Some(p) = &parent {
+            proto_map.insert("__parent".to_string(), js_ident(&format!("__proto_{}", p)));
+        } else {
+            proto_map.insert("__parent".to_string(), js_int(0));
+        }
+        for (mname, params, body) in methods.into_iter() {
+            let fname = format!("__m_{}__{}", name, mname);
+            out.push(json!({ "type": "functionDefinition", "data": {
+                "name": fname, "params": params, "body": body } }));
+            proto_map.insert(mname.clone(), js_ident(&fname));
+        }
+
+        // 2. The per-instance initialiser: chain to the parent initialiser
+        //    (`super`), apply class-field initialisers, then run the constructor
+        //    body. `this` is an explicit parameter here (the constructor passes the
+        //    freshly-made instance). No method closures are created per instance.
+        let mut init_body: Vec<Value> = vec![];
         if let Some(p) = &parent {
             let mut args: Vec<Value> = vec![js_ident("this")];
             if had_super {
                 args.extend(super_args);
             }
-            inst_body.push(json!({ "type": "functionCall", "data": {
-                "callee": js_ident(&format!("__install_{}", p)), "args": args } }));
+            init_body.push(json!({ "type": "functionCall", "data": {
+                "callee": js_ident(&format!("__init_{}", p)), "args": args } }));
         }
-        // Tag the class name (after super, so the most-derived name wins).
-        inst_body.push(js_assign(
-            json!({ "type": "indexer", "data": { "target": js_ident("this"), "index": js_string("__class") } }),
-            js_string(&name),
-        ).unwrap());
-        // 2. methods, as closures over `this` (override any inherited binding).
-        for (mname, params, body) in methods.into_iter() {
-            let fname = format!("__m_{}__{}", name, mname);
-            inst_body.push(json!({ "type": "functionDefinition", "data": {
-                "name": fname, "params": params, "body": body } }));
-            inst_body.push(js_assign(
-                json!({ "type": "indexer", "data": { "target": js_ident("this"), "index": js_string(&mname) } }),
-                js_ident(&fname),
-            ).unwrap());
-        }
-        // 3. class-field initialisers (their lifted closures first, so `this` is
-        //    captured), applied after `super` per JS field semantics.
-        inst_body.extend(field_lifted);
+        // Class-field initialisers (their lifted closures first, so they capture
+        // `this`), applied after `super` per JS field-initialiser semantics.
+        init_body.extend(field_lifted);
         for (fname, val) in fields.into_iter() {
-            inst_body.push(js_assign(
+            init_body.push(js_assign(
                 json!({ "type": "indexer", "data": { "target": js_ident("this"), "index": js_string(&fname) } }),
                 val,
             ).unwrap());
         }
-        // 4. the rest of the constructor body.
-        inst_body.extend(ctor_rest);
+        init_body.extend(ctor_rest);
+        let mut init_params: Vec<String> = vec!["this".to_string()];
+        init_params.extend(ctor_params.iter().cloned());
+        out.push(json!({ "type": "functionDefinition", "data": {
+            "name": format!("__init_{}", name), "params": init_params, "body": init_body } }));
 
-        let mut installer_params: Vec<String> = vec!["this".to_string()];
-        installer_params.extend(ctor_params.iter().cloned());
+        // 3. The shared prototype, built once at class-definition time.
+        out.push(js_def(&format!("__proto_{}", name),
+            json!({ "type": "object", "data": { "value": Value::Object(proto_map) } })));
 
-        let installer_def = json!({ "type": "functionDefinition", "data": {
-            "name": installer, "params": installer_params, "body": inst_body } });
-
-        // The constructor: fresh object → install → return.
+        // 4. The constructor: a fresh object linked to the prototype, initialised,
+        //    and returned. `new C(...)` and a bare `C(...)` both run this.
+        let mut this_obj = serde_json::Map::new();
+        this_obj.insert("__proto".to_string(), js_ident(&format!("__proto_{}", name)));
         let mut call_args: Vec<Value> = vec![js_ident("this")];
         for p in ctor_params.iter() {
             call_args.push(js_ident(p));
         }
         let ctor_body_out = vec![
-            js_def("this", json!({ "type": "object", "data": { "value": {} } })),
+            js_def("this", json!({ "type": "object", "data": { "value": Value::Object(this_obj) } })),
             json!({ "type": "functionCall", "data": {
-                "callee": js_ident(&format!("__install_{}", name)), "args": call_args } }),
+                "callee": js_ident(&format!("__init_{}", name)), "args": call_args } }),
             json!({ "type": "returnOperation", "data": { "value": js_ident("this") } }),
         ];
-        let ctor_def = json!({ "type": "functionDefinition", "data": {
-            "name": name, "params": ctor_params, "body": ctor_body_out } });
+        out.push(json!({ "type": "functionDefinition", "data": {
+            "name": name, "params": ctor_params, "body": ctor_body_out } }));
 
-        vec![installer_def, ctor_def]
+        out
     }
 
     fn parse_if(&mut self) -> Value {

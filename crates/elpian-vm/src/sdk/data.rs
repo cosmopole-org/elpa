@@ -465,7 +465,10 @@ pub struct Function {
     pub name: String,
     pub start: usize,
     pub end: usize,
-    pub params: Vec<String>,
+    /// Declared parameter names. `Rc`-wrapped because the call path clones this
+    /// list for every invocation (to seed the frame); sharing it makes that a
+    /// pointer bump rather than a deep `Vec<String>` copy.
+    pub params: Rc<Vec<String>>,
     /// Captured lexical environment (closure upvalues). When a function value is
     /// produced inside another function's body, the enclosing locals reachable
     /// at that point are snapshotted here as `name -> Val`. The snapshot shares
@@ -475,6 +478,13 @@ pub struct Function {
     /// free by reference counting rather than a tracing collector. `None` means
     /// a plain top-level function with nothing to close over.
     pub captured: Option<Rc<RefCell<ValGroup>>>,
+    /// The receiver a *bound method* runs against. When a class method is read
+    /// off an instance (`obj.method`), the shared method function is wrapped with
+    /// `this_arg = Some(obj)`; the call path then seeds `this` into the frame.
+    /// `None` for ordinary functions and closures. Carrying just the receiver
+    /// (rather than cloning the whole function into a fresh closure) keeps method
+    /// dispatch allocation-light on the hot per-frame path.
+    pub this_arg: Option<Val>,
 }
 
 impl std::fmt::Debug for Function {
@@ -495,8 +505,9 @@ impl Function {
             name,
             start,
             end,
-            params,
+            params: Rc::new(params),
             captured: None,
+            this_arg: None,
         }
     }
     /// A function value that closes over `captured`.
@@ -511,8 +522,9 @@ impl Function {
             name,
             start,
             end,
-            params,
+            params: Rc::new(params),
             captured: Some(captured),
+            this_arg: None,
         }
     }
     pub fn clone_func(&self) -> Self {
@@ -522,6 +534,20 @@ impl Function {
             end: self.end,
             params: self.params.clone(),
             captured: self.captured.clone(),
+            this_arg: self.this_arg.clone(),
+        }
+    }
+    /// Wrap this (shared, top-level) method function as a method bound to
+    /// `receiver`, sharing the parameter list and body by pointer. Cheap: one
+    /// `Function` allocation plus reference-count bumps — no deep clones.
+    pub fn bind(&self, receiver: Val) -> Self {
+        Function {
+            name: String::new(),
+            start: self.start,
+            end: self.end,
+            params: self.params.clone(),
+            captured: None,
+            this_arg: Some(receiver),
         }
     }
 }
