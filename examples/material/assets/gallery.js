@@ -28,6 +28,8 @@ let seg = 0;             // segmented control selection
 let expand = 0.0;        // expansion tile
 let likes = 3;           // badge count
 let saved = "";          // last value persisted to storage
+let netChecked = 0.0;    // whether connectivity has been probed yet
+let netStatus = "CHECKING";  // cached connectivity label (see galNetStatus)
 
 // A custom SVG-path icon, registered once so it is usable by name anywhere a
 // built-in icon is (it is stroked from its path, like the rest of the icon set).
@@ -212,18 +214,30 @@ function galImageDemo() {
         url: "https://picsum.photos/seed/elpa/640/360", label: "NETWORK IMAGE" });
 }
 // Real streaming video: an animated GIF fetched from the network and decoded to
-// RGBA frames off-thread, advanced by the frame clock while playing.
+// RGBA frames off-thread, advanced by the frame clock while playing. A compact
+// source is used deliberately: on the web there are no host threads, so the
+// engine decodes inline at open and re-uploads each played frame — a 400x400/1MB
+// clip stalls the tab on entry and can't keep up while playing, whereas this
+// 150x143 one decodes quickly and streams smoothly.
 function galVideoDemo(update) {
     return VideoPlayer({ id: "vid", width: 88.0, height: 40.0, playing: playing, value: vpos,
-        url: "https://upload.wikimedia.org/wikipedia/commons/2/2c/Rotating_earth_%28large%29.gif",
+        url: "https://upload.wikimedia.org/wikipedia/commons/8/89/Rotating_earth_mini.gif",
         onToggle: () => { playing = 1.0 - playing; update(); },
         onSeek: (v) => { vpos = v; update(); } });
 }
+// `net.fetch` is a *synchronous* host call (see README), so probing connectivity
+// inline would block the whole frame — and this tile is rebuilt on every full
+// repaint (each scroll step, hover change and tab switch). Probe exactly once and
+// cache the result; later rebuilds just read the cached label. (The host call is
+// synchronous, so the callback has already run by the time we return.)
 function galNetStatus() {
-    let net = { s: 0 };
-    httpGet("https://example.com/", (st, body) => { net.s = st; });
-    if (net.s > 0) { return "ONLINE"; }
-    return "OFFLINE (NET CAP OFF)";
+    if (netChecked < 0.5) {
+        netChecked = 1.0;
+        httpGet("https://example.com/", (st, body) => {
+            if (st > 0) { netStatus = "ONLINE"; } else { netStatus = "OFFLINE (NET CAP OFF)"; }
+        });
+    }
+    return netStatus;
 }
 function galStorageTile() {
     return ListTile({ leading: "check", title: concat("SAVED: ", saved), subtitle: concat("CLOCK MS: ", str(now())), width: 88.0 });
