@@ -81,10 +81,9 @@ class Widget {
     compose() {
         if (!has(this, "_selfTaps")) { return 0; }
         let kids = this._kids;
-        let o = []; let t = []; let d = [];
-        appendAll(o, this._self); appendAll(t, this._selfTaps); appendAll(d, this._selfDrags);
-        for (let i = 0; i < len(kids); i++) { appendAll(o, kids[i]._out); appendAll(t, kids[i]._taps); appendAll(d, kids[i]._drags); }
-        if (has(this, "_over")) { appendAll(o, this._over); }
+        let o = concat([], this._self); let t = concat([], this._selfTaps); let d = concat([], this._selfDrags);
+        for (let i = 0; i < len(kids); i++) { o = concat(o, kids[i]._out); t = concat(t, kids[i]._taps); d = concat(d, kids[i]._drags); }
+        if (has(this, "_over")) { o = concat(o, this._over); }
         this._out = o; this._taps = t; this._drags = d;
         return 0;
     }
@@ -100,9 +99,9 @@ class Widget {
     bucket(dyn) {
         let kids = this._kids;
         if (len(kids) == 0) { return this._out; }
-        let s = []; appendAll(s, this._self);
-        for (let i = 0; i < len(kids); i++) { appendAll(s, kids[i].bucket(dyn)); }
-        if (has(this, "_over")) { appendAll(s, this._over); }
+        let s = concat([], this._self);
+        for (let i = 0; i < len(kids); i++) { s = concat(s, kids[i].bucket(dyn)); }
+        if (has(this, "_over")) { s = concat(s, this._over); }
         return s;
     }
 }
