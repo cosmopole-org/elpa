@@ -52,7 +52,7 @@ fn serve_font(app: &mut Elpa<HeadlessBackend>, bytes: &'static [u8]) {
 fn app_with(body_call: &str) -> String {
     format!(
         "{}\n let App = defineComponent(function(props, update) {{ return Scaffold({{ appBar: AppBar({{ title: \"FONT\" }}), body: Text(\"Hello World\", {{ size: \"title\" }}) }}); }}); {} runApp(App);",
-        elpa_material::MODULE_JS, body_call
+        elpa_material::module_js(), body_call
     )
 }
 

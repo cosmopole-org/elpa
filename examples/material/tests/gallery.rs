@@ -37,7 +37,7 @@ fn gallery_shaders_are_valid_wgsl() {
     // real (network/storage) RGBA textures for images and streaming video. Both
     // must be valid WGSL.
     let ast: serde_json::Value =
-        serde_json::from_str(&elpa::compile_js_to_ast(elpa_material::MODULE_JS.to_string()))
+        serde_json::from_str(&elpa::compile_js_to_ast(elpa_material::module_js()))
             .unwrap();
     let mut shaders = Vec::new();
     collect_wgsl(&ast, &mut shaders);
@@ -234,7 +234,7 @@ fn drawer_opens_and_animates() {
 fn layered_instance() -> Elpa<HeadlessBackend> {
     let program = format!(
         "{}\n{}",
-        elpa_material::MODULE_JS,
+        elpa_material::module_js(),
         elpa_material::GALLERY_JS.replace("runApp(App)", "setLayered(1.0); runApp(App)"),
     );
     Elpa::new_from_js(HeadlessBackend::default(), SurfaceInfo::new(900, 1400, 1.0), &program)

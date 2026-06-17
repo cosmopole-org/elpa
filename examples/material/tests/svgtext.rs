@@ -8,7 +8,7 @@ fn inst(app: &Elpa<HeadlessBackend>) -> Vec<f32> {
 }
 
 fn run(app_js: &str) -> Elpa<HeadlessBackend> {
-    let prog = format!("{}\n{}", elpa_material::MODULE_JS, app_js);
+    let prog = format!("{}\n{}", elpa_material::module_js(), app_js);
     let mut a = Elpa::new_from_js(HeadlessBackend::default(), SurfaceInfo::new(800,800,1.0), &prog)
         .expect("compiles");
     a.start();
