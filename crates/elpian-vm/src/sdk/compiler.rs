@@ -1393,6 +1393,11 @@ pub fn compile_code(p: String) -> Vec<u8> {
 //     the arithmetic/comparison operators the VM understands
 //     (`+ - * / % ** == === != !== < <= > >=`, with `**`→`^`,
 //     `===`→`==`, `!==`→`!=`) and the `!` / unary `-` prefixes.
+//   * `class` declarations with a `constructor`, instance methods, class-field
+//     initialisers, single inheritance (`extends`) and `super(...)` constructor
+//     chaining; `new C(...)` and a bare `C(...)` both construct. Lowered to a
+//     factory function whose methods are closures over a `this` object — no new
+//     opcode (see `parse_class`). `this` is an ordinary lexical local.
 //   * arrow functions and `function` *expressions* (anonymous closures):
 //     `x => e`, `(a, b) => e`, `() => { ... }`, `function (a) { ... }`. The VM
 //     has no function-literal expression opcode — a function value only enters
@@ -1701,6 +1706,9 @@ impl JsParser {
         if self.at_ident("function") {
             return vec![self.parse_function_decl()];
         }
+        if self.at_ident("class") {
+            return self.parse_class();
+        }
         if self.at_ident("if") {
             return vec![self.parse_if()];
         }
@@ -1771,6 +1779,160 @@ impl JsParser {
         self.expect_punct(")");
         let body = self.parse_block();
         json!({ "type": "functionDefinition", "data": { "name": name, "params": params, "body": body } })
+    }
+
+    // ---- classes (desugared to factory functions) ---------------------------
+    //
+    // ES6 `class` syntax is lowered, entirely in the front-end, onto the value
+    // model the VM already runs — closures and plain objects — so no new opcode
+    // or executor change is needed. For
+    //
+    //     class C extends P {
+    //         field = init;
+    //         constructor(a) { super(a); this.x = a; }
+    //         greet(n) { return this.x + n; }
+    //     }
+    //
+    // two `functionDefinition`s are emitted:
+    //
+    //   * an *installer* `__install_C(this, a)` that (1) runs the parent
+    //     installer on the same object so inherited methods/fields land first,
+    //     (2) binds each method as a closure over `this` (overriding the parent),
+    //     (3) applies class-field initialisers, then (4) runs the constructor
+    //     body (with the leading `super(...)` removed — it became step 1);
+    //   * a *constructor* `C(a)` that makes a fresh object, tags it with its
+    //     class name, runs `__install_C`, and returns it.
+    //
+    // `this` is therefore an ordinary local the executor resolves by name, and a
+    // method is just a closure stored in a field — both already supported. `new`
+    // is optional sugar (see `parse_unary`); `C(a)` constructs all the same.
+    fn parse_class(&mut self) -> Vec<Value> {
+        self.expect_ident("class");
+        let name = self.expect_ident_name();
+        let parent = if self.eat_ident("extends") {
+            Some(self.expect_ident_name())
+        } else {
+            None
+        };
+        self.expect_punct("{");
+
+        // Lifted closures from field initialisers / `super(...)` args must stay
+        // inside the installer (so they capture `this`), not leak to top level.
+        let lifted_mark = self.lifted.len();
+
+        let mut ctor_params: Vec<String> = vec![];
+        let mut ctor_body: Vec<Value> = vec![];
+        let mut methods: Vec<(String, Vec<String>, Vec<Value>)> = vec![];
+        let mut fields: Vec<(String, Value)> = vec![];
+
+        while !self.at_punct("}") && !self.at_eof() {
+            if self.eat_punct(";") {
+                continue;
+            }
+            // `static` members are attached to the instance like any other (the
+            // VM has no class object to hang them on); accept the keyword.
+            let _is_static = self.eat_ident("static");
+            let member = self.expect_ident_name();
+            if self.at_punct("(") {
+                let params = self.parse_paren_params();
+                let body = self.parse_block();
+                if member == "constructor" {
+                    ctor_params = params;
+                    ctor_body = body;
+                } else {
+                    methods.push((member, params, body));
+                }
+            } else {
+                // Class field: `name = expr;` or bare `name;` (defaults to 0).
+                let val = if self.eat_punct("=") { self.parse_expr() } else { js_int(0) };
+                self.eat_punct(";");
+                fields.push((member, val));
+            }
+        }
+        self.expect_punct("}");
+
+        // Drain field-initialiser / super-arg closures lifted during member
+        // parsing; they belong at the head of the installer body.
+        let field_lifted: Vec<Value> = self.lifted.split_off(lifted_mark);
+
+        let installer = format!("__install_{}", name);
+
+        // Extract a leading `super(...)` call from the constructor body, if any.
+        let mut super_args: Vec<Value> = vec![];
+        let mut had_super = false;
+        let mut ctor_rest: Vec<Value> = vec![];
+        for stmt in ctor_body.into_iter() {
+            if !had_super
+                && stmt["type"] == "functionCall"
+                && stmt["data"]["callee"]["type"] == "identifier"
+                && stmt["data"]["callee"]["data"]["name"] == "super"
+            {
+                super_args = stmt["data"]["args"].as_array().cloned().unwrap_or_default();
+                had_super = true;
+            } else {
+                ctor_rest.push(stmt);
+            }
+        }
+
+        // Build the installer body.
+        let mut inst_body: Vec<Value> = vec![];
+        // 1. parent installer (inherited methods/fields land first).
+        if let Some(p) = &parent {
+            let mut args: Vec<Value> = vec![js_ident("this")];
+            if had_super {
+                args.extend(super_args);
+            }
+            inst_body.push(json!({ "type": "functionCall", "data": {
+                "callee": js_ident(&format!("__install_{}", p)), "args": args } }));
+        }
+        // Tag the class name (after super, so the most-derived name wins).
+        inst_body.push(js_assign(
+            json!({ "type": "indexer", "data": { "target": js_ident("this"), "index": js_string("__class") } }),
+            js_string(&name),
+        ).unwrap());
+        // 2. methods, as closures over `this` (override any inherited binding).
+        for (mname, params, body) in methods.into_iter() {
+            let fname = format!("__m_{}__{}", name, mname);
+            inst_body.push(json!({ "type": "functionDefinition", "data": {
+                "name": fname, "params": params, "body": body } }));
+            inst_body.push(js_assign(
+                json!({ "type": "indexer", "data": { "target": js_ident("this"), "index": js_string(&mname) } }),
+                js_ident(&fname),
+            ).unwrap());
+        }
+        // 3. class-field initialisers (their lifted closures first, so `this` is
+        //    captured), applied after `super` per JS field semantics.
+        inst_body.extend(field_lifted);
+        for (fname, val) in fields.into_iter() {
+            inst_body.push(js_assign(
+                json!({ "type": "indexer", "data": { "target": js_ident("this"), "index": js_string(&fname) } }),
+                val,
+            ).unwrap());
+        }
+        // 4. the rest of the constructor body.
+        inst_body.extend(ctor_rest);
+
+        let mut installer_params: Vec<String> = vec!["this".to_string()];
+        installer_params.extend(ctor_params.iter().cloned());
+
+        let installer_def = json!({ "type": "functionDefinition", "data": {
+            "name": installer, "params": installer_params, "body": inst_body } });
+
+        // The constructor: fresh object → install → return.
+        let mut call_args: Vec<Value> = vec![js_ident("this")];
+        for p in ctor_params.iter() {
+            call_args.push(js_ident(p));
+        }
+        let ctor_body_out = vec![
+            js_def("this", json!({ "type": "object", "data": { "value": {} } })),
+            json!({ "type": "functionCall", "data": {
+                "callee": js_ident(&format!("__install_{}", name)), "args": call_args } }),
+            json!({ "type": "returnOperation", "data": { "value": js_ident("this") } }),
+        ];
+        let ctor_def = json!({ "type": "functionDefinition", "data": {
+            "name": name, "params": ctor_params, "body": ctor_body_out } });
+
+        vec![installer_def, ctor_def]
     }
 
     fn parse_if(&mut self) -> Value {
@@ -1981,6 +2143,17 @@ impl JsParser {
     }
 
     fn parse_unary(&mut self) -> Value {
+        // `new C(args)` — our class constructors are factory functions, so `new`
+        // is sugar: it drops to the constructor call (`C(args)`). `new C` without
+        // parentheses still constructs (call with no args).
+        if self.at_ident("new") {
+            self.advance();
+            let e = self.parse_postfix();
+            if e["type"] == "functionCall" {
+                return e;
+            }
+            return json!({ "type": "functionCall", "data": { "callee": e, "args": [] } });
+        }
         if self.eat_punct("!") {
             return json!({ "type": "not", "data": { "value": self.parse_unary() } });
         }
