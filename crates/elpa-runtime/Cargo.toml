@@ -15,10 +15,11 @@ xxhash-rust = { workspace = true }
 fontdue = "0.9"
 base64 = "0.22"
 bumpalo = "3.16"
+# Image + animation decoding for the async media subsystem (PNG/JPEG stills and
+# animated GIF "video"). A lean codec set keeps the wasm build small; decoding
+# runs off the render thread on native and inline on wasm — so this must be
+# available on every target (the `decode` path is shared, not native-only).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 simd-json = "0.13"
-# Image + animation decoding for the async media subsystem (PNG/JPEG stills and
-# animated GIF "video"). A lean codec set keeps the wasm build small; decoding
-# runs off the render thread on native and inline on wasm.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
