@@ -13,7 +13,7 @@ use std::{cell::RefCell, collections::HashMap, fmt, i16, rc::Rc};
 
 use std::vec;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum OperationTypes {
     DefineVar,
     AssignVar,
@@ -38,7 +38,7 @@ impl fmt::Display for OperationTypes {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ExecStates {
     AssignVarExtractName,
     AssignVarExtractIndex,
@@ -227,15 +227,15 @@ impl DefineVariable {
 
 impl Operation for DefineVariable {
     fn get_state(&self) -> ExecStates {
-        self.state.clone()
+        self.state
     }
 
     fn get_type(&self) -> OperationTypes {
-        self.typ.clone()
+        self.typ
     }
 
     fn set_state(&mut self, state: ExecStates, data: StateData) {
-        self.state = state.clone();
+        self.state = state;
         if state == ExecStates::DefineVarExtractName {
             self.var_name = Some(data.string());
         } else if state == ExecStates::DefineVarExtractValue {
@@ -278,15 +278,15 @@ impl AssignVariable {
 
 impl Operation for AssignVariable {
     fn get_state(&self) -> ExecStates {
-        self.state.clone()
+        self.state
     }
 
     fn get_type(&self) -> OperationTypes {
-        self.typ.clone()
+        self.typ
     }
 
     fn set_state(&mut self, state: ExecStates, data: StateData) {
-        self.state = state.clone();
+        self.state = state;
         if state == ExecStates::AssignVarExtractName {
             let (var_name, assign_target_type) = data.str_i16();
             self.var_name = Some(var_name.clone());
@@ -406,15 +406,15 @@ impl CallFunction {
 
 impl Operation for CallFunction {
     fn get_state(&self) -> ExecStates {
-        self.state.clone()
+        self.state
     }
 
     fn get_type(&self) -> OperationTypes {
-        self.typ.clone()
+        self.typ
     }
 
     fn set_state(&mut self, state: ExecStates, data: StateData) {
-        self.state = state.clone();
+        self.state = state;
         if state == ExecStates::CallFuncExtractFunc {
             let val = data.val_usize();
             if val.0.typ == 10 {
@@ -501,15 +501,15 @@ impl ReturnValue {
 
 impl Operation for ReturnValue {
     fn get_state(&self) -> ExecStates {
-        self.state.clone()
+        self.state
     }
 
     fn get_type(&self) -> OperationTypes {
-        self.typ.clone()
+        self.typ
     }
 
     fn set_state(&mut self, state: ExecStates, data: StateData) {
-        self.state = state.clone();
+        self.state = state;
         if state == ExecStates::ReturnValFinished {
             self.value = Some(data.val());
         }
@@ -540,15 +540,15 @@ impl IfStmt {
 
 impl Operation for IfStmt {
     fn get_state(&self) -> ExecStates {
-        self.state.clone()
+        self.state
     }
 
     fn get_type(&self) -> OperationTypes {
-        self.typ.clone()
+        self.typ
     }
 
     fn set_state(&mut self, state: ExecStates, data: StateData) {
-        self.state = state.clone();
+        self.state = state;
         if state == ExecStates::IfStmtIsConditioned {
             self.has_condition = data.boolean();
             if !self.has_condition {
@@ -589,15 +589,15 @@ impl LoopStmt {
 
 impl Operation for LoopStmt {
     fn get_state(&self) -> ExecStates {
-        self.state.clone()
+        self.state
     }
 
     fn get_type(&self) -> OperationTypes {
-        self.typ.clone()
+        self.typ
     }
 
     fn set_state(&mut self, state: ExecStates, data: StateData) {
-        self.state = state.clone();
+        self.state = state;
         if state == ExecStates::LoopStmtFinished {
             self.condition = Some(data.val());
         }
@@ -632,15 +632,15 @@ impl SwitchStmt {
 
 impl Operation for SwitchStmt {
     fn get_state(&self) -> ExecStates {
-        self.state.clone()
+        self.state
     }
 
     fn get_type(&self) -> OperationTypes {
-        self.typ.clone()
+        self.typ
     }
 
     fn set_state(&mut self, state: ExecStates, data: StateData) {
-        self.state = state.clone();
+        self.state = state;
         if state == ExecStates::SwitchStmtExtractVal {
             let (comparing_val, branch_after_start, case_count) =
                 data.val_usize2();
@@ -728,15 +728,15 @@ impl Arithmetic {
 
 impl Operation for Arithmetic {
     fn get_state(&self) -> ExecStates {
-        self.state.clone()
+        self.state
     }
 
     fn get_type(&self) -> OperationTypes {
-        self.typ.clone()
+        self.typ
     }
 
     fn set_state(&mut self, state: ExecStates, data: StateData) {
-        self.state = state.clone();
+        self.state = state;
         if state == ExecStates::ArithmeticExtractOp {
             self.op = data.i16v();
         } else if state == ExecStates::ArithmeticExtractArg1 {
@@ -778,15 +778,15 @@ impl IndexerValue {
 
 impl Operation for IndexerValue {
     fn get_state(&self) -> ExecStates {
-        self.state.clone()
+        self.state
     }
 
     fn get_type(&self) -> OperationTypes {
-        self.typ.clone()
+        self.typ
     }
 
     fn set_state(&mut self, state: ExecStates, data: StateData) {
-        self.state = state.clone();
+        self.state = state;
         if state == ExecStates::IndexerExtractVarName {
             self.var = Some(data.val());
         } else if state == ExecStates::IndexerExtractIndex {
@@ -817,15 +817,15 @@ impl NotValue {
 
 impl Operation for NotValue {
     fn get_state(&self) -> ExecStates {
-        self.state.clone()
+        self.state
     }
 
     fn get_type(&self) -> OperationTypes {
-        self.typ.clone()
+        self.typ
     }
 
     fn set_state(&mut self, state: ExecStates, data: StateData) {
-        self.state = state.clone();
+        self.state = state;
         if state == ExecStates::NotValFinished {
             self.value = Some(data.val());
         }
@@ -858,15 +858,15 @@ impl ObjectExpr {
 
 impl Operation for ObjectExpr {
     fn get_state(&self) -> ExecStates {
-        self.state.clone()
+        self.state
     }
 
     fn get_type(&self) -> OperationTypes {
-        self.typ.clone()
+        self.typ
     }
 
     fn set_state(&mut self, state: ExecStates, data: StateData) {
-        self.state = state.clone();
+        self.state = state;
         if state == ExecStates::ObjExprExtractInfo {
             let val = data.i64_i32();
             self.object_typ_id = val.0;
@@ -920,15 +920,15 @@ impl ArrayExpr {
 
 impl Operation for ArrayExpr {
     fn get_state(&self) -> ExecStates {
-        self.state.clone()
+        self.state
     }
 
     fn get_type(&self) -> OperationTypes {
-        self.typ.clone()
+        self.typ
     }
 
     fn set_state(&mut self, state: ExecStates, data: StateData) {
-        self.state = state.clone();
+        self.state = state;
         if state == ExecStates::ArrExprExtractInfo {
             self.item_count = data.i32v();
         } else if state == ExecStates::ArrExprExtractItem {
@@ -978,15 +978,15 @@ impl CondBranch {
 
 impl Operation for CondBranch {
     fn get_state(&self) -> ExecStates {
-        self.state.clone()
+        self.state
     }
 
     fn get_type(&self) -> OperationTypes {
-        self.typ.clone()
+        self.typ
     }
 
     fn set_state(&mut self, state: ExecStates, data: StateData) {
-        self.state = state.clone();
+        self.state = state;
         if state == ExecStates::CondBranchFinished {
             let (cond, tb, fb) = data.val_i64x2();
             self.condition = Some(cond);
@@ -1030,15 +1030,15 @@ impl CastOp {
 
 impl Operation for CastOp {
     fn get_state(&self) -> ExecStates {
-        self.state.clone()
+        self.state
     }
 
     fn get_type(&self) -> OperationTypes {
-        self.typ.clone()
+        self.typ
     }
 
     fn set_state(&mut self, state: ExecStates, data: StateData) {
-        self.state = state.clone();
+        self.state = state;
         if state == ExecStates::CastOprtFinished {
             let (data, tt) = data.val_str();
             self.data = Some(data);
@@ -1073,15 +1073,15 @@ impl DummyOp {
 
 impl Operation for DummyOp {
     fn get_state(&self) -> ExecStates {
-        self.state.clone()
+        self.state
     }
 
     fn get_type(&self) -> OperationTypes {
-        self.typ.clone()
+        self.typ
     }
 
     fn set_state(&mut self, state: ExecStates, _data: StateData) {
-        self.state = state.clone();
+        self.state = state;
     }
 
     fn get_data(&self) -> Vec<Val> {
@@ -1097,7 +1097,7 @@ pub struct Executor {
     program: Vec<u8>,
     cb_counter: i64,
     pending_func_result_value: Val,
-    registers: Vec<Rc<RefCell<Box<dyn Operation>>>>,
+    registers: Vec<Box<dyn Operation>>,
     _allowed_api: HashMap<String, bool>,
     run_cb_id: i64,
     exec_globally: bool,
@@ -3762,7 +3762,7 @@ impl Executor {
             }
             if main_reg.is_some() {
                 if !self.registers.is_empty() {
-                    let op_type = self.registers.last().unwrap().borrow().get_type();
+                    let op_type = self.registers.last().unwrap().get_type();
                     if op_type == OperationTypes::Dummy {
                         // A `DummyOp` is a called-function frame marker. A bare
                         // expression statement inside that body bubbles its value
@@ -3775,207 +3775,207 @@ impl Executor {
                     }
                     if op_type == OperationTypes::ArrExpr
                     {
-                        if self.registers.last().unwrap().borrow().get_state()
+                        if self.registers.last().unwrap().get_state()
                             == ExecStates::ArrExprExtractInfo
-                            || self.registers.last().unwrap().borrow().get_state()
+                            || self.registers.last().unwrap().get_state()
                                 == ExecStates::ArrExprExtractItem
                         {
-                            self.registers.last().unwrap().borrow_mut().set_state(
+                            self.registers.last_mut().unwrap().set_state(
                                 ExecStates::ArrExprExtractItem,
                                 StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
-                                self.registers.last().unwrap().borrow_mut().get_state()
+                                self.registers.last().unwrap().get_state()
                                     == ExecStates::ArrExprFinished;
                             continue;
                         }
                     } else if op_type
                         == OperationTypes::ObjExpr
                     {
-                        if self.registers.last().unwrap().borrow().get_state()
+                        if self.registers.last().unwrap().get_state()
                             == ExecStates::ObjExprExtractInfo
-                            || self.registers.last().unwrap().borrow().get_state()
+                            || self.registers.last().unwrap().get_state()
                                 == ExecStates::ObjExprExtractProp
                         {
-                            self.registers.last().unwrap().borrow_mut().set_state(
+                            self.registers.last_mut().unwrap().set_state(
                                 ExecStates::ObjExprExtractProp,
                                 StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
-                                self.registers.last().unwrap().borrow_mut().get_state()
+                                self.registers.last().unwrap().get_state()
                                     == ExecStates::ObjExprFinished;
                             continue;
                         }
                     } else if op_type
                         == OperationTypes::CallFunc
                     {
-                        if self.registers.last().unwrap().borrow().get_state()
+                        if self.registers.last().unwrap().get_state()
                             == ExecStates::CallFuncStarted
                         {
                             let arg_count = self.extract_i32() as usize;
-                            self.registers.last().unwrap().borrow_mut().set_state(
+                            self.registers.last_mut().unwrap().set_state(
                                 ExecStates::CallFuncExtractFunc,
                                 StateData::ValUsize(main_reg.take().unwrap(), arg_count),
                             );
                             main_reg = None;
                             is_reg_state_final =
-                                self.registers.last().unwrap().borrow_mut().get_state()
+                                self.registers.last().unwrap().get_state()
                                     == ExecStates::CallFuncFinished;
                             continue;
-                        } else if self.registers.last().unwrap().borrow().get_state()
+                        } else if self.registers.last().unwrap().get_state()
                             == ExecStates::CallFuncExtractFunc
-                            || self.registers.last().unwrap().borrow().get_state()
+                            || self.registers.last().unwrap().get_state()
                                 == ExecStates::CallFuncExtractParam
                         {
-                            self.registers.last().unwrap().borrow_mut().set_state(
+                            self.registers.last_mut().unwrap().set_state(
                                 ExecStates::CallFuncExtractParam,
                                 StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
-                                self.registers.last().unwrap().borrow_mut().get_state()
+                                self.registers.last().unwrap().get_state()
                                     == ExecStates::CallFuncFinished;
                             continue;
                         }
                     } else if op_type
                         == OperationTypes::ReturnVal
                     {
-                        if self.registers.last().unwrap().borrow().get_state()
+                        if self.registers.last().unwrap().get_state()
                             == ExecStates::ReturnValStarted
                         {
-                            self.registers.last().unwrap().borrow_mut().set_state(
+                            self.registers.last_mut().unwrap().set_state(
                                 ExecStates::ReturnValFinished,
                                 StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
-                                self.registers.last().unwrap().borrow_mut().get_state()
+                                self.registers.last().unwrap().get_state()
                                     == ExecStates::ReturnValFinished;
                             continue;
                         }
                     } else if op_type
                         == OperationTypes::DefineVar
                     {
-                        if self.registers.last().unwrap().borrow().get_state()
+                        if self.registers.last().unwrap().get_state()
                             == ExecStates::DefineVarExtractName
                         {
-                            self.registers.last().unwrap().borrow_mut().set_state(
+                            self.registers.last_mut().unwrap().set_state(
                                 ExecStates::DefineVarExtractValue,
                                 StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
-                                self.registers.last().unwrap().borrow_mut().get_state()
+                                self.registers.last().unwrap().get_state()
                                     == ExecStates::DefineVarExtractValue;
                             continue;
                         }
                     } else if op_type
                         == OperationTypes::AssignVar
                     {
-                        if self.registers.last().unwrap().borrow().get_state()
+                        if self.registers.last().unwrap().get_state()
                             == ExecStates::AssignVarExtractName
                         {
-                            if self.registers.last().unwrap().borrow().get_data()[1].as_i16() == 1 {
-                                self.registers.last().unwrap().borrow_mut().set_state(
+                            if self.registers.last().unwrap().get_data()[1].as_i16() == 1 {
+                                self.registers.last_mut().unwrap().set_state(
                                     ExecStates::AssignVarExtractValue,
                                     StateData::Val(main_reg.take().unwrap()),
                                 );
                                 main_reg = None;
                                 is_reg_state_final =
-                                    self.registers.last().unwrap().borrow_mut().get_state()
+                                    self.registers.last().unwrap().get_state()
                                         == ExecStates::AssignVarExtractValue;
                                 continue;
-                            } else if self.registers.last().unwrap().borrow().get_data()[1].as_i16()
+                            } else if self.registers.last().unwrap().get_data()[1].as_i16()
                                 == 2
                             {
-                                self.registers.last().unwrap().borrow_mut().set_state(
+                                self.registers.last_mut().unwrap().set_state(
                                     ExecStates::AssignVarExtractIndex,
                                     StateData::Val(main_reg.take().unwrap()),
                                 );
                                 main_reg = None;
                                 is_reg_state_final =
-                                    self.registers.last().unwrap().borrow_mut().get_state()
+                                    self.registers.last().unwrap().get_state()
                                         == ExecStates::AssignVarExtractValue;
                                 continue;
                             }
-                        } else if self.registers.last().unwrap().borrow().get_state()
+                        } else if self.registers.last().unwrap().get_state()
                             == ExecStates::AssignVarExtractIndex
                         {
-                            self.registers.last().unwrap().borrow_mut().set_state(
+                            self.registers.last_mut().unwrap().set_state(
                                 ExecStates::AssignVarExtractValue,
                                 StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
-                                self.registers.last().unwrap().borrow_mut().get_state()
+                                self.registers.last().unwrap().get_state()
                                     == ExecStates::AssignVarExtractValue;
                             continue;
                         }
                     } else if op_type
                         == OperationTypes::IfStmt
                     {
-                        if self.registers.last().unwrap().borrow().get_state()
+                        if self.registers.last().unwrap().get_state()
                             == ExecStates::IfStmtIsConditioned
                         {
-                            self.registers.last().unwrap().borrow_mut().set_state(
+                            self.registers.last_mut().unwrap().set_state(
                                 ExecStates::IfStmtFinished,
                                 StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
-                                self.registers.last().unwrap().borrow_mut().get_state()
+                                self.registers.last().unwrap().get_state()
                                     == ExecStates::IfStmtFinished;
                             continue;
                         }
                     } else if op_type
                         == OperationTypes::LoopStmt
                     {
-                        if self.registers.last().unwrap().borrow().get_state()
+                        if self.registers.last().unwrap().get_state()
                             == ExecStates::LoopStmtStarted
                         {
-                            self.registers.last().unwrap().borrow_mut().set_state(
+                            self.registers.last_mut().unwrap().set_state(
                                 ExecStates::LoopStmtFinished,
                                 StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
-                                self.registers.last().unwrap().borrow_mut().get_state()
+                                self.registers.last().unwrap().get_state()
                                     == ExecStates::LoopStmtFinished;
                             continue;
                         }
                     } else if op_type
                         == OperationTypes::SwitchStmt
                     {
-                        if self.registers.last().unwrap().borrow().get_state()
+                        if self.registers.last().unwrap().get_state()
                             == ExecStates::SwitchStmtStarted
                         {
                             let branch_after_start = self.extract_i64() as usize;
                             let case_count = self.extract_i64() as usize;
-                            self.registers.last().unwrap().borrow_mut().set_state(
+                            self.registers.last_mut().unwrap().set_state(
                                 ExecStates::SwitchStmtExtractVal,
                                 StateData::ValUsize2(main_reg.take().unwrap(), branch_after_start, case_count),
                             );
                             main_reg = None;
                             is_reg_state_final =
-                                self.registers.last().unwrap().borrow_mut().get_state()
+                                self.registers.last().unwrap().get_state()
                                     == ExecStates::SwitchStmtFinished;
                             continue;
-                        } else if self.registers.last().unwrap().borrow().get_state()
+                        } else if self.registers.last().unwrap().get_state()
                             == ExecStates::SwitchStmtExtractVal
-                            || self.registers.last().unwrap().borrow().get_state()
+                            || self.registers.last().unwrap().get_state()
                                 == ExecStates::SwitchStmtExtractCase
                         {
                             let branch_true_start = self.extract_i64() as usize;
                             let branch_true_end = self.extract_i64() as usize;
-                            self.registers.last().unwrap().borrow_mut().set_state(
+                            self.registers.last_mut().unwrap().set_state(
                                 ExecStates::SwitchStmtExtractCase,
                                 StateData::ValUsize2(main_reg.take().unwrap(), branch_true_start, branch_true_end),
                             );
                             main_reg = None;
                             is_reg_state_final =
-                                self.registers.last().unwrap().borrow_mut().get_state()
+                                self.registers.last().unwrap().get_state()
                                     == ExecStates::SwitchStmtFinished;
                             // Skip past this case's body to the next case's value
                             // expression. Without this the scan would fall into
@@ -3989,107 +3989,107 @@ impl Executor {
                     } else if op_type
                         == OperationTypes::Arithmetic
                     {
-                        if self.registers.last().unwrap().borrow().get_state()
+                        if self.registers.last().unwrap().get_state()
                             == ExecStates::ArithmeticExtractOp
                         {
-                            self.registers.last().unwrap().borrow_mut().set_state(
+                            self.registers.last_mut().unwrap().set_state(
                                 ExecStates::ArithmeticExtractArg1,
                                 StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
-                                self.registers.last().unwrap().borrow_mut().get_state()
+                                self.registers.last().unwrap().get_state()
                                     == ExecStates::ArithmeticExtractArg2;
                             continue;
-                        } else if self.registers.last().unwrap().borrow().get_state()
+                        } else if self.registers.last().unwrap().get_state()
                             == ExecStates::ArithmeticExtractArg1
                         {
-                            self.registers.last().unwrap().borrow_mut().set_state(
+                            self.registers.last_mut().unwrap().set_state(
                                 ExecStates::ArithmeticExtractArg2,
                                 StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
-                                self.registers.last().unwrap().borrow_mut().get_state()
+                                self.registers.last().unwrap().get_state()
                                     == ExecStates::ArithmeticExtractArg2;
                             continue;
                         }
                     } else if op_type
                         == OperationTypes::Indexer
                     {
-                        if self.registers.last().unwrap().borrow().get_state()
+                        if self.registers.last().unwrap().get_state()
                             == ExecStates::IndexerStarted
                         {
-                            self.registers.last().unwrap().borrow_mut().set_state(
+                            self.registers.last_mut().unwrap().set_state(
                                 ExecStates::IndexerExtractVarName,
                                 StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
-                                self.registers.last().unwrap().borrow_mut().get_state()
+                                self.registers.last().unwrap().get_state()
                                     == ExecStates::IndexerExtractIndex;
                             continue;
-                        } else if self.registers.last().unwrap().borrow().get_state()
+                        } else if self.registers.last().unwrap().get_state()
                             == ExecStates::IndexerExtractVarName
                         {
-                            self.registers.last().unwrap().borrow_mut().set_state(
+                            self.registers.last_mut().unwrap().set_state(
                                 ExecStates::IndexerExtractIndex,
                                 StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
-                                self.registers.last().unwrap().borrow_mut().get_state()
+                                self.registers.last().unwrap().get_state()
                                     == ExecStates::IndexerExtractIndex;
                             continue;
                         }
                     } else if op_type
                         == OperationTypes::NotVal
                     {
-                        if self.registers.last().unwrap().borrow().get_state()
+                        if self.registers.last().unwrap().get_state()
                             == ExecStates::NotValStarted
                         {
-                            self.registers.last().unwrap().borrow_mut().set_state(
+                            self.registers.last_mut().unwrap().set_state(
                                 ExecStates::NotValFinished,
                                 StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
-                                self.registers.last().unwrap().borrow_mut().get_state()
+                                self.registers.last().unwrap().get_state()
                                     == ExecStates::NotValFinished;
                             continue;
                         }
                     } else if op_type
                         == OperationTypes::CondBrch
                     {
-                        if self.registers.last().unwrap().borrow().get_state()
+                        if self.registers.last().unwrap().get_state()
                             == ExecStates::CondBranchStarted
                         {
                             let tb = self.extract_i64();
                             let fb = self.extract_i64();
-                            self.registers.last().unwrap().borrow_mut().set_state(
+                            self.registers.last_mut().unwrap().set_state(
                                 ExecStates::CondBranchFinished,
                                 StateData::ValI64x2(main_reg.take().unwrap(), tb, fb),
                             );
                             main_reg = None;
                             is_reg_state_final =
-                                self.registers.last().unwrap().borrow_mut().get_state()
+                                self.registers.last().unwrap().get_state()
                                     == ExecStates::CondBranchFinished;
                             continue;
                         }
                     } else if op_type
                         == OperationTypes::CastOprt
                     {
-                        if self.registers.last().unwrap().borrow().get_state()
+                        if self.registers.last().unwrap().get_state()
                             == ExecStates::CastOprtStarted
                         {
                             let tt = self.extract_str();
-                            self.registers.last().unwrap().borrow_mut().set_state(
+                            self.registers.last_mut().unwrap().set_state(
                                 ExecStates::CastOprtFinished,
                                 StateData::ValStr(main_reg.take().unwrap(), tt),
                             );
                             main_reg = None;
                             is_reg_state_final =
-                                self.registers.last().unwrap().borrow_mut().get_state()
+                                self.registers.last().unwrap().get_state()
                                     == ExecStates::CastOprtFinished;
                             continue;
                         }
@@ -4099,19 +4099,19 @@ impl Executor {
                 }
             } else if is_reg_state_final {
                 if !self.registers.is_empty() {
-                    if self.registers.last().unwrap().borrow().get_state()
+                    if self.registers.last().unwrap().get_state()
                         == ExecStates::ArrExprFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data();
+                        let regs = self.registers.last().unwrap().get_data();
                         let items_vec = regs[1].clone();
                         self.registers.pop();
                         main_reg = Some(items_vec);
                         is_reg_state_final = false;
                         continue;
-                    } else if self.registers.last().unwrap().borrow().get_state()
+                    } else if self.registers.last().unwrap().get_state()
                         == ExecStates::ObjExprFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data();
+                        let regs = self.registers.last().unwrap().get_data();
                         let typ_id = regs[0].as_i64();
                         let props_vec = regs[2].as_array();
                         let mut props_map = ValMap::default();
@@ -4131,10 +4131,10 @@ impl Executor {
                         main_reg = Some(result);
                         is_reg_state_final = false;
                         continue;
-                    } else if self.registers.last().unwrap().borrow().get_state()
+                    } else if self.registers.last().unwrap().get_state()
                         == ExecStates::CallFuncFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data();
+                        let regs = self.registers.last().unwrap().get_data();
                         let is_native = regs[1].as_bool();
                         if !is_native {
                             let func = regs[0].as_func().clone();
@@ -4177,7 +4177,7 @@ impl Executor {
                             self.end_at = func.borrow().end;
                             self.registers.pop();
                             self.registers
-                                .push(Rc::new(RefCell::new(Box::new(DummyOp::new()))));
+                                .push(Box::new(DummyOp::new()));
                             is_reg_state_final = false;
                             continue;
                         } else {
@@ -4235,10 +4235,10 @@ impl Executor {
                             ));
                             break;
                         }
-                    } else if self.registers.last().unwrap().borrow().get_state()
+                    } else if self.registers.last().unwrap().get_state()
                         == ExecStates::ReturnValFinished
                     {
-                        let data = self.registers.last().unwrap().borrow().get_data();
+                        let data = self.registers.last().unwrap().get_data();
                         let returned_val = data[0].clone();
                         self.registers.pop();
                         // A `return` exits the whole function, not just the block
@@ -4262,20 +4262,20 @@ impl Executor {
                         self.pending_func_result_value = returned_val;
                         is_reg_state_final = false;
                         continue;
-                    } else if self.registers.last().unwrap().borrow().get_state()
+                    } else if self.registers.last().unwrap().get_state()
                         == ExecStates::DefineVarExtractValue
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data();
+                        let regs = self.registers.last().unwrap().get_data();
                         let var_name = regs[0].as_string();
                         let var_value = regs[1].clone();
                         self.registers.pop();
                         self.define(var_name.clone(), var_value.clone());
                         is_reg_state_final = false;
                         continue;
-                    } else if self.registers.last().unwrap().borrow().get_state()
+                    } else if self.registers.last().unwrap().get_state()
                         == ExecStates::AssignVarExtractValue
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data();
+                        let regs = self.registers.last().unwrap().get_data();
                         let var_name = regs[0].as_string();
                         let assign_target_type = regs[1].as_i16();
                         let data = regs[3].clone();
@@ -4317,10 +4317,10 @@ impl Executor {
                         self.registers.pop();
                         is_reg_state_final = false;
                         continue;
-                    } else if self.registers.last().unwrap().borrow().get_state()
+                    } else if self.registers.last().unwrap().get_state()
                         == ExecStates::IfStmtFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data();
+                        let regs = self.registers.last().unwrap().get_data();
                         let has_condition = regs[0].as_bool();
                         let cond_val = regs[1].clone();
                         let mut condition = false;
@@ -4374,10 +4374,10 @@ impl Executor {
                         self.registers.pop();
                         is_reg_state_final = false;
                         continue;
-                    } else if self.registers.last().unwrap().borrow().get_state()
+                    } else if self.registers.last().unwrap().get_state()
                         == ExecStates::LoopStmtFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data();
+                        let regs = self.registers.last().unwrap().get_data();
                         let cond_val = regs[0].clone();
                         // JS truthiness for the loop guard (see if-statement above).
                         let condition = cond_val.truthy();
@@ -4405,10 +4405,10 @@ impl Executor {
                         self.registers.pop();
                         is_reg_state_final = false;
                         continue;
-                    } else if self.registers.last().unwrap().borrow().get_state()
+                    } else if self.registers.last().unwrap().get_state()
                         == ExecStates::SwitchStmtFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data();
+                        let regs = self.registers.last().unwrap().get_data();
                         let comparing_val = regs[0].clone();
                         let branch_after_start = regs[1].as_i64() as usize;
                         let cases = regs[3].as_array();
@@ -4442,10 +4442,10 @@ impl Executor {
                         self.registers.pop();
                         is_reg_state_final = false;
                         continue;
-                    } else if self.registers.last().unwrap().borrow().get_state()
+                    } else if self.registers.last().unwrap().get_state()
                         == ExecStates::ArithmeticExtractArg2
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data();
+                        let regs = self.registers.last().unwrap().get_data();
                         let op = regs[0].as_i16();
                         let arg1 = regs[1].clone();
                         let arg2 = regs[2].clone();
@@ -4509,10 +4509,10 @@ impl Executor {
                         }
                         is_reg_state_final = false;
                         continue;
-                    } else if self.registers.last().unwrap().borrow().get_state()
+                    } else if self.registers.last().unwrap().get_state()
                         == ExecStates::IndexerExtractIndex
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data();
+                        let regs = self.registers.last().unwrap().get_data();
                         let indexed = regs[0].clone();
                         let index = regs[1].clone();
                         self.registers.pop();
@@ -4594,10 +4594,10 @@ impl Executor {
                         }
                         is_reg_state_final = false;
                         continue;
-                    } else if self.registers.last().unwrap().borrow().get_state()
+                    } else if self.registers.last().unwrap().get_state()
                         == ExecStates::NotValFinished
                     {
-                        let data = self.registers.last().unwrap().borrow().get_data();
+                        let data = self.registers.last().unwrap().get_data();
                         let val = data[0].clone();
                         self.registers.pop();
                         // `!x` is the boolean negation of JS truthiness, defined for
@@ -4608,10 +4608,10 @@ impl Executor {
                         });
                         is_reg_state_final = false;
                         continue;
-                    } else if self.registers.last().unwrap().borrow().get_state()
+                    } else if self.registers.last().unwrap().get_state()
                         == ExecStates::CondBranchFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data();
+                        let regs = self.registers.last().unwrap().get_data();
                         let condition = regs[0].truthy();
                         let branch_true_start = regs[1].as_i64() as usize;
                         let branch_false_start = regs[2].as_i64() as usize;
@@ -4623,10 +4623,10 @@ impl Executor {
                         self.registers.pop();
                         is_reg_state_final = false;
                         continue;
-                    } else if self.registers.last().unwrap().borrow().get_state()
+                    } else if self.registers.last().unwrap().get_state()
                         == ExecStates::CastOprtFinished
                     {
-                        let regs = self.registers.last().unwrap().borrow().get_data();
+                        let regs = self.registers.last().unwrap().get_data();
                         let data = regs[0].clone();
                         let target_type = regs[1].as_string();
                         if target_type == "i16" {
@@ -5068,7 +5068,7 @@ impl Executor {
                     }
                     if popped_tag == "funcBody"
                         && !self.registers.is_empty()
-                        && self.registers.last().unwrap().borrow().get_type()
+                        && self.registers.last().unwrap().get_type()
                             == OperationTypes::Dummy
                     {
                         self.registers.pop();
@@ -5113,145 +5113,97 @@ impl Executor {
                 0xf0 => {
                     let state_holder = Arithmetic::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
-                    self.registers
-                        .last()
-                        .unwrap()
-                        .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(1 as i16));
+                        .push(Box::new(state_holder));
+                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(1 as i16));
                 }
                 // ge operator
                 0xf1 => {
                     let state_holder = Arithmetic::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
-                    self.registers
-                        .last()
-                        .unwrap()
-                        .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(2 as i16));
+                        .push(Box::new(state_holder));
+                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(2 as i16));
                 }
                 // gee operator
                 0xf2 => {
                     let state_holder = Arithmetic::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
-                    self.registers
-                        .last()
-                        .unwrap()
-                        .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(3 as i16));
+                        .push(Box::new(state_holder));
+                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(3 as i16));
                 }
                 // le operator
                 0xf3 => {
                     let state_holder = Arithmetic::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
-                    self.registers
-                        .last()
-                        .unwrap()
-                        .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(4 as i16));
+                        .push(Box::new(state_holder));
+                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(4 as i16));
                 }
                 // lee operator
                 0xf4 => {
                     let state_holder = Arithmetic::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
-                    self.registers
-                        .last()
-                        .unwrap()
-                        .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(5 as i16));
+                        .push(Box::new(state_holder));
+                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(5 as i16));
                 }
                 // inequality operator
                 0xf5 => {
                     let state_holder = Arithmetic::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
-                    self.registers
-                        .last()
-                        .unwrap()
-                        .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(6 as i16));
+                        .push(Box::new(state_holder));
+                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(6 as i16));
                 }
                 // sum operator
                 0xf6 => {
                     let state_holder = Arithmetic::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
-                    self.registers
-                        .last()
-                        .unwrap()
-                        .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(7 as i16));
+                        .push(Box::new(state_holder));
+                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(7 as i16));
                 }
                 // subtract operator
                 0xf7 => {
                     let state_holder = Arithmetic::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
-                    self.registers
-                        .last()
-                        .unwrap()
-                        .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(8 as i16));
+                        .push(Box::new(state_holder));
+                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(8 as i16));
                 }
                 // multiply operator
                 0xf8 => {
                     let state_holder = Arithmetic::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
-                    self.registers
-                        .last()
-                        .unwrap()
-                        .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(9 as i16));
+                        .push(Box::new(state_holder));
+                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(9 as i16));
                 }
                 // division operator
                 0xf9 => {
                     let state_holder = Arithmetic::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
-                    self.registers
-                        .last()
-                        .unwrap()
-                        .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(10 as i16));
+                        .push(Box::new(state_holder));
+                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(10 as i16));
                 }
                 // mod operator
                 0xfa => {
                     let state_holder = Arithmetic::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
-                    self.registers
-                        .last()
-                        .unwrap()
-                        .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(11 as i16));
+                        .push(Box::new(state_holder));
+                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(11 as i16));
                 }
                 // power operator
                 0xfb => {
                     let state_holder = Arithmetic::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
-                    self.registers
-                        .last()
-                        .unwrap()
-                        .borrow_mut()
-                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(12 as i16));
+                        .push(Box::new(state_holder));
+                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(12 as i16));
                 }
                 // not operator
                 0xfc => {
                     let state_holder = NotValue::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
+                        .push(Box::new(state_holder));
                 }
                 // cast operation
                 0xfd => {
                     let state_holder = CastOp::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
+                        .push(Box::new(state_holder));
                 }
                 // ----------------------------------
                 // program operators:
@@ -5259,13 +5211,13 @@ impl Executor {
                 0x0c => {
                     let state_holder = IndexerValue::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
+                        .push(Box::new(state_holder));
                 }
                 // function call
                 0x0d => {
                     let state_holder = CallFunction::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
+                        .push(Box::new(state_holder));
                 }
                 // definition statement
                 0x0e => {
@@ -5273,13 +5225,9 @@ impl Executor {
                         self.pointer += 1;
                         let state_holder = DefineVariable::new();
                         self.registers
-                            .push(Rc::new(RefCell::new(Box::new(state_holder))));
+                            .push(Box::new(state_holder));
                         let var_name = self.extract_str();
-                        self.registers
-                            .last()
-                            .unwrap()
-                            .borrow_mut()
-                            .set_state(ExecStates::DefineVarExtractName, StateData::Str(var_name));
+                        self.registers.last_mut().unwrap().set_state(ExecStates::DefineVarExtractName, StateData::Str(var_name));
                     }
                 }
                 // assignment statement
@@ -5288,9 +5236,9 @@ impl Executor {
                         self.pointer += 1;
                         let state_holder = AssignVariable::new();
                         self.registers
-                            .push(Rc::new(RefCell::new(Box::new(state_holder))));
+                            .push(Box::new(state_holder));
                         let var_name = self.extract_str();
-                        self.registers.last().unwrap().borrow_mut().set_state(
+                        self.registers.last_mut().unwrap().set_state(
                             ExecStates::AssignVarExtractName,
                             StateData::StrI16(var_name, 2 as i16),
                         );
@@ -5298,9 +5246,9 @@ impl Executor {
                         self.pointer += 1;
                         let state_holder = AssignVariable::new();
                         self.registers
-                            .push(Rc::new(RefCell::new(Box::new(state_holder))));
+                            .push(Box::new(state_holder));
                         let var_name = self.extract_str();
-                        self.registers.last().unwrap().borrow_mut().set_state(
+                        self.registers.last_mut().unwrap().set_state(
                             ExecStates::AssignVarExtractName,
                             StateData::StrI16(var_name, 1 as i16),
                         );
@@ -5310,22 +5258,14 @@ impl Executor {
                 0x10 => {
                     let state_holder = IfStmt::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
+                        .push(Box::new(state_holder));
                     let has_condition = self.program[self.pointer] == 0x01;
                     self.pointer += 1;
                     if has_condition {
-                        self.registers
-                            .last()
-                            .unwrap()
-                            .borrow_mut()
-                            .set_state(ExecStates::IfStmtIsConditioned, StateData::Bool(has_condition));
+                        self.registers.last_mut().unwrap().set_state(ExecStates::IfStmtIsConditioned, StateData::Bool(has_condition));
                     } else {
-                        self.registers
-                            .last()
-                            .unwrap()
-                            .borrow_mut()
-                            .set_state(ExecStates::IfStmtIsConditioned, StateData::Bool(has_condition));
-                        self.registers.last().unwrap().borrow_mut().set_state(
+                        self.registers.last_mut().unwrap().set_state(ExecStates::IfStmtIsConditioned, StateData::Bool(has_condition));
+                        self.registers.last_mut().unwrap().set_state(
                             ExecStates::IfStmtFinished,
                             StateData::Val(Val {
                                 typ: 6,
@@ -5341,13 +5281,13 @@ impl Executor {
                 0x11 => {
                     let state_holder = LoopStmt::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
+                        .push(Box::new(state_holder));
                 }
                 // switch case statement
                 0x12 => {
                     let state_holder = SwitchStmt::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
+                        .push(Box::new(state_holder));
                 }
                 // function definiton
                 0x13 => {
@@ -5381,7 +5321,7 @@ impl Executor {
                 0x14 => {
                     let state_holder = ReturnValue::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
+                        .push(Box::new(state_holder));
                 }
                 // jump command
                 0x15 => {
@@ -5392,7 +5332,7 @@ impl Executor {
                 0x16 => {
                     let state_holder = CondBranch::new();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(state_holder))));
+                        .push(Box::new(state_holder));
                 }
                 // ----------------------------------
                 // expressions
@@ -5408,13 +5348,9 @@ impl Executor {
                     let typ = self.extract_i64();
                     let props_len = self.extract_i32();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(ObjectExpr::new()))));
-                    self.registers
-                        .last()
-                        .unwrap()
-                        .borrow_mut()
-                        .set_state(ExecStates::ObjExprExtractInfo, StateData::I64I32(typ, props_len));
-                    if self.registers.last().unwrap().borrow().get_state()
+                        .push(Box::new(ObjectExpr::new()));
+                    self.registers.last_mut().unwrap().set_state(ExecStates::ObjExprExtractInfo, StateData::I64I32(typ, props_len));
+                    if self.registers.last().unwrap().get_state()
                         == ExecStates::ObjExprFinished
                     {
                         main_reg = None;
@@ -5426,13 +5362,9 @@ impl Executor {
                 9 => {
                     let arr_len = self.extract_i32();
                     self.registers
-                        .push(Rc::new(RefCell::new(Box::new(ArrayExpr::new()))));
-                    self.registers
-                        .last()
-                        .unwrap()
-                        .borrow_mut()
-                        .set_state(ExecStates::ArrExprExtractInfo, StateData::I32(arr_len));
-                    if self.registers.last().unwrap().borrow().get_state()
+                        .push(Box::new(ArrayExpr::new()));
+                    self.registers.last_mut().unwrap().set_state(ExecStates::ArrExprExtractInfo, StateData::I32(arr_len));
+                    if self.registers.last().unwrap().get_state()
                         == ExecStates::ArrExprFinished
                     {
                         main_reg = None;

@@ -3,6 +3,31 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
 
+/// Append `s` to `out` as a JSON-encoded string literal (with surrounding
+/// quotes). Mirrors the helper in `vm.rs`; kept inside `data.rs` so the
+/// streaming `stringify_into` family can escape map keys and string values
+/// without rebuilding a temporary `String` per element.
+fn push_json_string(out: &mut String, s: &str) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
 /// A fast, non-cryptographic hasher (the `FxHash` algorithm rustc itself uses)
 /// for the VM's internal string-keyed maps. Variable scopes and object fields
 /// are looked up by name on *every* access, and the default `SipHash` — built
@@ -149,18 +174,41 @@ impl Val {
         Val { typ, data }
     }
     pub fn stringify(&self) -> String {
+        // Heuristic capacity: arrays/objects amortize across many fields, so we
+        // pre-grow the buffer a bit to avoid the first few doublings. Numbers
+        // and bools stay tiny.
+        let mut out = String::with_capacity(match self.typ {
+            8 | 9 => 64,
+            _ => 16,
+        });
+        self.stringify_into(&mut out);
+        out
+    }
+    /// Append this value's JSON encoding to `out`. Avoids the per-element
+    /// `String` allocation `stringify()` would do for arrays / objects, which
+    /// matters because the host-call envelope's `gpu.submit` payload is
+    /// dominated by a long instance buffer (`data_f32: [...]`) re-emitted
+    /// every frame. Writing straight into the envelope's buffer keeps the
+    /// frame on a single, growing allocation instead of thousands of throw-
+    /// away ones.
+    pub fn stringify_into(&self, out: &mut String) {
+        use std::fmt::Write as _;
         match self.typ {
-            1 => self.as_i16().to_string(),
-            2 => self.as_i32().to_string(),
-            3 => self.as_i64().to_string(),
-            4 => self.as_f32().to_string(),
-            5 => self.as_f64().to_string(),
-            6 => self.as_bool().to_string(),
-            7 => serde_json::json!(self.as_string()).to_string(),
-            8 => self.as_object().borrow().stringify(),
-            9 => self.as_array().borrow().stringify(),
-            10 => format!("\"{}\"", self.as_func().borrow().name.clone()),
-            _ => "\"[undefined]\"".to_string(),
+            1 => { let _ = write!(out, "{}", self.as_i16()); }
+            2 => { let _ = write!(out, "{}", self.as_i32()); }
+            3 => { let _ = write!(out, "{}", self.as_i64()); }
+            4 => { let _ = write!(out, "{}", self.as_f32()); }
+            5 => { let _ = write!(out, "{}", self.as_f64()); }
+            6 => out.push_str(if self.as_bool() { "true" } else { "false" }),
+            7 => push_json_string(out, &self.as_string()),
+            8 => self.as_object().borrow().data.stringify_into(out),
+            9 => self.as_array().borrow().stringify_into(out),
+            10 => {
+                let f = self.as_func();
+                let n = &f.borrow().name;
+                push_json_string(out, n);
+            }
+            _ => out.push_str("\"[undefined]\""),
         }
     }
     fn clone_data(&self) -> Self {
@@ -316,18 +364,29 @@ impl ValGroup {
         ValGroup::new(copied)
     }
     pub fn stringify(&self) -> String {
-        // Build into a single buffer (push_str) instead of re-`format!`ing the
-        // whole accumulator each iteration, which was O(n²) in the value count.
-        // Output is byte-identical to the previous implementation.
-        let mut result = String::from("{");
+        let mut out = String::with_capacity(self.data.len() * 24 + 4);
+        self.stringify_into(&mut out);
+        out
+    }
+    /// Append this group's JSON encoding to `out` (the streaming counterpart of
+    /// [`stringify`]). Keys are emitted as JSON strings (correctly escaped)
+    /// instead of being printed verbatim — the previous form would have
+    /// produced invalid JSON for any key containing a quote, backslash, or
+    /// control character; the streaming path makes that correct without
+    /// introducing per-key allocation.
+    pub fn stringify_into(&self, out: &mut String) {
+        out.push('{');
         for (index, (k, v)) in self.data.iter().enumerate() {
-            result.push_str(if index > 0 { ", \"" } else { " \"" });
-            result.push_str(k);
-            result.push_str("\": ");
-            result.push_str(&v.stringify());
+            if index > 0 {
+                out.push_str(", ");
+            } else {
+                out.push(' ');
+            }
+            push_json_string(out, k);
+            out.push_str(": ");
+            v.stringify_into(out);
         }
-        result.push_str(" }");
-        result
+        out.push_str(" }");
     }
 }
 
@@ -377,17 +436,27 @@ impl Array {
         Array::new(self.data.iter().map(|item| item.clone_data()).collect())
     }
     pub fn stringify(&self) -> String {
-        // Linear single-buffer build (was O(n²) via repeated `format!`).
-        // Output is byte-identical to the previous implementation.
-        let mut result = String::from("[");
+        // Pre-size for a typical numeric array (~12 chars per number including
+        // separator); strings and nested arrays grow on demand. Significantly
+        // reduces re-allocs for the per-frame instance buffer.
+        let mut out = String::with_capacity(self.data.len() * 12 + 2);
+        self.stringify_into(&mut out);
+        out
+    }
+    /// Streaming-append counterpart of [`stringify`]. The instance buffer the
+    /// material kit re-submits every frame is a `Vec<Val>` of thousands of
+    /// floats — its `stringify()` is the single largest allocation per frame.
+    /// Writing each element straight into the host-call envelope's buffer
+    /// avoids that allocation entirely.
+    pub fn stringify_into(&self, out: &mut String) {
+        out.push('[');
         for (index, v) in self.data.iter().enumerate() {
             if index > 0 {
-                result.push_str(", ");
+                out.push_str(", ");
             }
-            result.push_str(&v.stringify());
+            v.stringify_into(out);
         }
-        result.push(']');
-        result
+        out.push(']');
     }
 }
 
