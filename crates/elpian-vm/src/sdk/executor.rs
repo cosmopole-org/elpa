@@ -3700,6 +3700,68 @@ impl Executor {
             Some(Rc::new(RefCell::new(ValGroup::new(map))))
         }
     }
+    /// Capture only the closure's *free variables* (computed by the compiler)
+    /// from the enclosing non-global scopes — the innermost binding of each name
+    /// wins, matching lexical resolution. This replaces snapshotting the entire
+    /// scope chain: a closure pays only for the upvalues it actually uses, both
+    /// to create and to seed on each call. Names not found in an enclosing scope
+    /// (globals, or a closure's own not-yet-declared locals) are simply omitted
+    /// and resolve normally at run time.
+    fn capture_named(&self, names: &[String]) -> Option<Rc<RefCell<ValGroup>>> {
+        if self.ctx.memory.len() <= 1 || names.is_empty() {
+            return None;
+        }
+        let mut map: ValMap = ValMap::default();
+        for name in names {
+            for scope in self.ctx.memory[1..].iter().rev() {
+                let found = scope.borrow().memory.borrow().data.get(name).cloned();
+                if let Some(v) = found {
+                    map.insert(name.clone(), v);
+                    break;
+                }
+            }
+        }
+        if map.is_empty() {
+            None
+        } else {
+            Some(Rc::new(RefCell::new(ValGroup::new(map))))
+        }
+    }
+    /// Resolve a class method for `receiver.key` through the object's `__proto`
+    /// chain (set by a `class` constructor), returning the method *bound* to the
+    /// receiver. Binding reuses the closure mechanism: the shared top-level method
+    /// function is cloned with a one-entry captured env `{ this: receiver }`, so
+    /// the existing call path seeds `this` into the frame at no extra machinery —
+    /// and, crucially, the method itself is never installed per instance. Returns
+    /// `None` when `key` is not a method anywhere on the chain.
+    fn bind_proto_method(&self, receiver: &Val, key: &str) -> Option<Val> {
+        let mut proto = receiver
+            .as_object()
+            .borrow()
+            .data
+            .data
+            .get("__proto")
+            .cloned();
+        while let Some(p) = proto {
+            if p.typ != 8 {
+                break;
+            }
+            let (entry, parent) = {
+                let pb = p.as_object();
+                let b = pb.borrow();
+                (b.data.data.get(key).cloned(), b.data.data.get("__parent").cloned())
+            };
+            if let Some(m) = entry {
+                if m.typ == 10 {
+                    let bound = m.as_func().borrow().bind(receiver.clone());
+                    return Some(Val { typ: 10, data: Payload::from(Rc::new(RefCell::new(bound))) });
+                }
+                return Some(m);
+            }
+            proto = parent;
+        }
+        None
+    }
     pub fn run_from(
         &mut self,
         start: usize,
@@ -4154,6 +4216,10 @@ impl Executor {
                                     args.insert(k.clone(), v.clone());
                                 }
                             }
+                            // A bound method receives its receiver as `this`.
+                            if let Some(receiver) = func.borrow().this_arg.clone() {
+                                args.insert("this".to_string(), receiver);
+                            }
                             for (i, param_name) in expected_params.iter().enumerate() {
                                 let arg = provided_args.get(i).cloned().unwrap_or_else(|| {
                                     Val::new(0, Payload::Null)
@@ -4518,10 +4584,14 @@ impl Executor {
                         self.registers.pop();
                         if index.typ == 7 {
                             if indexed.typ == 8 {
-                                let obj_ref = indexed.as_object();
-                                let obj = obj_ref.borrow();
-                                if let Some(o) = obj.data.data.get(&index.as_string()).clone() {
-                                    main_reg = Some(o.clone());
+                                let key = index.as_string();
+                                let own = indexed.as_object().borrow().data.data.get(&key).cloned();
+                                if let Some(o) = own {
+                                    main_reg = Some(o);
+                                } else if let Some(bound) = self.bind_proto_method(&indexed, &key) {
+                                    // Not an own field: a class method, bound to the
+                                    // receiver, so `obj.method(args)` runs with `this`.
+                                    main_reg = Some(bound);
                                 } else {
                                     main_reg = Some(Val {
                                         typ: 0,
@@ -5298,14 +5368,22 @@ impl Executor {
                         let p_name = self.extract_str();
                         param_names.push(p_name);
                     }
+                    // Free-variable list (compiler-computed): the enclosing names
+                    // this function references.
+                    let free_count = self.extract_i32();
+                    let mut free_names = vec![];
+                    for _i in 0..free_count {
+                        free_names.push(self.extract_str());
+                    }
                     let func_start = self.extract_i64() as usize;
                     let func_end = self.extract_i64() as usize;
                     let mut func =
                         Function::new(func_name.clone(), func_start, func_end, param_names);
                     // A function defined inside another function closes over the
-                    // enclosing locals (e.g. a factory returning a counter). At
-                    // top level there is nothing to capture and this is a no-op.
-                    func.captured = self.capture_env();
+                    // enclosing locals it uses (e.g. a factory returning a
+                    // counter). Capture just those free variables; at top level
+                    // there is nothing to capture and this is a no-op.
+                    func.captured = self.capture_named(&free_names);
                     self.define(
                         func_name.clone(),
                         Val {

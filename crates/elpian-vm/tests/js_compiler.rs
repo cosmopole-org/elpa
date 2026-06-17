@@ -358,6 +358,29 @@ fn statement_after_control_block_does_not_unbalance_in_called_fn() {
 }
 
 #[test]
+fn closure_captures_only_referenced_free_vars_transitively() {
+    // Free-variable capture must be transitive: `mid` does not itself use `base`,
+    // but the closure it returns does — so `base` has to flow through `mid`'s
+    // capture even though `mid`'s own body never names it. Also exercises that a
+    // closure surrounded by many unrelated locals still resolves the ones it uses.
+    let js = "
+        function make(base) {
+            let noise1 = 100; let noise2 = 200; let noise3 = 300;
+            let mid = (k) => {
+                let local = k + 1;            // uses only its param + an inner closure
+                return () => base + local;    // inner closure needs `base` (grandparent)
+            };
+            return mid;
+        }
+        function f() {
+            let mid = make(10);
+            let inner = mid(5);   // local = 6
+            return inner();       // base 10 + local 6 = 16
+        }";
+    assert_eq!(run_js_and_call("js-fv-transitive", js, "f"), "16");
+}
+
+#[test]
 fn class_methods_and_this() {
     // A plain class: constructor sets a field, a method reads `this` and an
     // argument. `new C(...)` and a bare `C(...)` call construct identically.

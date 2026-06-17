@@ -255,6 +255,139 @@ fn serialize_condition_chain(
     (result, baps)
 }
 
+// ---- free-variable (closure capture) analysis ------------------------------
+//
+// A closure only needs to snapshot the enclosing locals it actually references
+// — not the whole scope chain. For each `functionDefinition` the compiler walks
+// the body and computes the set of identifiers it uses that are *not* bound
+// within it (its own params, `let`/`const`/`var` declarations, and nested
+// function names), unioned transitively with the free variables of any nested
+// closures (so an upvalue needed only by an inner closure still flows through).
+// This list is serialised with the function; at runtime the executor captures
+// just these names from the enclosing frames (see `capture_named`) instead of
+// cloning every local — far cheaper to create a closure, and a smaller frame to
+// seed on every call. Names that turn out to be globals simply aren't found in
+// the enclosing scopes and resolve normally, exactly as before.
+
+/// Identifiers bound *at this function's own level*: nested-function names and
+/// `let`/`const`/`var` declarations, including those inside its `if`/`loop`/
+/// `switch` blocks — but never descending into a nested function's body (that is
+/// a separate scope). References to these resolve locally, so they are not free.
+fn collect_bound(node: &Value, bound: &mut std::collections::BTreeSet<String>) {
+    match node["type"].as_str().unwrap_or("") {
+        "definition" => {
+            if let Some(n) = node["data"]["leftSide"]["data"]["name"].as_str() {
+                bound.insert(n.to_string());
+            }
+        }
+        "functionDefinition" => {
+            if let Some(n) = node["data"]["name"].as_str() {
+                bound.insert(n.to_string());
+            }
+            // Do not descend: the nested function's locals are its own scope.
+        }
+        "ifStmt" => {
+            let d = &node["data"];
+            if let Some(b) = d["body"].as_array() { for s in b { collect_bound(s, bound); } }
+            if d.get("elseifStmt").is_some() { collect_bound(&d["elseifStmt"], bound); }
+            if let Some(e) = d.get("elseStmt") {
+                if let Some(b) = e["data"]["body"].as_array() { for s in b { collect_bound(s, bound); } }
+            }
+        }
+        "loopStmt" => {
+            if let Some(b) = node["data"]["body"].as_array() { for s in b { collect_bound(s, bound); } }
+        }
+        "switchStmt" => {
+            if let Some(cases) = node["data"]["cases"].as_array() {
+                for c in cases {
+                    if let Some(b) = c["body"]["body"].as_array() { for s in b { collect_bound(s, bound); } }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Identifiers *referenced* in `node` (and the free variables of nested
+/// closures, which must flow through this scope). A `definition`'s left side is
+/// a binding, not a use; a nested `functionDefinition` contributes its own free
+/// set rather than its raw identifiers.
+fn collect_used(node: &Value, used: &mut std::collections::BTreeSet<String>) {
+    match node["type"].as_str().unwrap_or("") {
+        "identifier" => {
+            if let Some(n) = node["data"]["name"].as_str() { used.insert(n.to_string()); }
+        }
+        "functionDefinition" => {
+            let nparams = node["data"]["params"].as_array().cloned().unwrap_or_default();
+            let nbody = node["data"]["body"].as_array().cloned().unwrap_or_default();
+            for f in free_vars(&nparams, &nbody) { used.insert(f); }
+        }
+        "indexer" => {
+            collect_used(&node["data"]["target"], used);
+            collect_used(&node["data"]["index"], used);
+        }
+        "functionCall" => {
+            collect_used(&node["data"]["callee"], used);
+            if let Some(args) = node["data"]["args"].as_array() { for a in args { collect_used(a, used); } }
+        }
+        "arithmetic" => {
+            collect_used(&node["data"]["operand1"], used);
+            collect_used(&node["data"]["operand2"], used);
+        }
+        "not" | "cast" => collect_used(&node["data"]["value"], used),
+        "definition" => collect_used(&node["data"]["rightSide"], used),
+        "assignment" => {
+            collect_used(&node["data"]["leftSide"], used);
+            collect_used(&node["data"]["rightSide"], used);
+        }
+        "returnOperation" => collect_used(&node["data"]["value"], used),
+        "object" => {
+            if let Some(obj) = node["data"]["value"].as_object() {
+                for (_k, v) in obj { collect_used(v, used); }
+            }
+        }
+        "array" => {
+            if let Some(arr) = node["data"]["value"].as_array() {
+                for v in arr { collect_used(v, used); }
+            }
+        }
+        "ifStmt" => {
+            let d = &node["data"];
+            collect_used(&d["condition"], used);
+            if let Some(b) = d["body"].as_array() { for s in b { collect_used(s, used); } }
+            if d.get("elseifStmt").is_some() { collect_used(&d["elseifStmt"], used); }
+            if let Some(e) = d.get("elseStmt") {
+                if let Some(b) = e["data"]["body"].as_array() { for s in b { collect_used(s, used); } }
+            }
+        }
+        "loopStmt" => {
+            collect_used(&node["data"]["condition"], used);
+            if let Some(b) = node["data"]["body"].as_array() { for s in b { collect_used(s, used); } }
+        }
+        "switchStmt" => {
+            collect_used(&node["data"]["value"], used);
+            if let Some(cases) = node["data"]["cases"].as_array() {
+                for c in cases {
+                    collect_used(&c["value"], used);
+                    if let Some(b) = c["body"]["body"].as_array() { for s in b { collect_used(s, used); } }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The free variables of a function: identifiers it (transitively) references,
+/// minus everything bound at its own level (params, locals, nested-fn names).
+fn free_vars(params: &[Value], body: &[Value]) -> Vec<String> {
+    let mut bound: std::collections::BTreeSet<String> =
+        params.iter().filter_map(|p| p.as_str().map(|s| s.to_string())).collect();
+    for stmt in body { collect_bound(stmt, &mut bound); }
+    let mut used: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for stmt in body { collect_used(stmt, &mut used); }
+    used.into_iter().filter(|n| !bound.contains(n)).collect()
+}
+
 pub fn compile_ast(program: serde_json::Value, start_point: usize) -> Vec<u8> {
     let mut result: Vec<u8> = vec![];
     let mut op_counter: i64 = 1;
@@ -399,6 +532,20 @@ pub fn compile_ast(program: serde_json::Value, start_point: usize) -> Vec<u8> {
                     let mut str_bytes = p_name.as_str().unwrap().as_bytes().to_vec();
                     let mut len_bytes = i32::to_be_bytes(str_bytes.len() as i32).to_vec();
                     result.append(&mut len_bytes);
+                    result.append(&mut str_bytes);
+                }
+                // Free-variable (closure capture) list: the enclosing names this
+                // function references, so the runtime captures only these rather
+                // than cloning the whole enclosing scope.
+                let empty_params = vec![];
+                let frees = free_vars(
+                    operation["data"]["params"].as_array().unwrap_or(&empty_params),
+                    operation["data"]["body"].as_array().unwrap_or(&empty_params),
+                );
+                result.append(&mut i32::to_be_bytes(frees.len() as i32).to_vec());
+                for f in frees.iter() {
+                    let mut str_bytes = f.as_bytes().to_vec();
+                    result.append(&mut i32::to_be_bytes(str_bytes.len() as i32).to_vec());
                     result.append(&mut str_bytes);
                 }
                 let func_start = start_point + result.len() + 8 + 8;
@@ -1781,11 +1928,10 @@ impl JsParser {
         json!({ "type": "functionDefinition", "data": { "name": name, "params": params, "body": body } })
     }
 
-    // ---- classes (desugared to factory functions) ---------------------------
+    // ---- classes (desugared to shared prototype + factory constructor) -------
     //
-    // ES6 `class` syntax is lowered, entirely in the front-end, onto the value
-    // model the VM already runs — closures and plain objects — so no new opcode
-    // or executor change is needed. For
+    // ES6 `class` syntax is lowered, in the front-end, onto plain objects + a
+    // shared prototype. For
     //
     //     class C extends P {
     //         field = init;
@@ -1793,19 +1939,25 @@ impl JsParser {
     //         greet(n) { return this.x + n; }
     //     }
     //
-    // two `functionDefinition`s are emitted:
+    // it emits:
     //
-    //   * an *installer* `__install_C(this, a)` that (1) runs the parent
-    //     installer on the same object so inherited methods/fields land first,
-    //     (2) binds each method as a closure over `this` (overriding the parent),
-    //     (3) applies class-field initialisers, then (4) runs the constructor
-    //     body (with the leading `super(...)` removed — it became step 1);
-    //   * a *constructor* `C(a)` that makes a fresh object, tags it with its
-    //     class name, runs `__install_C`, and returns it.
+    //   * each method as a *shared, top-level* function `__m_C__greet(n)` (defined
+    //     once for the whole program, not per instance — so construction allocates
+    //     no closures and method calls pay no capture-copy cost). `this` is not a
+    //     declared parameter: when a method is read off an object the executor
+    //     binds it to the receiver (see `bind_proto_method` / the indexer), so the
+    //     body uses `this` as an ordinary local.
+    //   * a prototype object `__proto_C = { __parent: __proto_P, greet: __m_C__greet }`
+    //     built once, with `__parent` linking the inheritance chain.
+    //   * an initialiser `__init_C(this, a)` that chains to `__init_P` (the leading
+    //     `super(...)`), applies class-field initialisers, then runs the rest of
+    //     the constructor body — `this` is an explicit parameter here.
+    //   * a constructor `C(a)` = `let this = { __proto: __proto_C }; __init_C(this, a);
+    //     return this;`. `new C(a)` and a bare `C(a)` both run it.
     //
-    // `this` is therefore an ordinary local the executor resolves by name, and a
-    // method is just a closure stored in a field — both already supported. `new`
-    // is optional sugar (see `parse_unary`); `C(a)` constructs all the same.
+    // The executor change this relies on is small and isolated: on a field miss,
+    // the indexer resolves the name through the object's `__proto` chain and
+    // returns the method bound to the receiver. No new opcode.
     fn parse_class(&mut self) -> Vec<Value> {
         self.expect_ident("class");
         let name = self.expect_ident_name();
@@ -1855,8 +2007,6 @@ impl JsParser {
         // parsing; they belong at the head of the installer body.
         let field_lifted: Vec<Value> = self.lifted.split_off(lifted_mark);
 
-        let installer = format!("__install_{}", name);
-
         // Extract a leading `super(...)` call from the constructor body, if any.
         let mut super_args: Vec<Value> = vec![];
         let mut had_super = false;
@@ -1874,65 +2024,77 @@ impl JsParser {
             }
         }
 
-        // Build the installer body.
-        let mut inst_body: Vec<Value> = vec![];
-        // 1. parent installer (inherited methods/fields land first).
+        let mut out: Vec<Value> = vec![];
+
+        // 1. Methods as *shared, top-level* functions (defined once, not per
+        //    instance). `this` is supplied by the method-dispatch path — when a
+        //    method is read off an object it is bound to the receiver via the
+        //    closure machinery — so it is not a declared parameter; the body
+        //    references it as an ordinary local. A `__proto_<Class>` object maps
+        //    each method name to its function, with `__parent` linking the chain.
+        let mut proto_map = serde_json::Map::new();
+        if let Some(p) = &parent {
+            proto_map.insert("__parent".to_string(), js_ident(&format!("__proto_{}", p)));
+        } else {
+            proto_map.insert("__parent".to_string(), js_int(0));
+        }
+        for (mname, params, body) in methods.into_iter() {
+            let fname = format!("__m_{}__{}", name, mname);
+            out.push(json!({ "type": "functionDefinition", "data": {
+                "name": fname, "params": params, "body": body } }));
+            proto_map.insert(mname.clone(), js_ident(&fname));
+        }
+
+        // 2. The per-instance initialiser: chain to the parent initialiser
+        //    (`super`), apply class-field initialisers, then run the constructor
+        //    body. `this` is an explicit parameter here (the constructor passes the
+        //    freshly-made instance). No method closures are created per instance.
+        let mut init_body: Vec<Value> = vec![];
         if let Some(p) = &parent {
             let mut args: Vec<Value> = vec![js_ident("this")];
             if had_super {
                 args.extend(super_args);
             }
-            inst_body.push(json!({ "type": "functionCall", "data": {
-                "callee": js_ident(&format!("__install_{}", p)), "args": args } }));
+            init_body.push(json!({ "type": "functionCall", "data": {
+                "callee": js_ident(&format!("__init_{}", p)), "args": args } }));
         }
-        // Tag the class name (after super, so the most-derived name wins).
-        inst_body.push(js_assign(
-            json!({ "type": "indexer", "data": { "target": js_ident("this"), "index": js_string("__class") } }),
-            js_string(&name),
-        ).unwrap());
-        // 2. methods, as closures over `this` (override any inherited binding).
-        for (mname, params, body) in methods.into_iter() {
-            let fname = format!("__m_{}__{}", name, mname);
-            inst_body.push(json!({ "type": "functionDefinition", "data": {
-                "name": fname, "params": params, "body": body } }));
-            inst_body.push(js_assign(
-                json!({ "type": "indexer", "data": { "target": js_ident("this"), "index": js_string(&mname) } }),
-                js_ident(&fname),
-            ).unwrap());
-        }
-        // 3. class-field initialisers (their lifted closures first, so `this` is
-        //    captured), applied after `super` per JS field semantics.
-        inst_body.extend(field_lifted);
+        // Class-field initialisers (their lifted closures first, so they capture
+        // `this`), applied after `super` per JS field-initialiser semantics.
+        init_body.extend(field_lifted);
         for (fname, val) in fields.into_iter() {
-            inst_body.push(js_assign(
+            init_body.push(js_assign(
                 json!({ "type": "indexer", "data": { "target": js_ident("this"), "index": js_string(&fname) } }),
                 val,
             ).unwrap());
         }
-        // 4. the rest of the constructor body.
-        inst_body.extend(ctor_rest);
+        init_body.extend(ctor_rest);
+        let mut init_params: Vec<String> = vec!["this".to_string()];
+        init_params.extend(ctor_params.iter().cloned());
+        out.push(json!({ "type": "functionDefinition", "data": {
+            "name": format!("__init_{}", name), "params": init_params, "body": init_body } }));
 
-        let mut installer_params: Vec<String> = vec!["this".to_string()];
-        installer_params.extend(ctor_params.iter().cloned());
+        // 3. The shared prototype, built once at class-definition time.
+        out.push(js_def(&format!("__proto_{}", name),
+            json!({ "type": "object", "data": { "value": Value::Object(proto_map) } })));
 
-        let installer_def = json!({ "type": "functionDefinition", "data": {
-            "name": installer, "params": installer_params, "body": inst_body } });
-
-        // The constructor: fresh object → install → return.
+        // 4. The constructor: a fresh object linked to the prototype, initialised,
+        //    and returned. `new C(...)` and a bare `C(...)` both run this.
+        let mut this_obj = serde_json::Map::new();
+        this_obj.insert("__proto".to_string(), js_ident(&format!("__proto_{}", name)));
         let mut call_args: Vec<Value> = vec![js_ident("this")];
         for p in ctor_params.iter() {
             call_args.push(js_ident(p));
         }
         let ctor_body_out = vec![
-            js_def("this", json!({ "type": "object", "data": { "value": {} } })),
+            js_def("this", json!({ "type": "object", "data": { "value": Value::Object(this_obj) } })),
             json!({ "type": "functionCall", "data": {
-                "callee": js_ident(&format!("__install_{}", name)), "args": call_args } }),
+                "callee": js_ident(&format!("__init_{}", name)), "args": call_args } }),
             json!({ "type": "returnOperation", "data": { "value": js_ident("this") } }),
         ];
-        let ctor_def = json!({ "type": "functionDefinition", "data": {
-            "name": name, "params": ctor_params, "body": ctor_body_out } });
+        out.push(json!({ "type": "functionDefinition", "data": {
+            "name": name, "params": ctor_params, "body": ctor_body_out } }));
 
-        vec![installer_def, ctor_def]
+        out
     }
 
     fn parse_if(&mut self) -> Value {
