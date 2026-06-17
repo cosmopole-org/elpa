@@ -298,6 +298,11 @@ let _CLEAR = [0.0, 0.0, 0.0, 0.0];
 // source gets a stable texture handle whose contents the frame clock refreshes,
 // so advancing a video frame is just a texture re-upload, no relayout.
 let _media = {};            // key -> load/playback state
+let _mediaRef = {};         // media keys referenced by the *visible* tree this render
+                            // — sources absent here are off-screen and so are not
+                            // polled or advanced, which is what stops a video (or a
+                            // never-resolving network image) on an inactive tab from
+                            // driving a full re-submit / poll host call every frame.
 let _imgTex = {};           // handle -> { w, h, ver, up, data, lastFrameN }  (texture contents)
 let _imgHandle = {};        // media key -> numeric texture handle
 let _imgHandleN = 0;        // handle allocator
@@ -1547,6 +1552,8 @@ function _imgTexId(handle, w, h) { return concat(concat(concat(concat("elpa.m3.i
 // Register a media source (idempotent) and kick off its off-thread load. `src` is
 // `{ url }` (network) or `{ path }` (storage); `video` marks an animated source.
 function _mediaEnsure(key, src, video) {
+    // Mark this source visible this render so the frame clock keeps it live.
+    _mediaRef[key] = 1.0;
     let handle = _mediaHandle(key); let hk = str(handle);
     if (!has(_imgTex, hk)) { _imgTex[hk] = { w: 1, h: 1, ver: 0, up: 0.0, data: _IMG_PLACEHOLDER, lastFrameN: -1 }; }
     if (!has(_media, key)) {
@@ -1602,6 +1609,12 @@ function _mediaTick() {
     let changed = 0.0; let ks = keys(_media);
     for (let i = 0; i < len(ks); i++) {
         let key = ks[i]; let m = _media[key];
+        // Only drive sources that are actually on screen. An off-screen source
+        // (a video on an inactive tab, a drawer banner while the drawer is closed)
+        // is left untouched: no `media.poll` host call, and — crucially — no frame
+        // advance, so it cannot report `changed` and force a full re-submit every
+        // frame. It resumes the moment it becomes visible again.
+        if (!has(_mediaRef, key)) { continue; }
         _mediaPollOne(key);
         let playing = 1.0; if (has(m, "_playing")) { playing = m._playing; }
         if (_mediaAdvance(key, playing) > 0.5) { changed = 1.0; }
@@ -2215,6 +2228,8 @@ function _bucketLayers(node, dyn) {
 // Re-emit the whole tree with the current theme (no fn re-run), used while the
 // light/dark cross-fade is in flight since it recolors every component.
 function _repaintAll() {
+    // Repaints the whole tree (theme cross-fade), so rebuild the visible-media set.
+    _mediaRef = {};
     _paint(_root, _vw * 0.5, _vh * 0.5);
     _inst = _root._out; _taps = _root._taps; _drags = _root._drags;
     _submit();
@@ -2277,6 +2292,10 @@ function _renderApp() {
     let si = askHost("gpu.surfaceInfo", []);
     _setMetrics(si);
     _hasKey = 0.0; _hasWheel = 0.0; _hasFocusInput = 0.0;
+    // A full render repaints the whole tree, so the visible-media set is rebuilt
+    // from scratch: any source not re-marked below is now off-screen (e.g. a video
+    // on a tab we just navigated away from) and the frame clock will leave it be.
+    _mediaRef = {};
     _mount(_root, _NULL);
     _paint(_root, _vw * 0.5, _vh * 0.5);
     _inst = _root._out; _taps = _root._taps; _drags = _root._drags;

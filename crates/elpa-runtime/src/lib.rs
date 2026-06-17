@@ -13,9 +13,6 @@
 //!      └──────────────── continue_execution ◀─────┘   (until done)
 //! ```
 
-#[cfg(not(target_arch = "wasm32"))]
-use simd_json;
-
 use elpa_protocol::{Definition, Frame, HostCall, Layer};
 use elpian_vm::api;
 
@@ -131,7 +128,7 @@ pub fn frame_from_submit(call: &HostCall) -> Option<Frame> {
             }
         }
         let mut buf2 = call.payload.as_bytes().to_vec();
-        return simd_json::from_slice::<Frame>(&mut buf2).ok();
+        simd_json::from_slice::<Frame>(&mut buf2).ok()
     }
 
     #[cfg(target_arch = "wasm32")]
