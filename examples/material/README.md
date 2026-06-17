@@ -7,10 +7,10 @@ component runtime; an app uses them as a black box and never touches the GPU.
 
 | File | What it is |
 |------|------------|
-| [`assets/elpa-material.js`](assets/elpa-material.js) | **The SDK.** The rounded-rect SDF pipeline, the glyph font (now with digits + symbols), a vector icon set, the responsive layout coordinator, the M3 colors/sizes, ~50 widget constructors (layout, Material, content, charts, media), the platform-service wrappers (storage/clock/network), and the retained-tree component runtime (`defineComponent` / `runApp`, with per-component `update`) whose internals end in `gpu.submit`. |
+| [`assets/sdk/`](assets/sdk) | **The SDK** — an object-oriented framework split into single-responsibility modules (concatenated in dependency order by `lib.rs`): `00-data` (the two WGSL shaders, the glyph font, the M3 accent palettes, shared constants), `10-engine` (the `Painter`, `Theme`, `Metrics`, `FontEngine`, `IconEngine`, `MediaEngine` and `AnimationClock` services — each owning its own state), `20-widget` (the `Widget` base class: the measure/paint/compose/mount protocol), `30/31/32-widgets-*` (the ~50-widget catalog as `Widget` subclasses — layout, Material, media/charts), `40-runtime` (`ComponentNode` + the `Material` runtime: mount, partial update, the per-frame animation clock, the event loop and the `gpu.submit` frame builder), and `50-api` (the single `Material` instance, the public widget constructors, `defineComponent`/`runApp`, the theme/responsive/font controls and the platform-service wrappers). Apps never touch the GPU. |
 | [`assets/demo.js`](assets/demo.js) | **The original app.** Declares state, composes a widget tree from the SDK's widgets (including custom components), and calls `runApp`. No `gpu.submit`, no glyphs, no coordinates. |
 | [`assets/gallery.js`](assets/gallery.js) | **The widget gallery.** A second app that showcases the *extended* widget set across four bottom-nav sections (Layout · Widgets · Charts · Media), a navigation drawer, a modal dialog and a snackbar, plus the storage/clock/network wrappers. |
-| `src/lib.rs` | Embeds the JS (`MODULE_JS`, `DEMO_JS`, `GALLERY_JS`) and links them with [`program`] / [`gallery_program`]. |
+| `src/lib.rs` | Embeds the SDK modules + the apps and links them with [`program`] / [`gallery_program`] (`module_js()` joins the `assets/sdk/*.js` modules into one source). |
 | `tests/run.rs` | Runs the original demo on a headless `Elpa` instance end to end — first paint, tap/key/wheel interaction, animation, resize — and validates the WGSL with `naga`. |
 | `tests/gallery.rs` | Runs the gallery end to end: first paint, section switching, list scrolling, text input, modal overlays, the drawer animation, and a storage round-trip — all as **one** instanced draw over the same shader. |
 
@@ -91,9 +91,13 @@ cycles) and the animated light/dark theme live in the SDK.
 
 The SDK and app are plain JavaScript that Elpa's in-VM front-end lowers to the
 same Elpian AST a hand-written program would produce. It leans on the subset's
-**arrow functions / closures** (tap callbacks, the component `update`, function
-values stored in widget fields and invoked as `widget.onTap()`), `if`/`for`,
-objects, arrays, member assignment, and `askHost(api, [args])`. The SDK and the
+**ES6 `class`es** (the SDK is built from them — engine services, the `Widget`
+hierarchy and the runtime, with `constructor`, instance methods, `this`, single
+inheritance via `extends`/`super(...)`, and `new`), **arrow functions / closures**
+(tap callbacks, the component `update`, function values stored in widget fields
+and invoked as `widget.onTap()` — and methods, which the front-end lowers to
+exactly such closures over a `this` object), `if`/`for`, objects, arrays, member
+assignment, and `askHost(api, [args])`. The SDK and the
 app run in **one** VM — Elpa's `vm.import` runs a module in a separate, disposed
 VM, so its functions would not be callable; [`program`] therefore links the SDK
 ahead of the app, like `import 'package:flutter/material.dart'`.
@@ -113,7 +117,7 @@ smaller demo instead. Headless (either app, through a real VM + WGSL validation)
 cargo test -p elpa-material
 ```
 
-Edit the SDK in [`assets/elpa-material.js`](assets/elpa-material.js) and the apps
+Edit the SDK in [`assets/sdk/`](assets/sdk) and the apps
 in [`assets/demo.js`](assets/demo.js) / [`assets/gallery.js`](assets/gallery.js)
 — there is no generator step; the JS *is* the framework.
 

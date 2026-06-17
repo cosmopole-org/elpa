@@ -8,8 +8,8 @@ exercise in the SDK demo.
 
 One codebase targets **desktop (Windows/macOS/Linux) and Android**:
 
-- [`../material/assets/elpa-material.js`](../material/assets/elpa-material.js) — the
-  Material SDK linked into this native app.
+- [`../material/assets/sdk/`](../material/assets/sdk) — the object-oriented
+  Material SDK (class modules) linked into this native app.
 - [`../material/assets/demo.js`](../material/assets/demo.js) — the interactive
   demo script linked after the SDK.
 - [`src/lib.rs`](src/lib.rs) — the cross-platform window + render loop. The
