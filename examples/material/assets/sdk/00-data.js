@@ -223,6 +223,12 @@ let IMG_PLACEHOLDER = "9PT2/w==";
 // ---- small shared helpers (pure functions, no state) -------------------------
 function clamp01(v) { if (v < 0.0) { return 0.0; } if (v > 1.0) { return 1.0; } return v; }
 function sel(a, b) { if (a == b) { return 1.0; } return 0.0; }
+// Append every element of `src` onto `dst` in place. Used to assemble a node's
+// instance/tap/drag streams: a single linear pass that grows one accumulator,
+// instead of `dst = concat(dst, src)` per child (which re-copies the whole
+// growing accumulator each time — quadratic, and costly on the per-frame
+// reassembly path where the body buffer is large).
+function appendAll(dst, src) { for (let i = 0; i < len(src); i++) { push(dst, src[i]); } }
 function inRect(px, py, cx, cy, hw, hh) {
     if (px >= cx - hw) { if (px <= cx + hw) { if (py >= cy - hh) { if (py <= cy + hh) { return true; } } } }
     return false;
