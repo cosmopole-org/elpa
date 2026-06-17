@@ -12,6 +12,9 @@
 use base64::Engine as _;
 use ahash::AHashMap as HashMap;
 use std::io::Cursor;
+// Shared ownership of the results map is only needed by the native threaded
+// engine; the wasm engine decodes inline and owns its map outright.
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Arc, Mutex};
 
 /// A host-supplied, thread-safe binary fetcher (e.g. a blocking HTTP GET). The
@@ -40,6 +43,9 @@ pub enum MediaSource {
     Bytes(Vec<u8>),
 }
 
+// The shared results map is only used by the native (threaded) engine; the wasm
+// engine decodes inline and owns its map directly.
+#[cfg(not(target_arch = "wasm32"))]
 type Results = Arc<Mutex<HashMap<String, MediaState>>>;
 
 /// Decode raw bytes into RGBA8 frames. Animated GIFs become multi-frame
