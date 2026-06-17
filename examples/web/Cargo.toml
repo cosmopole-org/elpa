@@ -26,6 +26,9 @@ console_error_panic_hook = "0.1"
 version = "0.3"
 features = [
     "Window",
+    "Location",
+    "Performance",
+    "console",
     "Document",
     "Element",
     "HtmlElement",

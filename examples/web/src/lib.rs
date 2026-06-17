@@ -314,17 +314,56 @@ fn install_keyboard(window: &web_sys::Window, app: Rc<RefCell<App>>) {
     up.forget();
 }
 
-/// Drive continuous animation via `requestAnimationFrame`.
+/// Drive continuous animation via `requestAnimationFrame`. When the page URL
+/// carries `?perf=1`, each batch of 60 frames is summarised to `console.log`
+/// (mean / p50 / p95 / max ms per `animate()` call) for the headless perf
+/// scripts in `scripts/web-frame-perf.js`; otherwise the loop is the same as
+/// before, with no measurement overhead at all.
 fn start_raf(window: web_sys::Window, app: Rc<RefCell<App>>) {
     let f: Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>> = Rc::new(RefCell::new(None));
     let g = f.clone();
     let mut last = 0.0f64;
     let win = window.clone();
 
+    let perf_enabled = window
+        .location()
+        .search()
+        .ok()
+        .map(|s| s.contains("perf=1"))
+        .unwrap_or(false);
+    let perf = if perf_enabled { window.performance() } else { None };
+    let mut samples: Vec<f64> = if perf_enabled {
+        Vec::with_capacity(60)
+    } else {
+        Vec::new()
+    };
+
     *g.borrow_mut() = Some(Closure::new(move |ts: f64| {
         let dt = if last == 0.0 { 16.0 } else { ts - last };
         last = ts;
-        app.borrow_mut().animate(dt);
+        if let Some(p) = perf.as_ref() {
+            let t0 = p.now();
+            app.borrow_mut().animate(dt);
+            let t1 = p.now();
+            samples.push(t1 - t0);
+            if samples.len() >= 60 {
+                samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let n = samples.len();
+                let mean = samples.iter().sum::<f64>() / n as f64;
+                let p50 = samples[n / 2];
+                let p95 = samples[(n * 95) / 100];
+                let max = samples[n - 1];
+                web_sys::console::log_1(
+                    &format!(
+                        "[elpa-frame] n={n} mean={mean:.1}ms p50={p50:.1}ms p95={p95:.1}ms max={max:.1}ms"
+                    )
+                    .into(),
+                );
+                samples.clear();
+            }
+        } else {
+            app.borrow_mut().animate(dt);
+        }
         win.request_animation_frame(f.borrow().as_ref().unwrap().as_ref().unchecked_ref())
             .unwrap();
     }));

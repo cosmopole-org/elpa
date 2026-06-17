@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::sdk::{compiler, data::Val, executor::Executor};
 
@@ -335,16 +335,39 @@ impl VM {
         match op_code {
             0x01 => payload,
             0x02 => {
-                let params = payload.as_array().borrow().data.clone();
+                // Build the host-call envelope by direct string concatenation
+                // rather than `json!({…}).to_string()`. The previous form put
+                // `payload` (which is itself a JSON string emitted by `stringify`)
+                // *as* a JSON string value, forcing serde_json to re-escape every
+                // byte. The embedder then had to JSON-parse the wrapper, JSON-
+                // un-escape the payload string, *and* JSON-parse the payload —
+                // three full passes over a buffer that, for a `gpu.submit` carrying
+                // a fat instance buffer, dominates per-frame cost. Here payload is
+                // spliced in **raw**, machine_id and api_name are escaped only
+                // for their string slots, and the wrapper still parses as plain
+                // JSON on the other side — but the payload survives as a single
+                // contiguous JSON object the runtime can parse once.
+                let params_arr = payload.as_array();
+                let params = params_arr.borrow();
                 self.pending_host_call_id = cb_id;
-                self.sending_host_call_data = Some(
-                    json!({
-                        "machineId": self.machine_id,
-                        "apiName": params[0].as_string(),
-                        "payload": params[2].stringify(),
-                    })
-                    .to_string(),
+                let api_name = params.data[0].as_string();
+                // Build the envelope as one growing buffer, streaming the
+                // payload directly into it via `stringify_into` instead of
+                // materialising a separate payload `String` first. The
+                // payload is typically the dominant size (a per-frame instance
+                // buffer of thousands of numbers), so cutting the intermediate
+                // copy halves the allocation traffic of `gpu.submit`.
+                let mut envelope = String::with_capacity(
+                    self.machine_id.len() + api_name.len() + 1024,
                 );
+                envelope.push_str("{\"machineId\":");
+                push_json_string(&mut envelope, &self.machine_id);
+                envelope.push_str(",\"apiName\":");
+                push_json_string(&mut envelope, &api_name);
+                envelope.push_str(",\"payload\":");
+                params.data[2].stringify_into(&mut envelope);
+                envelope.push('}');
+                self.sending_host_call_data = Some(envelope);
                 Val::new(253, Payload::Null)
             }
             // 0x05 = paused (continuation preserved); 0x06 = terminated/trapped
@@ -355,4 +378,28 @@ impl VM {
             _ => Val::new(0, Payload::Null),
         }
     }
+}
+
+/// Append `s` to `out` as a JSON-encoded string literal (with surrounding
+/// quotes). Hand-rolled so the host-call envelope can be built by simple
+/// concatenation without paying for `serde_json::to_string` on the whole
+/// envelope; the wrapper around `gpu.submit` is hit every frame.
+fn push_json_string(out: &mut String, s: &str) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
 }
