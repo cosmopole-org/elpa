@@ -16,4 +16,5 @@ elpa-runtime = { path = "../elpa-runtime" }
 elpian-vm = { path = "../elpian-vm" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+ahash = { workspace = true }
 wgpu = { version = "29", features = ["webgl", "wgsl"], optional = true, default-features = false }

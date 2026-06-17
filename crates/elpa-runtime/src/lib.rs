@@ -13,6 +13,9 @@
 //!      └──────────────── continue_execution ◀─────┘   (until done)
 //! ```
 
+#[cfg(not(target_arch = "wasm32"))]
+use simd_json;
+
 use elpa_protocol::{Definition, Frame, HostCall, Layer};
 use elpian_vm::api;
 
@@ -109,23 +112,37 @@ impl Runtime {
 /// Parse a `gpu.submit` host call's payload into a [`Frame`]. The VM wraps
 /// `askHost` arguments in a JSON array, so the payload is `[<frame>]`; this
 /// unwraps it.
+///
+/// On native targets this uses simd-json for SIMD-accelerated parsing; on
+/// wasm32 it falls back to serde_json (no SIMD intrinsics available there).
 pub fn frame_from_submit(call: &HostCall) -> Option<Frame> {
     if call.api_name != "gpu.submit" {
         return None;
     }
-    // Fast path: deserialize the payload *straight into* the typed `Frame`,
-    // skipping the intermediate `serde_json::Value` tree the previous
-    // `from_str::<Value>` + `from_value` built — that tree allocated a `BTreeMap`
-    // (plus owned `String` keys) for every object node in the frame, hundreds per
-    // submit, on the hot per-frame path. The VM wraps `askHost` arguments in a
-    // one-element array, so the payload is normally `[<frame>]`.
-    if let Ok(mut frames) = serde_json::from_str::<Vec<Frame>>(&call.payload) {
-        if !frames.is_empty() {
-            return Some(frames.remove(0));
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // simd-json mutates its input buffer in place for speed, so we need an
+        // owned byte vec. The VM wraps arguments in a one-element array normally.
+        let mut buf = call.payload.as_bytes().to_vec();
+        if let Ok(mut frames) = simd_json::from_slice::<Vec<Frame>>(&mut buf) {
+            if !frames.is_empty() {
+                return Some(frames.remove(0));
+            }
         }
+        let mut buf2 = call.payload.as_bytes().to_vec();
+        return simd_json::from_slice::<Frame>(&mut buf2).ok();
     }
-    // Fallback: a bare (unwrapped) frame object.
-    serde_json::from_str::<Frame>(&call.payload).ok()
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        if let Ok(mut frames) = serde_json::from_str::<Vec<Frame>>(&call.payload) {
+            if !frames.is_empty() {
+                return Some(frames.remove(0));
+            }
+        }
+        serde_json::from_str::<Frame>(&call.payload).ok()
+    }
 }
 
 /// Unwrap the single argument of an `askHost` payload. The VM wraps call

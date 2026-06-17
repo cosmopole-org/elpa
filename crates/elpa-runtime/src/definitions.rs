@@ -14,7 +14,8 @@
 //! forever. Because the realized frame is rebuilt host-side, the wire payload
 //! the VM sends stays tiny no matter how deep the composition.
 
-use std::collections::{HashMap, HashSet};
+use ahash::{AHashMap as HashMap, AHashSet as HashSet};
+use xxhash_rust::xxh3::Xxh3;
 
 use elpa_protocol::{
     Definition, DefinitionBody, EncoderCommand, Frame, RenderCommand, RenderPass, ResourceDesc,
@@ -47,27 +48,62 @@ impl std::fmt::Display for ExpandError {
 
 impl std::error::Error for ExpandError {}
 
+struct Xxh3Writer(Xxh3);
+impl std::io::Write for Xxh3Writer {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.update(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Hash a definition's content so the expansion cache can detect staleness.
+fn definition_hash(def: &Definition) -> u64 {
+    let mut w = Xxh3Writer(Xxh3::new());
+    let _ = serde_json::to_writer(&mut w, def);
+    w.0.digest()
+}
+
 /// A registry of named [`Definition`]s. Persists across `gpu.submit` calls so a
 /// definition registered once is referenceable by every later frame.
+///
+/// Content hashes are computed once at registration time and cached. The pass
+/// hashing in the renderer can fold these in to detect transitive changes
+/// without re-serializing definition bodies on every frame.
 #[derive(Debug, Default, Clone)]
 pub struct DefinitionStore {
     defs: HashMap<String, Definition>,
+    /// Cached content hashes, computed once on [`register`] and reused until
+    /// the definition is replaced or removed. Avoids re-serializing the body on
+    /// every `expand` or pass-hash call.
+    cached_hashes: HashMap<String, u64>,
 }
 
 impl DefinitionStore {
     pub fn new() -> Self {
-        Self { defs: HashMap::new() }
+        Self { defs: HashMap::new(), cached_hashes: HashMap::new() }
     }
 
     /// Register (or replace) a definition. Replacing under the same id lets an
     /// app hot-swap a drawing's internals while all references keep working.
     pub fn register(&mut self, def: Definition) {
+        let h = definition_hash(&def);
+        self.cached_hashes.insert(def.id.clone(), h);
         self.defs.insert(def.id.clone(), def);
     }
 
     /// Remove a definition. Returns whether one was present.
     pub fn unregister(&mut self, id: &str) -> bool {
+        self.cached_hashes.remove(id);
         self.defs.remove(id).is_some()
+    }
+
+    /// Content hash of a registered definition (0 if unknown). Cached at
+    /// registration — no serialization on the frame hot path.
+    pub fn definition_hash(&self, id: &str) -> u64 {
+        self.cached_hashes.get(id).copied().unwrap_or(0)
     }
 
     pub fn get(&self, id: &str) -> Option<&Definition> {
@@ -89,6 +125,7 @@ impl DefinitionStore {
     /// Drop every registered definition.
     pub fn clear(&mut self) {
         self.defs.clear();
+        self.cached_hashes.clear();
     }
 
     /// Resolve all `useDefinition` references in `frame` into a flat frame.

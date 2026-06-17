@@ -10,7 +10,7 @@
 //! guest drives everything from its frame tick.
 
 use base64::Engine as _;
-use std::collections::HashMap;
+use ahash::AHashMap as HashMap;
 use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 

@@ -10,8 +10,7 @@
 //!    non-skipped passes / copies / writes in order, and present scissored to the
 //!    accumulated dirty region. A fully-cached frame does *no* GPU work.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use xxhash_rust::xxh3::Xxh3;
 
 use elpa_protocol::{EncoderCommand, Frame, RenderCommand, RenderPass};
 
@@ -245,21 +244,21 @@ impl<B: GpuBackend> Renderer<B> {
     /// Hash a render pass including the hashes of resources it references, so a
     /// changed buffer/pipeline invalidates the pass automatically.
     fn hash_render_pass(&self, rp: &RenderPass) -> u64 {
-        let mut h = DefaultHasher::new();
-        content_hash(rp).hash(&mut h);
+        let mut h = Xxh3::new();
+        h.update(&content_hash(rp).to_le_bytes());
         for id in rp.referenced_resources() {
-            self.resources.resource_hash(&id).hash(&mut h);
+            h.update(&self.resources.resource_hash(&id).to_le_bytes());
         }
-        h.finish()
+        h.digest()
     }
 
     fn hash_compute_pass(&self, cp: &elpa_protocol::ComputePass) -> u64 {
-        let mut h = DefaultHasher::new();
-        content_hash(cp).hash(&mut h);
+        let mut h = Xxh3::new();
+        h.update(&content_hash(cp).to_le_bytes());
         for id in cp.referenced_resources() {
-            self.resources.resource_hash(&id).hash(&mut h);
+            h.update(&self.resources.resource_hash(&id).to_le_bytes());
         }
-        h.finish()
+        h.digest()
     }
 
     /// Add a surface pass's scissor rects to the dirty region; if it has none,
