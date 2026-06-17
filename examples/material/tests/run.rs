@@ -28,7 +28,9 @@ fn kit_shader_is_valid_wgsl() {
     collect_wgsl(&ast, &mut shaders);
     shaders.sort();
     shaders.dedup();
-    assert_eq!(shaders.len(), 1, "the whole kit shares one rounded-rect shader");
+    // Two pipelines: the rounded-rect SDF shader (every widget/chart/glyph) and
+    // the image shader (real network/storage textures, streaming video frames).
+    assert_eq!(shaders.len(), 2, "the kit has the SDF and image shaders");
     for src in &shaders {
         let module = naga::front::wgsl::parse_str(src)
             .unwrap_or_else(|e| panic!("WGSL parse failed: {}", e.emit_to_string(src)));

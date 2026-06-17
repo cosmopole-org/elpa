@@ -29,6 +29,7 @@
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
+use crate::media::{MediaEngine, MediaFetcher, MediaSource};
 use elpa_protocol::HostCall;
 use serde_json::{json, Value};
 
@@ -413,6 +414,12 @@ pub struct HostEnv {
     /// provider simply has no default atlas and callers fall back to their own
     /// vector text — the call still never traps.
     default_font: Option<(Vec<u8>, Vec<u8>)>,
+    /// The async media engine (image/animated-GIF decode → RGBA frames), started
+    /// lazily on the first `media.*` call. `media_fetcher` holds the host-supplied
+    /// binary fetcher until then; on native the engine moves it onto a worker
+    /// thread so loads run off the render loop.
+    media: Option<MediaEngine>,
+    media_fetcher: Option<MediaFetcher>,
 }
 
 /// The default UI font — **Roboto** (Apache-2.0), Material Design's canonical
@@ -434,7 +441,7 @@ impl Default for HostEnv {
 
 impl HostEnv {
     pub fn new(fs: Box<dyn FileStore>, net: Box<dyn NetProvider>) -> Self {
-        HostEnv { toggles: EnvToggles::default(), fs, net, clock_ms: 0, rng_state: 0x9E3779B97F4A7C15, atlas_cache: BTreeMap::new(), default_font: None }
+        HostEnv { toggles: EnvToggles::default(), fs, net, clock_ms: 0, rng_state: 0x9E3779B97F4A7C15, atlas_cache: BTreeMap::new(), default_font: None, media: None, media_fetcher: None }
     }
 
     pub fn toggles(&self) -> EnvToggles {
@@ -464,6 +471,15 @@ impl HostEnv {
     pub fn set_net(&mut self, net: Box<dyn NetProvider>) {
         self.net = net;
     }
+    /// Install the binary fetcher the async media engine uses to download media
+    /// by URL. It must be `Send` because, on native, the engine runs it on a
+    /// worker thread so fetch+decode never block the render loop. Storage-path
+    /// media doesn't need it (the host reads those bytes itself). Set this before
+    /// the first `media.*` call; it is consumed when the engine starts.
+    pub fn set_media_fetcher(&mut self, fetcher: MediaFetcher) {
+        self.media_fetcher = Some(fetcher);
+        self.media = None; // restart the engine with the new fetcher on next use
+    }
     /// Advance the stand-in clock (a real host would not need this).
     pub fn tick(&mut self, ms: u64) {
         self.clock_ms = self.clock_ms.saturating_add(ms);
@@ -481,8 +497,63 @@ impl HostEnv {
             "time" => Some(self.service_time(call)),
             "random" => Some(self.service_random(call)),
             "text" => Some(self.service_text(call)),
+            "media" => Some(self.service_media(call)),
             _ => None,
         }
+    }
+
+    /// `media.*` — asynchronous image / animated-GIF loading.
+    ///   media.open  { id, url? , path? }  -> { ok }     (non-blocking; kicks off load)
+    ///   media.poll  { id }                -> { ok, ready, width, height, frames, ... }
+    ///   media.frame { id, index }         -> { ok, ready, width, height, data(b64 RGBA8) }
+    fn service_media(&mut self, call: &HostCall) -> String {
+        let arg = first_arg(&call.payload).unwrap_or(Value::Null);
+        match call.api_name.as_str() {
+            "media.open" => {
+                let id = obj_str(&arg, "id");
+                if id.is_empty() {
+                    return err_reply("media.open requires an id");
+                }
+                // Resolve the source: a storage path is read here (fast, local);
+                // a URL is handed to the engine to fetch off-thread.
+                let source = if let Some(path) = str_field(&arg, "path") {
+                    if !self.toggles.filesystem {
+                        return err_reply("filesystem interface disabled");
+                    }
+                    match self.fs.read(&path) {
+                        Ok(bytes) => MediaSource::Bytes(bytes),
+                        Err(e) => return err_reply(&e),
+                    }
+                } else if let Some(url) = str_field(&arg, "url") {
+                    if !self.toggles.network {
+                        return err_reply("network interface disabled");
+                    }
+                    MediaSource::Url(url)
+                } else {
+                    return err_reply("media.open requires a url or path");
+                };
+                self.media_engine().open(&id, source);
+                json!({ "ok": true }).to_string()
+            }
+            "media.poll" => {
+                let id = obj_str(&arg, "id");
+                self.media_engine().poll_json(&id).to_string()
+            }
+            "media.frame" => {
+                let id = obj_str(&arg, "id");
+                let index = arg.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                self.media_engine().frame_json(&id, index).to_string()
+            }
+            other => err_reply(&format!("unknown media api: {other}")),
+        }
+    }
+
+    /// The media engine, started on first use (moving the fetcher onto its worker).
+    fn media_engine(&mut self) -> &mut MediaEngine {
+        if self.media.is_none() {
+            self.media = Some(MediaEngine::start(self.media_fetcher.take()));
+        }
+        self.media.as_mut().expect("media engine started")
     }
 
     fn service_fs(&mut self, call: &HostCall) -> String {

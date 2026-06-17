@@ -66,8 +66,8 @@ pub use elpian_vm::api::{Capability, CapabilitySet, ResourceLimits, ResourceUsag
 // embedded WGSL shader in a JS-authored module without running it).
 pub use elpian_vm::api::compile_js_to_ast;
 pub use elpa_runtime::{
-    ClosureNet, EnvToggles, FileStore, MemoryFileStore, NativeFileStore, NetProvider, NetRequest,
-    NetResponse,
+    ClosureNet, EnvToggles, FileStore, MediaFetcher, MemoryFileStore, NativeFileStore, NetProvider,
+    NetRequest, NetResponse,
 };
 
 static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);

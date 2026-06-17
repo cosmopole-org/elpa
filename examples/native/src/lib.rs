@@ -192,6 +192,13 @@ impl ElpaApp {
             toggles.network = true;
             app.env_mut().set_toggles(toggles);
             app.env_mut().set_net(Box::new(NativeNet));
+            // The async media engine runs this fetcher on its own worker thread, so
+            // downloading + decoding an image / animated GIF never blocks the render
+            // loop. `ureq` is a blocking client (fine off the render thread).
+            app.env_mut().set_media_fetcher(Box::new(|url: &str| {
+                let mut resp = ureq::get(url).call().map_err(|e| e.to_string())?;
+                resp.body_mut().read_to_vec().map_err(|e| e.to_string())
+            }));
         }
         app.start(); // run top-level program (init + first frame)
 

@@ -31,9 +31,11 @@ fn instances(app: &Elpa<HeadlessBackend>) -> Vec<f32> {
 }
 
 #[test]
-fn gallery_shares_one_shader() {
-    // The whole extended kit — every new widget, every chart — still renders
-    // through exactly one rounded-rect SDF shader.
+fn gallery_shaders_are_valid_wgsl() {
+    // The kit renders through two pipelines: the rounded-rect SDF shader that
+    // draws every widget/chart/glyph, and a dedicated image shader that samples
+    // real (network/storage) RGBA textures for images and streaming video. Both
+    // must be valid WGSL.
     let ast: serde_json::Value =
         serde_json::from_str(&elpa::compile_js_to_ast(elpa_material::MODULE_JS.to_string()))
             .unwrap();
@@ -41,7 +43,7 @@ fn gallery_shares_one_shader() {
     collect_wgsl(&ast, &mut shaders);
     shaders.sort();
     shaders.dedup();
-    assert_eq!(shaders.len(), 1, "the whole extended kit shares one shader");
+    assert_eq!(shaders.len(), 2, "the kit has exactly the SDF and image shaders");
     for src in &shaders {
         let module = naga::front::wgsl::parse_str(src)
             .unwrap_or_else(|e| panic!("WGSL parse failed: {}", e.emit_to_string(src)));

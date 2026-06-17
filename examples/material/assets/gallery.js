@@ -35,7 +35,7 @@ registerIcon("download", "M12 3 L12 14 M7 10 L12 15 L17 10 M5 19 L19 19", 24.0);
 
 // A small reusable custom widget (a captioned control), defined once.
 let Labeled = defineComponent(function(props, update) {
-    return Column({ gap: 1.0, cross: "start", children: [
+    return Column({ gap: 1.6, cross: "start", children: [
         Text(props.label, { size: "caption" }),
         props.child,
     ] });
@@ -87,7 +87,7 @@ function galLayout(update) {
     push(k, galWrapDemo(update));
     push(k, galStackDemo());
     push(k, galGridDemo());
-    return ListView({ id: "layoutList", width: 92.0, height: 70.0, gap: 3.0, children: k });
+    return ListView({ id: "layoutList", width: 92.0, height: 70.0, gap: 4.5, children: k });
 }
 
 // ============================ widgets section =================================
@@ -96,7 +96,9 @@ function galFieldDemo(update) {
         onChange: (v) => { fieldText = v; update(); } });
 }
 function galIconRow(update) {
-    return Row({ gap: 3.0, children: [
+    // A full-width action row: the controls spread evenly across the content
+    // column (`main: "around"`) instead of huddling in the centre.
+    return Row({ width: 88.0, main: "around", children: [
         IconButton({ icon: "heart", onTap: () => { likes = likes + 1; update(); } }),
         IconButton({ icon: "star", onTap: () => { update(); } }),
         IconButton({ icon: "settings", onTap: () => { update(); } }),
@@ -104,7 +106,10 @@ function galIconRow(update) {
     ] });
 }
 function galSegDemo(update) {
-    return SegmentedButton({ segments: ["DAY", "WEEK", "MONTH"], index: seg, onChange: (i) => { seg = i; update(); } });
+    // Full-width segmented control (a tab-bar-style selector) rather than a
+    // shrunken pill floating in the middle of the row.
+    return SegmentedButton({ segments: ["DAY", "WEEK", "MONTH"], index: seg, width: 88.0,
+        onChange: (i) => { seg = i; update(); } });
 }
 function galTileA(update) {
     return ListTile({ leading: "person", title: "ADA LOVELACE", subtitle: "FIRST PROGRAMMER", trailing: "check",
@@ -119,15 +124,17 @@ function galExpansionDemo(update) {
         child: Padding({ pad: 2.0, child: Text("REVEALED CONTENT INSIDE THE TILE.", { size: "body" }) }) });
 }
 function galProgRow() {
-    return Row({ gap: 5.0, children: [
+    return Row({ width: 88.0, main: "around", children: [
         Labeled({ label: "PROGRESS", child: CircularProgress({ id: "cp1", value: 0.62 }) }),
         Labeled({ label: "AVATAR", child: Avatar({ icon: "person" }) }),
     ] });
 }
 function galBtnRow(update) {
-    return Row({ gap: 3.0, children: [
-        FilledButton({ label: "DIALOG", onTap: () => { dlgOpen = 1.0; update(); } }),
-        OutlinedButton({ label: "SNACK", onTap: () => { snackOn = 1.0; update(); } }),
+    // The two actions share the full width equally (`Expanded`), filling the row
+    // instead of sitting as two small pills with dead space around them.
+    return Row({ width: 88.0, gap: 4.0, children: [
+        Expanded({ child: FilledButton({ label: "DIALOG", onTap: () => { dlgOpen = 1.0; update(); } }) }),
+        Expanded({ child: OutlinedButton({ label: "SNACK", onTap: () => { snackOn = 1.0; update(); } }) }),
     ] });
 }
 // Typography: real font sizing (named roles + explicit px) and weights, all from
@@ -163,7 +170,7 @@ function galWidgets(update) {
     push(k, Banner({ icon: "bell", message: "3 UPDATES AVAILABLE" }));
     push(k, galTypeDemo());
     push(k, galSvgRow());
-    return ListView({ id: "widgetsList", width: 92.0, height: 70.0, gap: 3.0, children: k });
+    return ListView({ id: "widgetsList", width: 92.0, height: 70.0, gap: 4.5, children: k });
 }
 
 // ============================ charts section ==================================
@@ -194,15 +201,21 @@ function galCharts(update) {
     push(k, galPieDemo());
     push(k, galSparkDemo());
     push(k, galTableDemo());
-    return ListView({ id: "chartsList", width: 92.0, height: 70.0, gap: 3.0, children: k });
+    return ListView({ id: "chartsList", width: 92.0, height: 70.0, gap: 4.5, children: k });
 }
 
 // ============================ media section ===================================
+// A real network image, decoded off the render thread and shown as a GPU
+// texture (a placeholder fills the frame until it lands).
 function galImageDemo() {
-    return Image({ width: 88.0, height: 36.0, radius: 2.0, label: "PLACEHOLDER IMAGE" });
+    return Image({ width: 88.0, height: 36.0, radius: 2.0,
+        url: "https://picsum.photos/seed/elpa/640/360", label: "NETWORK IMAGE" });
 }
+// Real streaming video: an animated GIF fetched from the network and decoded to
+// RGBA frames off-thread, advanced by the frame clock while playing.
 function galVideoDemo(update) {
     return VideoPlayer({ id: "vid", width: 88.0, height: 40.0, playing: playing, value: vpos,
+        url: "https://upload.wikimedia.org/wikipedia/commons/2/2c/Rotating_earth_%28large%29.gif",
         onToggle: () => { playing = 1.0 - playing; update(); },
         onSeek: (v) => { vpos = v; update(); } });
 }
@@ -232,7 +245,7 @@ function galMedia(update) {
     push(k, galStorageTile());
     push(k, galNetTile());
     push(k, galSaveBtn(update));
-    return ListView({ id: "mediaList", width: 92.0, height: 70.0, gap: 3.0, children: k });
+    return ListView({ id: "mediaList", width: 92.0, height: 70.0, gap: 4.5, children: k });
 }
 
 function galBody(update) {
@@ -243,10 +256,26 @@ function galBody(update) {
 }
 
 // ============================ root component ==================================
+// The bottom navigation's four destinations.
 function galMenuItems() {
     return [
         { icon: "home", label: "LAYOUT" }, { icon: "settings", label: "WIDGETS" },
         { icon: "chart", label: "CHARTS" }, { icon: "video", label: "MEDIA" },
+    ];
+}
+// The drawer's menu: the same four destinations grouped under a section caption,
+// then a divider and a second group of (decorative) destinations — exercising
+// section headers, dividers and more than three entries. Only `{ icon, label }`
+// rows count toward the selected index, so the first four align with `tab`.
+function galDrawerItems() {
+    return [
+        { section: "BROWSE" },
+        { icon: "home", label: "LAYOUT" }, { icon: "settings", label: "WIDGETS" },
+        { icon: "chart", label: "CHARTS" }, { icon: "video", label: "MEDIA" },
+        { divider: 1 },
+        { section: "LIBRARY" },
+        { icon: "heart", label: "FAVORITES" }, { icon: "download", label: "DOWNLOADS" },
+        { icon: "bell", label: "NOTIFICATIONS" },
     ];
 }
 function galKey(k, update) {
@@ -283,8 +312,12 @@ let App = defineComponent(function(props, update) {
         fab: Fab({ onTap: () => { accent = (accent + 1) % 4; update(); } }),
         bottomBar: NavigationBar({ index: tab, items: items, onChange: (i) => { tab = i; update(); } }),
         body: galBody(update),
-        drawer: Drawer({ open: menuOpen, header: "SECTIONS", index: tab, items: items,
-            onSelect: (i) => { tab = i; menuOpen = 0.0; update(); },
+        drawer: Drawer({ open: menuOpen, header: "ELPA GALLERY", subtitle: "DESIGN SYSTEM DEMO",
+            avatarIcon: "person", image: "https://picsum.photos/seed/elpanav/600/320",
+            index: tab, items: galDrawerItems(),
+            // The first four destinations switch sections; the decorative extras
+            // just acknowledge with a snackbar. Either way the drawer closes.
+            onSelect: (i) => { if (i < 4) { tab = i; } else { snackOn = 1.0; } menuOpen = 0.0; update(); },
             onClose: () => { menuOpen = 0.0; update(); } }),
     };
     if (dlgOpen > 0.5) { sc.dialog = galDialog(update); }

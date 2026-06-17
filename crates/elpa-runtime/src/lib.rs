@@ -18,8 +18,10 @@ use elpian_vm::api;
 
 pub mod definitions;
 pub mod host_env;
+pub mod media;
 pub mod scope;
 pub use definitions::{DefinitionStore, ExpandError};
+pub use media::{MediaFetcher, MediaFrame, MediaSource, MediaState};
 pub use scope::{LayerStore, ScopeStats};
 pub use host_env::{
     ClosureNet, DeniedNet, EnvToggles, FileStat, FileStore, HostEnv, MemoryFileStore, NativeFileStore,
