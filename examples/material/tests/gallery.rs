@@ -1,9 +1,11 @@
 //! Run the extended widget *gallery* (JavaScript) on a real (headless) Elpa
 //! instance. Where `run.rs` proves the original kit, this proves the additions:
-//! the layout widgets, the broader Material catalog, charts and media all mount,
-//! measure, paint, and `gpu.submit` as one instanced rounded-rect draw over the
-//! *same* shared SDF pipeline — and that section switching, scrolling, text
-//! input, modal overlays and the platform-service wrappers all stay clean.
+//! the layout widgets, the broader Material catalog, charts, media and the
+//! graphics / painting layer all mount, measure, paint, and `gpu.submit` — the
+//! first four sections as one instanced rounded-rect draw over the *same* shared
+//! SDF pipeline, the graphics section adding the BackdropFilter multi-pass — and
+//! that section switching, scrolling, text input, modal overlays and the
+//! platform-service wrappers all stay clean.
 
 use elpa::protocol::{EncoderCommand, RenderCommand, ResourceDesc};
 use elpa::{Elpa, HeadlessBackend, InputEvent, SurfaceInfo};
@@ -134,6 +136,56 @@ fn charts_section_emits_many_instances() {
     assert!(app.trap_reason().is_none());
     assert!(instances(&app).len() / 16 > 80, "charts section is instance-heavy");
     assert!(app.take_log().is_empty());
+}
+
+#[test]
+fn graphics_section_is_a_multipass_backdrop_frame() {
+    // The fifth bottom-nav tab is the graphics showcase (CustomPaint canvas,
+    // gradients, the effect wrappers and a BackdropFilter). Switching to it must
+    // turn the frame into the real frosted-glass multi-pass: one render pass into
+    // an offscreen, sampleable scene texture and one to the surface that composites
+    // the blurred copy back. Everything stays trap- and error-free.
+    let mut app = instance();
+    app.start();
+    let _ = app.take_log();
+
+    // tab 0 -> 4 (graphics).
+    for _ in 0..4 {
+        app.send_event(&InputEvent::KeyDown { key: "t".into() });
+    }
+    assert!(app.trap_reason().is_none(), "no trap entering the graphics tab");
+
+    let frame = app.last_frame().expect("a frame");
+    let passes: Vec<&elpa::protocol::RenderPass> = frame
+        .commands
+        .iter()
+        .filter_map(|c| match c {
+            EncoderCommand::RenderPass(rp) => Some(rp),
+            _ => None,
+        })
+        .collect();
+    assert!(passes.len() >= 2, "graphics tab is a multi-pass frame (got {})", passes.len());
+    let offscreen = passes
+        .iter()
+        .filter(|rp| {
+            serde_json::to_value(&rp.color_attachments[0].view)
+                .ok()
+                .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(|s| s == "texture"))
+                .unwrap_or(false)
+        })
+        .count();
+    assert_eq!(offscreen, 1, "one pass renders into the offscreen scene texture");
+    assert!(
+        frame.resources.iter().any(|r| r.id().starts_with("elpa.m3.bd.scene")),
+        "the offscreen scene texture is declared"
+    );
+
+    // The 'o' / 'r' / 'b' effect keys (fade / rotate / blur) change the render.
+    let before = instances(&app);
+    app.send_event(&InputEvent::KeyDown { key: "b".into() });
+    assert!(instances(&app) != before, "growing the backdrop blur changed the render");
+    assert!(app.trap_reason().is_none(), "no trap nudging the graphics effects");
+    assert!(app.take_log().is_empty(), "no host errors on the graphics tab");
 }
 
 #[test]
@@ -340,19 +392,25 @@ fn no_section_overflows_the_screen_horizontally_on_a_phone() {
 
     let vw = 1080.0_f32;
     let tol = 8.0_f32; // px of slack for stroke caps sitting on the margin
-    // Sentinel marker in slot 0 of an image instance — those rows are
-    // interleaved in the buffer but skipped by the SDF draws (see
-    // `_planDraws` in the kit), so the layout test must skip them too.
+    // Sentinel markers in slot 0 of an image / backdrop instance — those rows are
+    // interleaved in the buffer but skipped by the SDF draws (see `planDraws` /
+    // the backdrop compositor in the kit), so the layout test must skip them too.
     const IMG_MARK: f32 = 424242.0;
-    for section in 0..4 {
+    const BACKDROP_MARK: f32 = 525252.0;
+    for section in 0..5 {
         let inst = instances(&app);
         let mut i = 0;
         let (mut min_left, mut max_right) = (f32::MAX, f32::MIN);
-        while i + 4 <= inst.len() {
-            if inst[i] == IMG_MARK { i += 16; continue; }
-            let (cx, hw) = (inst[i], inst[i + 2]);
-            min_left = min_left.min(cx - hw);
-            max_right = max_right.max(cx + hw);
+        while i + 16 <= inst.len() {
+            if inst[i] == IMG_MARK || inst[i] == BACKDROP_MARK { i += 16; continue; }
+            // The horizontal extent of a *rotated* quad is its true AABB half-width
+            // (|hw·cosθ| + |hh·sinθ|), not the raw half-size — a near-vertical stroke
+            // (e.g. a CustomPaint grid line) is a long, thin capsule rotated 90°, so
+            // its `hw` is a half-length, not a horizontal extent.
+            let (cx, hw, hh, rot) = (inst[i], inst[i + 2], inst[i + 3], inst[i + 6]);
+            let ext = (hw * rot.cos()).abs() + (hh * rot.sin()).abs();
+            min_left = min_left.min(cx - ext);
+            max_right = max_right.max(cx + ext);
             i += 16;
         }
         assert!(

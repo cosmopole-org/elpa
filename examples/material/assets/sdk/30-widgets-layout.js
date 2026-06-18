@@ -147,9 +147,17 @@ class ContainerWidget extends Widget {
         let m = app.metrics; let th = app.theme; let pnt = app.painter; let p = this.p;
         let mz = this.measure(app); let hw = mz.w / 2.0; let hh = mz.h / 2.0;
         this.beginSelf(app);
+        let r = 0.0; if (has(p, "radius")) { r = p.radius * m.u; }
+        // Optional drop shadow / elevation (Flutter's BoxShadow / Material elevation).
+        if (has(p, "elevation")) { let e = p.elevation; if (e > 0.0) { pnt.shadow(cx, cy, hw, hh, r, m.u * 0.3 * e, m.u * 0.4 * e, m.u * 1.6 * e); } }
+        if (has(p, "shadow")) { let sd = p.shadow; let sc = [0.0, 0.0, 0.0, 0.3]; if (has(sd, "color")) { sc = sd.color; }
+            let sb = m.u * 2.0; if (has(sd, "blur")) { sb = sd.blur * m.u; }
+            let sdx = 0.0; let sdy = m.u * 0.6; if (has(sd, "dx")) { sdx = sd.dx * m.u; } if (has(sd, "dy")) { sdy = sd.dy * m.u; }
+            pnt.shadowCol(cx + sdx, cy, hw, hh, r, sb * 0.4, sdy, sb, sc); }
+        // Gradient fill (linear / radial / sweep) takes precedence over a flat colour.
+        if (has(p, "gradient")) { paintGradient(app, p.gradient, cx, cy, hw, hh, r); }
         let deco = 0.0; if (has(p, "color")) { deco = 1.0; } if (has(p, "border")) { deco = 1.0; }
         if (deco > 0.5) {
-            let r = 0.0; if (has(p, "radius")) { r = p.radius * m.u; }
             let bw = 0.0; if (has(p, "border")) { bw = p.border * m.u; }
             let fill = CLEAR; if (has(p, "color")) { fill = th.colorRole(p.color, 1.0); }
             let bcol = CLEAR; if (has(p, "border")) { bcol = th.outline(1.0); if (has(p, "borderColor")) { bcol = th.colorRole(p.borderColor, 1.0); } }

@@ -7,12 +7,14 @@ component runtime; an app uses them as a black box and never touches the GPU.
 
 | File | What it is |
 |------|------------|
-| [`assets/sdk/`](assets/sdk) | **The SDK** — an object-oriented framework split into single-responsibility modules (concatenated in dependency order by `lib.rs`): `00-data` (the two WGSL shaders, the glyph font, the M3 accent palettes, shared constants), `10-engine` (the `Painter`, `Theme`, `Metrics`, `FontEngine`, `IconEngine`, `MediaEngine` and `AnimationClock` services — each owning its own state), `20-widget` (the `Widget` base class: the measure/paint/compose/mount protocol), `30/31/32-widgets-*` (the ~50-widget catalog as `Widget` subclasses — layout, Material, media/charts), `40-runtime` (`ComponentNode` + the `Material` runtime: mount, partial update, the per-frame animation clock, the event loop and the `gpu.submit` frame builder), and `50-api` (the single `Material` instance, the public widget constructors, `defineComponent`/`runApp`, the theme/responsive/font controls and the platform-service wrappers). Apps never touch the GPU. |
+| [`assets/sdk/`](assets/sdk) | **The SDK** — an object-oriented framework split into single-responsibility modules (concatenated in dependency order by `lib.rs`): `00-data` (the two WGSL shaders, the glyph font, the M3 accent palettes, gradient-stop helpers, shared constants), `10-engine` (the `Painter` — now with a Canvas-style transform/opacity/colour-filter stack and gradient helpers — plus the `Theme`, `Metrics`, `FontEngine`, `IconEngine`, `MediaEngine` and `AnimationClock` services), `20-widget` (the `Widget` base class: the measure/paint/compose/mount protocol), `30/31/32-widgets-*` (the widget catalog as `Widget` subclasses — layout, Material, media/charts), `33-graphics` (the **painting layer**: the `Path`/`Canvas` dart:ui API, the `GraphicsEngine` backdrop compositor, and the `CustomPaint`/`Opacity`/`ColorFiltered`/`Transform`/`RotatedBox`/`ClipRRect`/`BackdropFilter` widgets), `40-runtime` (`ComponentNode` + the `Material` runtime: mount, partial update, the per-frame animation clock, the event loop, the `gpu.submit` frame builder and the multi-pass backdrop-blur compositor), and `50-api` (the single `Material` instance, the public widget constructors, the gradient builders, `defineComponent`/`runApp`, the theme/responsive/font controls and the platform-service wrappers). Apps never touch the GPU. |
 | [`assets/demo.js`](assets/demo.js) | **The original app.** Declares state, composes a widget tree from the SDK's widgets (including custom components), and calls `runApp`. No `gpu.submit`, no glyphs, no coordinates. |
-| [`assets/gallery.js`](assets/gallery.js) | **The widget gallery.** A second app that showcases the *extended* widget set across four bottom-nav sections (Layout · Widgets · Charts · Media), a navigation drawer, a modal dialog and a snackbar, plus the storage/clock/network wrappers. |
-| `src/lib.rs` | Embeds the SDK modules + the apps and links them with [`program`] / [`gallery_program`] (`module_js()` joins the `assets/sdk/*.js` modules into one source). |
+| [`assets/gallery.js`](assets/gallery.js) | **The widget gallery.** A second app that showcases the *extended* widget set across five bottom-nav sections (Layout · Widgets · Charts · Media · Graphics — the last driving the painting layer: a CustomPaint canvas, gradients, the effect wrappers and a BackdropFilter), a navigation drawer, a modal dialog and a snackbar, plus the storage/clock/network wrappers. |
+| [`assets/graphics.js`](assets/graphics.js) | **The graphics showcase.** A third app that drives the painting layer: a full `CustomPaint` / `Canvas` scene, gradient-filled containers (linear / radial / sweep), the `Opacity` / `ColorFiltered` / `Transform` / `RotatedBox` effect wrappers and a `BackdropFilter` frosted-glass panel. |
+| `src/lib.rs` | Embeds the SDK modules + the apps and links them with [`program`] / [`gallery_program`] / [`graphics_program`] (`module_js()` joins the `assets/sdk/*.js` modules into one source). |
 | `tests/run.rs` | Runs the original demo on a headless `Elpa` instance end to end — first paint, tap/key/wheel interaction, animation, resize — and validates the WGSL with `naga`. |
 | `tests/gallery.rs` | Runs the gallery end to end: first paint, section switching, list scrolling, text input, modal overlays, the drawer animation, and a storage round-trip — all as **one** instanced draw over the same shader. |
+| `tests/graphics.rs` | Runs the graphics showcase end to end: the canvas + gradients paint cleanly, the effect keys change the render, and the `BackdropFilter` becomes a real multi-pass frame (an offscreen render-into-texture capture + a surface pass that samples it). |
 
 ## Writing an app
 
@@ -110,8 +112,9 @@ surface — so the same JavaScript renders in the browser and in an Android app:
 * [`examples/web`](../web) — full-window DPI canvas (wasm), live on GitHub Pages.
 * [`examples/native`](../native) — a winit window on desktop **and Android**.
 
-Swap `gallery_program()` for `program()` in either host's `lib.rs` to run the
-smaller demo instead. Headless (either app, through a real VM + WGSL validation):
+Swap `gallery_program()` for `program()` (the smaller demo) or
+`graphics_program()` (the painting-layer showcase) in either host's `lib.rs` to
+run a different app. Headless (every app, through a real VM + WGSL validation):
 
 ```bash
 cargo test -p elpa-material
@@ -151,6 +154,50 @@ asserts exactly that — while text is anti-aliased and proportional like a brow
   a numeric `size` in layout units — and a `weight` (`regular`/`medium`/`bold`,
   the named aliases, or a numeric 100–900; ≥ semibold uses the bold face)),
   `DataTable`.
+* **Graphics (the painting layer)** — `CustomPaint` (a `paint(canvas, size)`
+  callback drawing into a dart:ui `Canvas`), `Opacity`, `ColorFiltered`,
+  `Transform` (rotate / scale / translate), `RotatedBox` (quarter turns),
+  `ClipRRect`/`ClipOval`, `BackdropFilter` (frosted glass). `Container` now also
+  takes a `gradient` (`LinearGradient`/`RadialGradient`/`SweepGradient`),
+  an `elevation`, and a `shadow` (`{ color, blur, dx, dy }`). See below.
+
+### Painting layer: Canvas, gradients, filters, blur
+
+Beyond the widget catalog, the kit ships the **graphical half of Flutter** — the
+`dart:ui` painting surface — so an app can draw arbitrary 2D graphics, not just
+compose boxes:
+
+* **`CustomPaint` + `Canvas`** — `CustomPaint({ width, height, paint: (canvas,
+  size) => { … } })` hands you a `Canvas` in the widget's local units. The full
+  command set is implemented: `drawLine`, `drawRect`, `drawRRect`, `drawOval`,
+  `drawCircle`, `drawArc` (stroke or pie-fill), `drawPath` (a `makePath()` `Path`
+  with `moveTo`/`lineTo`/`cubicTo`/`quadraticTo`/`arcTo`/`close`; stroked, or a
+  convex fill), `drawPoints`/`drawPolygon`, `drawShadow`, `drawColor`/`drawPaint`,
+  `drawText`, `drawImage`, plus the transform stack `save`/`restore`/`translate`/
+  `scale`/`rotate` and `clipRect`/`clipRRect`/`clipPath`. A `Paint` is a plain
+  object — `{ color, style: "fill"|"stroke", strokeWidth, shader }`. Every command
+  lowers to the kit's one rounded-rect SDF primitive, so a whole canvas scene is
+  **still part of the single instanced draw**.
+* **Gradients** — `LinearGradient(colors, { begin, end, stops })`,
+  `RadialGradient(colors, { stops })`, `SweepGradient(colors, { start, stops })`.
+  Multi-stop, colours given as rgba arrays *or* M3 role names. Use them as a
+  `Container({ gradient })` fill or a `Paint({ shader })` in the canvas. They are
+  drawn as colour bands / concentric rings / angular spokes of the SDF primitive.
+* **Opacity & colour filters** — `Opacity({ opacity, child })` fades a whole
+  subtree; `ColorFiltered({ color, child })` (modulate) or `{ mul, add }` tints
+  it. Both ride the `Painter`'s alpha / colour-filter stack, so they cost nothing
+  but a per-instance colour scale.
+* **Transforms** — `Transform({ angle, scale, dx, dy, child })` and
+  `RotatedBox({ turns, child })` rotate / scale / translate a subtree about its
+  centre through the `Painter`'s affine stack.
+* **Blur (`BackdropFilter`)** — `BackdropFilter({ blur, width, height, radius,
+  child })` is a genuine frosted glass: the runtime renders everything painted
+  *behind* the panel into an **offscreen texture**, then the surface pass samples
+  that texture with a multi-tap box-blur kernel inside the panel before drawing
+  the panel's tint and child sharp on top. This is the kit's one multi-pass path
+  (the `tests/graphics.rs` test asserts the offscreen render-target and the
+  surface pass). Soft drop shadows / elevation (`Container({ elevation })`,
+  `Container({ shadow })`, `Canvas.drawShadow`) are the cheaper, single-pass blur.
 
 ### Responsive layout, typography & SVG icons
 

@@ -118,6 +118,32 @@ function Drawer(p) { if (!has(p, "id")) { p.id = "drawer"; } return new DrawerWi
 function Banner(p) { return new BannerWidget(p); }
 function DataTable(p) { return new DataTableWidget(p); }
 
+// Graphics (painting layer): CustomPaint + the effect wrappers.
+function CustomPaint(p) { return new CustomPaintWidget(p); }
+function Opacity(p) { return new OpacityWidget(p); }
+function ColorFiltered(p) { return new ColorFilteredWidget(p); }
+function Transform(p) { return new TransformWidget(p); }
+function RotatedBox(p) { return new RotatedBoxWidget(p); }
+function ClipRRect(p) { return new ClipRRectWidget(p); }
+function ClipOval(p) { return new ClipRRectWidget(p); }
+function BackdropFilter(p) { return new BackdropFilterWidget(p); }
+// A fresh dart:ui Path for CustomPaint code (the VM front-end has `new`, but this
+// keeps app code free of SDK class names, like the widget constructors).
+function makePath() { return new Path(); }
+// Gradient spec builders (return plain objects usable as `gradient:` / Paint
+// `shader:`). `opt` may carry `stops`, `begin`/`end` (linear) or `start` (sweep).
+function LinearGradient(colors, opt) { let g = { type: "linear", colors: colors }; gradOpt(g, opt); return g; }
+function RadialGradient(colors, opt) { let g = { type: "radial", colors: colors }; gradOpt(g, opt); return g; }
+function SweepGradient(colors, opt) { let g = { type: "sweep", colors: colors }; gradOpt(g, opt); return g; }
+function gradOpt(g, opt) {
+    if (isNull(opt)) { return 0; } if (opt == 0) { return 0; }
+    if (has(opt, "stops")) { g.stops = opt.stops; }
+    if (has(opt, "begin")) { g.begin = opt.begin; }
+    if (has(opt, "end")) { g.end = opt.end; }
+    if (has(opt, "start")) { g.start = opt.start; }
+    return 0;
+}
+
 // Media / charts.
 function Image(p) { return new ImageWidget(p); }
 function VideoPlayer(p) { if (!has(p, "id")) { p.id = "video"; } return new VideoPlayerWidget(p); }
