@@ -53,6 +53,13 @@ jobs:
       - name: Install cargo-apk
         run: cargo install --locked cargo-apk
 
+      # Compile the Material app's JavaScript to VM bytecode *now*, at build time,
+      # into examples/material/assets/*.bc. The native example embeds that
+      # bytecode (include_bytes!) and loads it with Elpa::new_from_bytecode, so
+      # the app never runs the JS/AST front-end at startup.
+      - name: Compile app to bytecode
+        run: cargo run -p elpa-material --bin build_bytecode
+
       # A throwaway keystore generated per run. cargo-apk reads the path and
       # password from these env vars (no secrets committed to the repo).
       - name: Generate signing keystore

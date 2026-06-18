@@ -271,6 +271,9 @@ class Metrics {
     }
     setMetrics(si) {
         this.vw = num(si.width); this.vh = num(si.height);
+        // Adopt the live surface color format before any pipeline/scene target
+        // is built this frame, so they match the real surface on every backend.
+        if (has(si, "colorFormat")) { SURFACE_FMT = si.colorFormat; }
         this.dpr = 1.0; if (has(si, "scaleFactor")) { this.dpr = num(si.scaleFactor); }
         if (this.dpr < 0.1) { this.dpr = 1.0; }
         this.lw = this.vw / this.dpr; this.lh = this.vh / this.dpr;
@@ -880,7 +883,7 @@ class MediaEngine {
             { kind: "renderPipeline", id: "elpa.m3.img.pipe", layout: "elpa.m3.img.layout",
               vertex: { module: "elpa.m3.img.shader", entry_point: "vs", buffers: [] },
               fragment: { module: "elpa.m3.img.shader", entry_point: "fs", targets: [{
-                  format: "bgra8unorm",
+                  format: SURFACE_FMT,
                   blend: { color: { src_factor: "src-alpha", dst_factor: "one-minus-src-alpha", operation: "add" },
                            alpha: { src_factor: "one", dst_factor: "one-minus-src-alpha", operation: "add" } } }] } },
             { kind: "sampler", id: "elpa.m3.img.samp", mag_filter: "linear", min_filter: "linear", mipmap_filter: "linear" },

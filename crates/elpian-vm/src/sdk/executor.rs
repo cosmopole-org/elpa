@@ -6,6 +6,7 @@ use crate::sdk::{
     data::{Array, Function, Object, Payload, Val, ValGroup, ValMap},
     lifecycle::ExecControl,
     limits::{Governor, ResourceLimits},
+    program::{DecodedProgram, UnitKind},
     stdlib,
 };
 use core::panic;
@@ -1095,6 +1096,11 @@ pub struct Executor {
     end_at: usize,
     ctx: Context,
     program: Vec<u8>,
+    /// The bytecode decoded once into an addressable list of operation objects.
+    /// The interpreter traverses this instead of re-parsing `program` on every
+    /// step; `pointer`/`end_at` and every compiler-baked offset still address it
+    /// by byte position via [`DecodedProgram::index_at`]. See `program.rs`.
+    prog: DecodedProgram,
     cb_counter: i64,
     pending_func_result_value: Val,
     registers: Vec<Box<dyn Operation>>,
@@ -1127,6 +1133,7 @@ impl Executor {
         for api_name in func_group.iter() {
             allowed_api.insert(api_name.clone(), true);
         }
+        let prog = DecodedProgram::decode(&program);
         Executor {
             _allowed_api: allowed_api,
             executor_id: exec_id,
@@ -1134,6 +1141,7 @@ impl Executor {
             end_at: program.len(),
             ctx: Context::new(),
             program,
+            prog,
             cb_counter: 0,
             pending_func_result_value: Val::new(254, Payload::Null),
             registers: vec![],
@@ -1458,146 +1466,63 @@ impl Executor {
             }
         }
     }
-    fn extract_i16(&mut self) -> i16 {
-        let num_bytes: [u8; 2] = self.program[self.pointer..(self.pointer + 2)]
-            .try_into()
-            .unwrap();
-        self.pointer += 2;
-        i16::from_be_bytes(num_bytes)
-    }
+    // ---- decoded-unit readers ----------------------------------------------
+    //
+    // These replace the old byte-by-byte `extract_*` parsers. The bytecode is
+    // decoded once at construction (`program.rs`); here we just index the
+    // pre-decoded unit at the current byte offset and advance the program
+    // counter past it. Only the immediates a state transition consumes mid-flight
+    // (a call's argument count, a branch / case / body offset, a `cast` target
+    // type) are read this way — opcode dispatch and the value/literal units are
+    // handled directly in the run loop.
     fn extract_i32(&mut self) -> i32 {
-        let num_bytes: [u8; 4] = self.program[self.pointer..(self.pointer + 4)]
-            .try_into()
-            .unwrap();
-        self.pointer += 4;
-        i32::from_be_bytes(num_bytes)
+        let i = self.prog.index_at(self.pointer);
+        let unit = &self.prog.units[i];
+        let len = unit.len as usize;
+        let v = match &unit.kind {
+            UnitKind::I32(v) => *v,
+            _ => unreachable!("decoded program: expected I32 at offset {}", self.pointer),
+        };
+        self.pointer += len;
+        v
     }
     fn extract_i64(&mut self) -> i64 {
-        let num_bytes: [u8; 8] = self.program[self.pointer..(self.pointer + 8)]
-            .try_into()
-            .unwrap();
-        self.pointer += 8;
-        i64::from_be_bytes(num_bytes)
-    }
-    fn extract_f32(&mut self) -> f32 {
-        let num_bytes: [u8; 4] = self.program[self.pointer..(self.pointer + 4)]
-            .try_into()
-            .unwrap();
-        self.pointer += 4;
-        f32::from_be_bytes(num_bytes)
-    }
-    fn extract_f64(&mut self) -> f64 {
-        let num_bytes: [u8; 8] = self.program[self.pointer..(self.pointer + 8)]
-            .try_into()
-            .unwrap();
-        self.pointer += 8;
-        f64::from_be_bytes(num_bytes)
-    }
-    fn extract_bool(&mut self) -> bool {
-        let result = self.program[self.pointer] == 0x01;
-        self.pointer += 1;
-        result
+        let i = self.prog.index_at(self.pointer);
+        let unit = &self.prog.units[i];
+        let len = unit.len as usize;
+        let v = match &unit.kind {
+            UnitKind::I64(v) => *v,
+            _ => unreachable!("decoded program: expected I64 at offset {}", self.pointer),
+        };
+        self.pointer += len;
+        v
     }
     fn extract_str(&mut self) -> String {
-        let len_bytes: [u8; 4] = self.program[self.pointer..(self.pointer + 4)]
-            .try_into()
-            .unwrap();
-        self.pointer += 4;
-        let length = i32::from_be_bytes(len_bytes) as usize;
-        let str_bytes = self.program[self.pointer..(self.pointer + length)].to_vec();
-        self.pointer += length;
-        String::from_utf8(str_bytes).unwrap()
+        let i = self.prog.index_at(self.pointer);
+        let unit = &self.prog.units[i];
+        let len = unit.len as usize;
+        let s = match &unit.kind {
+            UnitKind::Str(s) => s.to_string(),
+            _ => unreachable!("decoded program: expected Str at offset {}", self.pointer),
+        };
+        self.pointer += len;
+        s
     }
-    fn extract_arr(&mut self) -> Rc<RefCell<Array>> {
-        let mut data: Vec<Val> = vec![];
-        let arr_len = self.extract_i32();
-        for _ in 0..arr_len {
-            data.push(self.extract_val());
+    /// Resolve an identifier reference to a value: a scope-chain binding shadows
+    /// everything; otherwise `askHost` is the host-call seam (typ 255) and a
+    /// known standard-library builtin resolves to its native handle (typ 252).
+    fn resolve_ident(&mut self, id: &str) -> Val {
+        if id == "askHost" {
+            return Val { typ: 255, data: Payload::Null };
         }
-        Rc::new(RefCell::new(Array::new(data)))
-    }
-    fn extract_func(&mut self) -> Rc<RefCell<Function>> {
-        let start = self.extract_i64() as usize;
-        let end = self.extract_i64() as usize;
-        let param_count = self.extract_i32();
-        let mut params = vec![];
-        for _i in 0..param_count {
-            params.push(self.extract_str());
+        let bound = self.ctx.find_val_globally(id);
+        if !bound.is_empty() {
+            return bound;
         }
-        // A function *literal* (e.g. a callback) closes over the locals visible
-        // where it is written; capture them so the value behaves as a closure.
-        let mut func = Function::new("".to_string(), start, end, params);
-        func.captured = self.capture_env();
-        Rc::new(RefCell::new(func))
-    }
-    fn extract_val(&mut self) -> Val {
-        let p = self.program[self.pointer];
-        self.pointer += 1;
-        match p {
-            0x01 => Val {
-                typ: 1,
-                data: Payload::from(self.extract_i16()),
-            },
-            0x02 => Val {
-                typ: 2,
-                data: Payload::from(self.extract_i32()),
-            },
-            0x03 => Val {
-                typ: 3,
-                data: Payload::from(self.extract_i64()),
-            },
-            0x04 => Val {
-                typ: 4,
-                data: Payload::from(self.extract_f32()),
-            },
-            0x05 => Val {
-                typ: 5,
-                data: Payload::from(self.extract_f64()),
-            },
-            0x06 => Val {
-                typ: 6,
-                data: Payload::from(self.extract_bool()),
-            },
-            0x07 => Val {
-                typ: 7,
-                data: Payload::from(self.extract_str()),
-            },
-            0x09 => Val {
-                typ: 9,
-                data: Payload::from(self.extract_arr()),
-            },
-            0x0a => Val {
-                typ: 10,
-                data: Payload::from(self.extract_func()),
-            },
-            0x0b => {
-                let id = self.extract_str();
-                if id == "askHost" {
-                    return Val {
-                        typ: 255,
-                        data: Payload::Null,
-                    };
-                }
-                let bound = self.ctx.find_val_globally(&id);
-                if !bound.is_empty() {
-                    return bound;
-                }
-                // No user/scope binding shadows it: resolve to a native standard
-                // library builtin if one exists (typ 252 carries its name), so
-                // `sqrt(2)`, `len(xs)`, `new(Class)` etc. call native code.
-                if stdlib::is_builtin(&id) {
-                    return Val {
-                        typ: 252,
-                        data: Payload::from(id),
-                    };
-                }
-                bound
-            }
-            _ => Val {
-                typ: 0,
-                data: Payload::Null,
-            },
+        if stdlib::is_builtin(id) {
+            return Val { typ: 252, data: Payload::from(id.to_string()) };
         }
+        bound
     }
     fn check_float_range(&self, num: f64) -> Val {
         if num < f32::MAX.into() {
@@ -5174,173 +5099,74 @@ impl Executor {
                 }
                 continue;
             }
-            let unit: u8 = self.program[self.pointer];
-            self.pointer += 1;
-            match unit {
+            // Fetch the pre-decoded operation at the current byte offset and
+            // advance the program counter past it (control-flow arms below
+            // override the pointer afterwards). The bytecode is never re-parsed:
+            // every operand was decoded once into the unit (see `program.rs`).
+            let u_idx = self.prog.index_at(self.pointer);
+            let u_len = self.prog.units[u_idx].len as usize;
+            let kind = self.prog.units[u_idx].kind.clone();
+            self.pointer += u_len;
+            match kind {
                 // ----------------------------------
-                // arithmetic operators:
-                // equality operator
-                0xf0 => {
-                    let state_holder = Arithmetic::new();
+                // arithmetic / comparison operators (op id 1..=12)
+                UnitKind::Arith(op_id) => {
+                    self.registers.push(Box::new(Arithmetic::new()));
                     self.registers
-                        .push(Box::new(state_holder));
-                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(1 as i16));
-                }
-                // ge operator
-                0xf1 => {
-                    let state_holder = Arithmetic::new();
-                    self.registers
-                        .push(Box::new(state_holder));
-                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(2 as i16));
-                }
-                // gee operator
-                0xf2 => {
-                    let state_holder = Arithmetic::new();
-                    self.registers
-                        .push(Box::new(state_holder));
-                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(3 as i16));
-                }
-                // le operator
-                0xf3 => {
-                    let state_holder = Arithmetic::new();
-                    self.registers
-                        .push(Box::new(state_holder));
-                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(4 as i16));
-                }
-                // lee operator
-                0xf4 => {
-                    let state_holder = Arithmetic::new();
-                    self.registers
-                        .push(Box::new(state_holder));
-                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(5 as i16));
-                }
-                // inequality operator
-                0xf5 => {
-                    let state_holder = Arithmetic::new();
-                    self.registers
-                        .push(Box::new(state_holder));
-                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(6 as i16));
-                }
-                // sum operator
-                0xf6 => {
-                    let state_holder = Arithmetic::new();
-                    self.registers
-                        .push(Box::new(state_holder));
-                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(7 as i16));
-                }
-                // subtract operator
-                0xf7 => {
-                    let state_holder = Arithmetic::new();
-                    self.registers
-                        .push(Box::new(state_holder));
-                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(8 as i16));
-                }
-                // multiply operator
-                0xf8 => {
-                    let state_holder = Arithmetic::new();
-                    self.registers
-                        .push(Box::new(state_holder));
-                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(9 as i16));
-                }
-                // division operator
-                0xf9 => {
-                    let state_holder = Arithmetic::new();
-                    self.registers
-                        .push(Box::new(state_holder));
-                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(10 as i16));
-                }
-                // mod operator
-                0xfa => {
-                    let state_holder = Arithmetic::new();
-                    self.registers
-                        .push(Box::new(state_holder));
-                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(11 as i16));
-                }
-                // power operator
-                0xfb => {
-                    let state_holder = Arithmetic::new();
-                    self.registers
-                        .push(Box::new(state_holder));
-                    self.registers.last_mut().unwrap().set_state(ExecStates::ArithmeticExtractOp, StateData::I16(12 as i16));
+                        .last_mut()
+                        .unwrap()
+                        .set_state(ExecStates::ArithmeticExtractOp, StateData::I16(op_id));
                 }
                 // not operator
-                0xfc => {
-                    let state_holder = NotValue::new();
-                    self.registers
-                        .push(Box::new(state_holder));
+                UnitKind::Not => {
+                    self.registers.push(Box::new(NotValue::new()));
                 }
                 // cast operation
-                0xfd => {
-                    let state_holder = CastOp::new();
-                    self.registers
-                        .push(Box::new(state_holder));
+                UnitKind::Cast => {
+                    self.registers.push(Box::new(CastOp::new()));
                 }
                 // ----------------------------------
                 // program operators:
                 // data indexer
-                0x0c => {
-                    let state_holder = IndexerValue::new();
-                    self.registers
-                        .push(Box::new(state_holder));
+                UnitKind::Indexer => {
+                    self.registers.push(Box::new(IndexerValue::new()));
                 }
                 // function call
-                0x0d => {
-                    let state_holder = CallFunction::new();
-                    self.registers
-                        .push(Box::new(state_holder));
+                UnitKind::Call => {
+                    self.registers.push(Box::new(CallFunction::new()));
                 }
-                // definition statement
-                0x0e => {
-                    if self.program[self.pointer] == 0x0b {
-                        self.pointer += 1;
-                        let state_holder = DefineVariable::new();
-                        self.registers
-                            .push(Box::new(state_holder));
-                        let var_name = self.extract_str();
-                        self.registers.last_mut().unwrap().set_state(ExecStates::DefineVarExtractName, StateData::Str(var_name));
-                    }
+                // definition statement (name pre-decoded; value expression follows)
+                UnitKind::DefineVar(name) => {
+                    self.registers.push(Box::new(DefineVariable::new()));
+                    self.registers.last_mut().unwrap().set_state(
+                        ExecStates::DefineVarExtractName,
+                        StateData::Str(name.to_string()),
+                    );
                 }
-                // assignment statement
-                0x0f => {
-                    if self.program[self.pointer] == 0x0c {
-                        self.pointer += 1;
-                        let state_holder = AssignVariable::new();
-                        self.registers
-                            .push(Box::new(state_holder));
-                        let var_name = self.extract_str();
-                        self.registers.last_mut().unwrap().set_state(
-                            ExecStates::AssignVarExtractName,
-                            StateData::StrI16(var_name, 2 as i16),
-                        );
-                    } else if self.program[self.pointer] == 0x0b {
-                        self.pointer += 1;
-                        let state_holder = AssignVariable::new();
-                        self.registers
-                            .push(Box::new(state_holder));
-                        let var_name = self.extract_str();
-                        self.registers.last_mut().unwrap().set_state(
-                            ExecStates::AssignVarExtractName,
-                            StateData::StrI16(var_name, 1 as i16),
-                        );
-                    }
+                // assignment statement (target name + kind pre-decoded)
+                UnitKind::AssignVar { name, kind } => {
+                    self.registers.push(Box::new(AssignVariable::new()));
+                    self.registers.last_mut().unwrap().set_state(
+                        ExecStates::AssignVarExtractName,
+                        StateData::StrI16(name.to_string(), kind),
+                    );
                 }
-                // if statement
-                0x10 => {
-                    let state_holder = IfStmt::new();
-                    self.registers
-                        .push(Box::new(state_holder));
-                    let has_condition = self.program[self.pointer] == 0x01;
-                    self.pointer += 1;
+                // if statement (one arm of an if/else chain)
+                UnitKind::IfHead { has_condition } => {
+                    self.registers.push(Box::new(IfStmt::new()));
                     if has_condition {
-                        self.registers.last_mut().unwrap().set_state(ExecStates::IfStmtIsConditioned, StateData::Bool(has_condition));
+                        self.registers
+                            .last_mut()
+                            .unwrap()
+                            .set_state(ExecStates::IfStmtIsConditioned, StateData::Bool(true));
                     } else {
-                        self.registers.last_mut().unwrap().set_state(ExecStates::IfStmtIsConditioned, StateData::Bool(has_condition));
+                        self.registers
+                            .last_mut()
+                            .unwrap()
+                            .set_state(ExecStates::IfStmtIsConditioned, StateData::Bool(false));
                         self.registers.last_mut().unwrap().set_state(
                             ExecStates::IfStmtFinished,
-                            StateData::Val(Val {
-                                typ: 6,
-                                data: Payload::from(true),
-                            }),
+                            StateData::Val(Val { typ: 6, data: Payload::from(true) }),
                         );
                         main_reg = None;
                         is_reg_state_final = true;
@@ -5348,111 +5174,97 @@ impl Executor {
                     }
                 }
                 // loop statement
-                0x11 => {
-                    let state_holder = LoopStmt::new();
-                    self.registers
-                        .push(Box::new(state_holder));
+                UnitKind::Loop => {
+                    self.registers.push(Box::new(LoopStmt::new()));
                 }
                 // switch case statement
-                0x12 => {
-                    let state_holder = SwitchStmt::new();
-                    self.registers
-                        .push(Box::new(state_holder));
+                UnitKind::Switch => {
+                    self.registers.push(Box::new(SwitchStmt::new()));
                 }
-                // function definiton
-                0x13 => {
-                    let func_name = self.extract_str();
-                    let param_count = self.extract_i32();
-                    let mut param_names = vec![];
-                    for _i in 0..param_count {
-                        let p_name = self.extract_str();
-                        param_names.push(p_name);
-                    }
-                    // Free-variable list (compiler-computed): the enclosing names
-                    // this function references.
-                    let free_count = self.extract_i32();
-                    let mut free_names = vec![];
-                    for _i in 0..free_count {
-                        free_names.push(self.extract_str());
-                    }
-                    let func_start = self.extract_i64() as usize;
-                    let func_end = self.extract_i64() as usize;
+                // function definition (header pre-decoded; body skipped here)
+                UnitKind::FuncDef { name, params, frees, start, end } => {
                     let mut func =
-                        Function::new(func_name.clone(), func_start, func_end, param_names);
+                        Function::new(name.to_string(), start, end, (*params).clone());
                     // A function defined inside another function closes over the
                     // enclosing locals it uses (e.g. a factory returning a
                     // counter). Capture just those free variables; at top level
                     // there is nothing to capture and this is a no-op.
-                    func.captured = self.capture_named(&free_names);
+                    func.captured = self.capture_named(&frees);
                     self.define(
-                        func_name.clone(),
+                        name.to_string(),
                         Val {
                             typ: 10,
-                            data: Payload::from(Rc::new(RefCell::new(
-                                func.clone(),
-                            ))),
+                            data: Payload::from(Rc::new(RefCell::new(func))),
                         },
                     );
-                    self.pointer = func_end;
+                    self.pointer = end;
                 }
                 // return command
-                0x14 => {
-                    let state_holder = ReturnValue::new();
-                    self.registers
-                        .push(Box::new(state_holder));
+                UnitKind::Return => {
+                    self.registers.push(Box::new(ReturnValue::new()));
                 }
                 // jump command
-                0x15 => {
-                    let dest = self.extract_i64() as usize;
+                UnitKind::Jump(dest) => {
                     self.pointer = dest;
                 }
                 // conditional branch
-                0x16 => {
-                    let state_holder = CondBranch::new();
-                    self.registers
-                        .push(Box::new(state_holder));
+                UnitKind::CondBranch => {
+                    self.registers.push(Box::new(CondBranch::new()));
                 }
                 // ----------------------------------
                 // expressions
-                // data expressions
-                1 | 2 | 3 | 4 | 5 | 6 | 7 | 10 | 11 => {
-                    self.pointer -= 1;
-                    let val = self.extract_val();
+                // scalar / string literal
+                UnitKind::Lit(val) => {
                     main_reg = Some(val);
                     continue;
                 }
-                // object expressions
-                8 => {
-                    let typ = self.extract_i64();
-                    let props_len = self.extract_i32();
+                // identifier reference (resolved against scope / builtins / host)
+                UnitKind::Ident(name) => {
+                    let val = self.resolve_ident(&name);
+                    main_reg = Some(val);
+                    continue;
+                }
+                // function literal (closure over the live environment)
+                UnitKind::FuncLit { start, end, params } => {
+                    let mut func = Function::new(String::new(), start, end, (*params).clone());
+                    func.captured = self.capture_env();
+                    main_reg = Some(Val {
+                        typ: 10,
+                        data: Payload::from(Rc::new(RefCell::new(func))),
+                    });
+                    continue;
+                }
+                // object expression
+                UnitKind::ObjHead { typ, props_len } => {
+                    self.registers.push(Box::new(ObjectExpr::new()));
                     self.registers
-                        .push(Box::new(ObjectExpr::new()));
-                    self.registers.last_mut().unwrap().set_state(ExecStates::ObjExprExtractInfo, StateData::I64I32(typ, props_len));
-                    if self.registers.last().unwrap().get_state()
-                        == ExecStates::ObjExprFinished
-                    {
+                        .last_mut()
+                        .unwrap()
+                        .set_state(ExecStates::ObjExprExtractInfo, StateData::I64I32(typ, props_len));
+                    if self.registers.last().unwrap().get_state() == ExecStates::ObjExprFinished {
                         main_reg = None;
                         is_reg_state_final = true;
                         continue;
                     }
                 }
-                // array expressions
-                9 => {
-                    let arr_len = self.extract_i32();
+                // array expression
+                UnitKind::ArrHead { len } => {
+                    self.registers.push(Box::new(ArrayExpr::new()));
                     self.registers
-                        .push(Box::new(ArrayExpr::new()));
-                    self.registers.last_mut().unwrap().set_state(ExecStates::ArrExprExtractInfo, StateData::I32(arr_len));
-                    if self.registers.last().unwrap().get_state()
-                        == ExecStates::ArrExprFinished
-                    {
+                        .last_mut()
+                        .unwrap()
+                        .set_state(ExecStates::ArrExprExtractInfo, StateData::I32(len));
+                    if self.registers.last().unwrap().get_state() == ExecStates::ArrExprFinished {
                         main_reg = None;
                         is_reg_state_final = true;
                         continue;
                     }
                 }
                 // ----------------------------------
-                // No-Op
-                _ => {}
+                // Bare immediates (consumed by a state transition, not dispatched
+                // here) and no-op padding: nothing to do, exactly like the old
+                // fall-through arm.
+                UnitKind::I32(_) | UnitKind::I64(_) | UnitKind::Str(_) | UnitKind::Nop => {}
             }
         }
         Val::new(0, Payload::Null)

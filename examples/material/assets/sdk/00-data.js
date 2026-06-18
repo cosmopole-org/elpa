@@ -24,6 +24,17 @@
 // Per-instance data (16 floats): center.xy, halfSize.xy, cornerRadius,
 // borderWidth, rotation, feather, fill rgba, border rgba.
 
+// The live surface color-format token. Every render pipeline's color target and
+// every offscreen scene texture must match the actual surface format (wgpu
+// requires an exact match), and that format is only known at run time — the
+// browser/desktop surface may be `bgra8unorm` or an `*-srgb` variant. The host
+// reports it via `gpu.surfaceInfo`; `Metrics.setMetrics` refreshes this global
+// each frame before any pipeline is built, so prebuilt bytecode adapts to
+// whatever surface it is deployed onto (replacing the old build-time string
+// patch of the JS source, which prebuilt bytecode cannot do). Defaults to
+// `bgra8unorm` for the headless/test backend.
+let SURFACE_FMT = "bgra8unorm";
+
 // ----------------------------------------------------------------- shader -----
 let SDF_WGSL = "
 struct Globals { viewport: vec2<f32>, pad: vec2<f32> };

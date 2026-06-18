@@ -64,7 +64,7 @@ function sdfPipelineResources() {
                   { format: "float32x4", offset: 32, shader_location: 2 },
                   { format: "float32x4", offset: 48, shader_location: 3 }] }] },
           fragment: { module: "elpa.m3.shader", entry_point: "fs", targets: [{
-              format: "bgra8unorm",
+              format: SURFACE_FMT,
               blend: { color: { src_factor: "src-alpha", dst_factor: "one-minus-src-alpha", operation: "add" },
                        alpha: { src_factor: "one", dst_factor: "one-minus-src-alpha", operation: "add" } } }] } },
     ];
@@ -272,10 +272,10 @@ class Material {
         let res = concat(concat(sdfPipelineResources(), this.font.atlasTexRes()), concat(this.frameBindings(), [
             bufF32("elpa.m3.inst", ["VERTEX", "COPY_DST"], this.inst),
             // The scene is a render target for the SDF + image pipelines, so its
-            // format must match their colour target (bgra8unorm, the surface
-            // format); an rgba8unorm target here is a wgpu format mismatch that
-            // errors the device on a real backend (the headless backend ignores it).
-            { kind: "texture", id: sceneTex, size: { width: sw, height: sh }, format: "bgra8unorm",
+            // format must match their colour target (the live surface format);
+            // an rgba8unorm target here is a wgpu format mismatch that errors the
+            // device on a real backend (the headless backend ignores it).
+            { kind: "texture", id: sceneTex, size: { width: sw, height: sh }, format: SURFACE_FMT,
               usage: ["RENDER_ATTACHMENT", "TEXTURE_BINDING"] },
         ]));
         this.media.addImgPipeline(res);

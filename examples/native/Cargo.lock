@@ -494,6 +494,9 @@ dependencies = [
 [[package]]
 name = "elpa-material"
 version = "0.1.0"
+dependencies = [
+ "elpian-vm",
+]
 
 [[package]]
 name = "elpa-native-example"

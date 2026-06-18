@@ -46,6 +46,13 @@ fn xhr_get_bytes(method: &str, url: &str) -> Result<Vec<u8>, String> {
 /// A live app instance with a canvas-backed wgpu surface (`'static`).
 type App = Elpa<WgpuBackend<'static>>;
 
+/// The Material gallery app, **precompiled to VM bytecode at build time** by the
+/// `elpa-material` `build_bytecode` tool (run in CI before the Pages build). The
+/// browser loads this straight into the VM via `Elpa::new_from_bytecode`, so no
+/// JS/AST front-end runs at startup. Swap to `demo.bc` / `graphics.bc` for the
+/// other apps.
+const GALLERY_BYTECODE: &[u8] = include_bytes!("../../material/assets/gallery.bc");
+
 #[wasm_bindgen(start)]
 pub fn start() {
     console_error_panic_hook::set_once();
@@ -118,24 +125,23 @@ async fn run() {
         .expect("create surface from canvas")
     };
     let backend = WgpuBackend::new(&instance, surface, w, h).await;
-    let format_token = format_token(backend.surface_format());
 
     // 3. Assemble the Elpa instance over the live backend + the UI-kit app.
     //
     // The app is the **Material Design 3 widget gallery**, written in
-    // **JavaScript**: a Flutter-style widget SDK (`module_js()`) linked ahead of an
-    // app (`GALLERY_JS`) that composes a widget tree and calls `runApp` — see
-    // `elpa_material::gallery_program` (swap to `program()` for the smaller demo).
-    // Elpa compiles the whole thing to its VM with `new_from_js`; the SDK's
-    // component runtime owns layout, animation, and `gpu.submit`. The pipeline's
-    // color target is retargeted to this surface's actual format (the SDK names
-    // `bgra8unorm`; the browser surface may be `*-srgb`, and wgpu requires the
-    // pipeline target to match the surface exactly).
-    let program =
-        elpa_material::gallery_program().replace("\"bgra8unorm\"", &format!("\"{format_token}\""));
+    // **JavaScript**: a Flutter-style widget SDK linked ahead of an app
+    // (`GALLERY_JS`) that composes a widget tree and calls `runApp`. Its
+    // JS→AST→bytecode compile happens at **build/deploy time** (the
+    // `elpa-material` `build_bytecode` tool, run in CI before the Pages build),
+    // and the resulting bytecode is embedded here and loaded straight into the
+    // VM with `new_from_bytecode` — no front-end runs in the browser. The SDK's
+    // component runtime owns layout, animation, and `gpu.submit`, and reads the
+    // surface's actual color format from `gpu.surfaceInfo`, so its pipeline
+    // target matches the surface exactly (the browser surface may be `*-srgb`,
+    // which wgpu requires the pipeline to match) without any source patching.
     let surface_info = SurfaceInfo::new(w, h, dpr);
-    let mut app =
-        Elpa::new_from_js(backend, surface_info, &program).expect("app JS compiles");
+    let mut app = Elpa::new_from_bytecode(backend, surface_info, GALLERY_BYTECODE.to_vec())
+        .expect("gallery bytecode loads");
     // Grant network + a synchronous binary fetcher so the app can download a font
     // by URL at runtime (the gallery's `f` key calls `useFont(...)`).
     {
@@ -178,20 +184,6 @@ fn viewport(window: &web_sys::Window) -> (u32, u32, f64) {
     let cw = window.inner_width().unwrap().as_f64().unwrap_or(1.0);
     let ch = window.inner_height().unwrap().as_f64().unwrap_or(1.0);
     (((cw * dpr) as u32).max(1), ((ch * dpr) as u32).max(1), dpr)
-}
-
-/// Map a wgpu surface format to the protocol's format token so the app's
-/// pipeline target matches the surface.
-fn format_token(fmt: wgpu::TextureFormat) -> String {
-    use wgpu::TextureFormat as F;
-    match fmt {
-        F::Bgra8Unorm => "bgra8unorm",
-        F::Bgra8UnormSrgb => "bgra8unorm-srgb",
-        F::Rgba8Unorm => "rgba8unorm",
-        F::Rgba8UnormSrgb => "rgba8unorm-srgb",
-        _ => "bgra8unorm",
-    }
-    .to_string()
 }
 
 /// Reconfigure the GPU surface and notify the app on every window resize so the

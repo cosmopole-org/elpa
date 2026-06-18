@@ -48,4 +48,14 @@ pub trait GpuBackend {
 
     /// Submit the encoder and present, scissored to `dirty` (empty == full).
     fn end_frame(&mut self, dirty: &[Rect]);
+
+    /// The protocol token for the surface's color format (e.g. `"bgra8unorm"`,
+    /// `"bgra8unorm-srgb"`). Apps read this via `gpu.surfaceInfo` so a render
+    /// pipeline's color target matches the live surface on every backend — wgpu
+    /// requires the pipeline target format to equal the surface format exactly.
+    /// Defaults to `"bgra8unorm"`, which suits the headless/test backend and is
+    /// the historical default; a live backend overrides it with its real format.
+    fn surface_format_token(&self) -> String {
+        "bgra8unorm".to_string()
+    }
 }

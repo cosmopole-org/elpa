@@ -267,6 +267,7 @@ name = "elpa-material"
 version = "0.1.0"
 dependencies = [
  "elpa",
+ "elpian-vm",
  "image",
  "naga",
  "serde_json",
