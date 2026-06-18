@@ -1,13 +1,16 @@
 // Elpa Material — widget gallery.
 //
 // A second application (linked after the SDK, like `demo.js`) that exercises the
-// *extended* widget set: layout widgets (Container/Padding/Row+Expanded/Stack+
-// Positioned/Wrap/GridView/ListView), the broader Material catalog (TextField,
-// IconButton, Avatar, Badge, ListTile, NavigationBar, SegmentedButton,
-// CircularProgress, ExpansionTile, Banner, Drawer, Dialog, Snackbar, DataTable),
-// content/media (Image, VideoPlayer) and charts (Bar/Line/Pie/Sparkline) — plus
-// the platform-service wrappers (storage, clock, network). It composes a widget
-// tree and calls `runApp`; it never touches the GPU.
+// *extended* widget set across five bottom-nav sections: layout widgets
+// (Container/Padding/Row+Expanded/Stack+Positioned/Wrap/GridView/ListView), the
+// broader Material catalog (TextField, IconButton, Avatar, Badge, ListTile,
+// NavigationBar, SegmentedButton, CircularProgress, ExpansionTile, Banner,
+// Drawer, Dialog, Snackbar, DataTable), content/media (Image, VideoPlayer),
+// charts (Bar/Line/Pie/Sparkline) and the graphics / painting layer (CustomPaint
+// canvas, gradients, the Opacity/ColorFiltered/Transform/RotatedBox effect
+// wrappers and a BackdropFilter frosted glass) — plus the platform-service
+// wrappers (storage, clock, network). It composes a widget tree and calls
+// `runApp`; it never touches the GPU.
 //
 // Style note: every showcased widget is built by its own small top-level
 // function and sections are assembled from calls — the same idiom the SDK uses.
@@ -30,6 +33,9 @@ let likes = 3;           // badge count
 let saved = "";          // last value persisted to storage
 let netChecked = 0.0;    // whether connectivity has been probed yet
 let netStatus = "CHECKING";  // cached connectivity label (see galNetStatus)
+let gOpa = 1.0;          // GRAPHICS: Opacity demo value (cycled by 'o')
+let gAng = 0.4;          // GRAPHICS: Transform rotation (nudged by 'r')
+let gBlur = 2.0;         // GRAPHICS: BackdropFilter blur radius (nudged by 'b')
 
 // A custom SVG-path icon, registered once so it is usable by name anywhere a
 // built-in icon is (it is stroked from its path, like the rest of the icon set).
@@ -262,30 +268,109 @@ function galMedia(update) {
     return ListView({ id: "mediaList", width: 92.0, height: 70.0, gap: 4.5, children: k });
 }
 
+// ============================ graphics section ================================
+// A CustomPainter exercising the dart:ui Canvas command set, drawn in the
+// CustomPaint's local units (origin top-left). Every call lowers to the kit's
+// rounded-rect SDF primitive, so the whole scene is part of the single draw.
+function galGraphicsScene(canvas, size) {
+    let w = size.w; let h = size.h;
+    // Diagonal linear-gradient background (a Paint shader fill).
+    canvas.drawRect(0.0, 0.0, w, h, { shader: { type: "linear",
+        colors: [[0.10, 0.16, 0.42, 1.0], [0.42, 0.12, 0.34, 1.0]], begin: [0.0, 0.0], end: [1.0, 1.0] } });
+    // A faint grid (drawLine).
+    for (let i = 0; i <= 8; i++) {
+        canvas.drawLine(num(i) * w / 8.0, 0.0, num(i) * w / 8.0, h, { color: [1.0, 1.0, 1.0, 0.10], strokeWidth: 0.08 });
+    }
+    // Filled + stroked circle, rounded rect and oval (drawCircle/drawRRect/drawOval).
+    canvas.drawCircle(w * 0.16, h * 0.4, 4.6, { color: [1.0, 0.72, 0.22, 1.0] });
+    canvas.drawCircle(w * 0.16, h * 0.4, 4.6, { style: "stroke", strokeWidth: 0.35, color: [1.0, 1.0, 1.0, 0.95] });
+    canvas.drawRRect(w * 0.32, h * 0.18, w * 0.5, h * 0.56, 1.4, { color: [0.20, 0.82, 0.55, 1.0] });
+    canvas.drawOval(w * 0.54, h * 0.2, w * 0.72, h * 0.5, { color: [0.92, 0.32, 0.42, 1.0] });
+    // A pie arc (drawArc, useCenter fill).
+    canvas.drawArc(w * 0.74, h * 0.16, w * 0.96, h * 0.52, -1.5708, 4.4, 1.0, { color: [0.32, 0.6, 0.96, 1.0] });
+    // A cubic-Bézier path stroke (Path + drawPath).
+    let path = makePath();
+    path.moveTo(2.0, h - 3.0);
+    path.cubicTo(w * 0.3, h - 11.0, w * 0.6, h + 4.0, w - 2.0, h - 7.0);
+    canvas.drawPath(path, { style: "stroke", strokeWidth: 0.45, color: [1.0, 1.0, 1.0, 0.92] });
+    // A filled convex polygon (drawPath fill).
+    let tri = makePath(); tri.moveTo(w * 0.5, h * 0.6); tri.lineTo(w * 0.6, h * 0.78); tri.lineTo(w * 0.4, h * 0.78); tri.close();
+    canvas.drawPath(tri, { color: [0.95, 0.85, 0.30, 0.85] });
+    // A rotated, non-uniformly scaled square (transform stack).
+    canvas.save();
+    canvas.translate(w * 0.85, h * 0.72); canvas.rotate(0.7); canvas.scale(1.3, 0.8);
+    canvas.drawRect(-3.2, -3.2, 3.2, 3.2, { color: [0.85, 0.85, 0.25, 0.85] });
+    canvas.restore();
+    // A soft shadow under the title, then the title text (drawShadow/drawText).
+    canvas.drawShadow(w * 0.5 - 8.0, 1.0, w * 0.5 + 8.0, 4.5, 1.2, [0.0, 0.0, 0.0, 0.5], 1.6);
+    canvas.drawText("CANVAS", w * 0.5, 3.0, { size: 0.72, color: [1.0, 1.0, 1.0, 1.0] });
+}
+function galCanvasDemo() {
+    return Labeled({ label: "CUSTOMPAINT / CANVAS", child: Center({ child: CustomPaint({ width: 88.0, height: 50.0, paint: galGraphicsScene }) }) });
+}
+function galGradientDemo() {
+    return Labeled({ label: "GRADIENTS (LINEAR / RADIAL / SWEEP)", child: Row({ width: 88.0, main: "around", children: [
+        Container({ width: 24.0, height: 16.0, radius: 2.5,
+            gradient: LinearGradient([[0.95, 0.45, 0.2, 1.0], [0.6, 0.15, 0.5, 1.0]], { begin: [0.0, 0.0], end: [1.0, 0.0] }) }),
+        Container({ width: 16.0, height: 16.0, radius: 8.0,
+            gradient: RadialGradient([[1.0, 0.95, 0.7, 1.0], [0.2, 0.3, 0.75, 1.0]]) }),
+        Container({ width: 16.0, height: 16.0, radius: 8.0,
+            gradient: SweepGradient([[0.95, 0.3, 0.3, 1.0], [0.3, 0.85, 0.4, 1.0], [0.3, 0.4, 0.95, 1.0], [0.95, 0.3, 0.3, 1.0]]) }),
+    ] }) });
+}
+function galEffectsDemo() {
+    return Labeled({ label: "OPACITY / TINT / TRANSFORM / ROTATE", child: Row({ width: 88.0, main: "around", children: [
+        Opacity({ opacity: gOpa, child: Card({ child: Text("FADE", { size: "caption" }) }) }),
+        ColorFiltered({ color: [1.0, 0.55, 0.55, 1.0], child: Card({ child: Text("TINT", { size: "caption" }) }) }),
+        Transform({ angle: gAng, child: Card({ child: Text("ROT", { size: "caption" }) }) }),
+        RotatedBox({ turns: 1, child: Card({ child: Text("90", { size: "caption" }) }) }),
+    ] }) });
+}
+function galBackdropDemo() {
+    return Labeled({ label: "BACKDROPFILTER (FROSTED GLASS)", child: Center({ child: Stack({ width: 88.0, height: 28.0, children: [
+        Container({ width: 88.0, height: 28.0, radius: 3.0,
+            gradient: LinearGradient([[0.95, 0.4, 0.2, 1.0], [0.3, 0.8, 0.9, 1.0], [0.6, 0.3, 0.9, 1.0]], { begin: [0.0, 0.0], end: [1.0, 0.0] }) }),
+        Center({ child: BackdropFilter({ blur: gBlur, width: 60.0, height: 14.0, radius: 4.0,
+            child: Center({ child: Text("FROSTED GLASS", { size: "label" }) }) }) }),
+    ] }) }) });
+}
+function galGraphics(update) {
+    let k = [];
+    push(k, Text("GRAPHICS", { size: "title" }));
+    push(k, galCanvasDemo());
+    push(k, galGradientDemo());
+    push(k, galEffectsDemo());
+    push(k, galBackdropDemo());
+    return ListView({ id: "graphicsList", width: 92.0, height: 70.0, gap: 4.5, children: k });
+}
+
 function galBody(update) {
     if (tab == 1) { return galWidgets(update); }
     if (tab == 2) { return galCharts(update); }
     if (tab == 3) { return galMedia(update); }
+    if (tab == 4) { return galGraphics(update); }
     return galLayout(update);
 }
 
 // ============================ root component ==================================
-// The bottom navigation's four destinations.
+// The bottom navigation's five destinations.
 function galMenuItems() {
     return [
         { icon: "home", label: "LAYOUT" }, { icon: "settings", label: "WIDGETS" },
         { icon: "chart", label: "CHARTS" }, { icon: "video", label: "MEDIA" },
+        { icon: "star", label: "GRAPHICS" },
     ];
 }
-// The drawer's menu: the same four destinations grouped under a section caption,
+// The drawer's menu: the same five destinations grouped under a section caption,
 // then a divider and a second group of (decorative) destinations — exercising
 // section headers, dividers and more than three entries. Only `{ icon, label }`
-// rows count toward the selected index, so the first four align with `tab`.
+// rows count toward the selected index, so the first five align with `tab`.
 function galDrawerItems() {
     return [
         { section: "BROWSE" },
         { icon: "home", label: "LAYOUT" }, { icon: "settings", label: "WIDGETS" },
         { icon: "chart", label: "CHARTS" }, { icon: "video", label: "MEDIA" },
+        { icon: "star", label: "GRAPHICS" },
         { divider: 1 },
         { section: "LIBRARY" },
         { icon: "heart", label: "FAVORITES" }, { icon: "download", label: "DOWNLOADS" },
@@ -293,12 +378,16 @@ function galDrawerItems() {
     ];
 }
 function galKey(k, update) {
-    if (k == "t") { tab = (tab + 1) % 4; }
+    if (k == "t") { tab = (tab + 1) % 5; }
     if (k == "m") { menuOpen = 1.0 - menuOpen; }
     if (k == "g") { dlgOpen = 1.0 - dlgOpen; }
     if (k == "s") { snackOn = 1.0 - snackOn; }
     if (k == "p") { playing = 1.0 - playing; }
     if (k == "d") { dark = 1.0 - dark; }
+    // GRAPHICS-tab effect controls: fade, rotate and blur radius.
+    if (k == "o") { gOpa = gOpa - 0.2; if (gOpa < 0.05) { gOpa = 1.0; } }
+    if (k == "r") { gAng = gAng + 0.3; }
+    if (k == "b") { gBlur = gBlur + 0.6; if (gBlur > 5.0) { gBlur = 0.6; } }
     // 'f' downloads a web font by URL and uses it as the main font; 'F' restores
     // the default font (itself downloaded by the runtime). The runtime fetches and
     // rasterises it; the UI repaints in the new face. (`useFont` repaints itself,
@@ -329,9 +418,9 @@ let App = defineComponent(function(props, update) {
         drawer: Drawer({ open: menuOpen, header: "ELPA GALLERY", subtitle: "DESIGN SYSTEM DEMO",
             avatarIcon: "person", image: "https://picsum.photos/seed/elpanav/600/320",
             index: tab, items: galDrawerItems(),
-            // The first four destinations switch sections; the decorative extras
+            // The first five destinations switch sections; the decorative extras
             // just acknowledge with a snackbar. Either way the drawer closes.
-            onSelect: (i) => { if (i < 4) { tab = i; } else { snackOn = 1.0; } menuOpen = 0.0; update(); },
+            onSelect: (i) => { if (i < 5) { tab = i; } else { snackOn = 1.0; } menuOpen = 0.0; update(); },
             onClose: () => { menuOpen = 0.0; update(); } }),
     };
     if (dlgOpen > 0.5) { sc.dialog = galDialog(update); }

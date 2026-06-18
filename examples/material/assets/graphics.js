@@ -89,7 +89,7 @@ let App = defineComponent(function(props, update) {
             // BackdropFilter frosted glass over a sweep-gradient backdrop.
             Center({ child: Stack({ width: 92.0, height: 30.0, children: [
                 Container({ width: 92.0, height: 30.0, radius: 3.0,
-                    gradient: SweepGradient([[0.95, 0.4, 0.2, 1.0], [0.3, 0.8, 0.9, 1.0], [0.6, 0.3, 0.9, 1.0], [0.95, 0.4, 0.2, 1.0]]) }),
+                    gradient: LinearGradient([[0.95, 0.4, 0.2, 1.0], [0.3, 0.8, 0.9, 1.0], [0.6, 0.3, 0.9, 1.0]], { begin: [0.0, 0.0], end: [1.0, 0.0] }) }),
                 Center({ child: BackdropFilter({ blur: blur, width: 62.0, height: 15.0, radius: 4.0,
                     child: Center({ child: Text("FROSTED GLASS", { size: "label" }) }) }) }),
             ] }) }),
