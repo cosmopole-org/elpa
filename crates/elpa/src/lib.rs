@@ -129,6 +129,19 @@ impl<B: GpuBackend> Elpa<B> {
         Some(Self::with_runtime(runtime, backend, surface))
     }
 
+    /// Assemble an instance from **prebuilt bytecode** — the app compiled to the
+    /// VM's bytecode at *build* time (see `elpian_vm::api::compile_js_to_bytecode`)
+    /// and shipped as an asset. The deployed app never runs the JS/AST front-end:
+    /// it loads the bytecode straight into the executor, which decodes it once
+    /// into its in-memory operation structure. This is the path the `web` and
+    /// `native` examples use after their JS is compiled during build/deploy.
+    /// Returns `None` only if the VM could not be registered.
+    pub fn new_from_bytecode(backend: B, surface: SurfaceInfo, bytecode: Vec<u8>) -> Option<Self> {
+        let id = format!("elpa-{}", INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed));
+        let runtime = Runtime::from_bytecode(id, bytecode)?;
+        Some(Self::with_runtime(runtime, backend, surface))
+    }
+
     /// Shared field initialization for the AST and JS constructors.
     fn with_runtime(runtime: Runtime, backend: B, surface: SurfaceInfo) -> Self {
         Self {
@@ -596,7 +609,21 @@ fn handle_call<B: GpuBackend>(
             }
             reply_null()
         }
-        "gpu.surfaceInfo" => reply_json(&surface.to_json()),
+        "gpu.surfaceInfo" => {
+            // Surface geometry plus the live color-format token, so an app can
+            // build its render-pipeline color target to match the actual surface
+            // (wgpu requires an exact match). This replaces the host-side string
+            // patching examples used to do on the JS source before compiling,
+            // which is impossible once the program ships as prebuilt bytecode.
+            let mut info = surface.to_json();
+            if let Some(obj) = info.as_object_mut() {
+                obj.insert(
+                    "colorFormat".to_string(),
+                    serde_json::Value::String(renderer.backend().surface_format_token()),
+                );
+            }
+            reply_json(&info)
+        }
         "log" => {
             log.push(hc.payload.clone());
             reply_null()

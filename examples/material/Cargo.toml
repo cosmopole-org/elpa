@@ -8,7 +8,18 @@ description = "A Material Design 3 (Material You) UI-kit SDK delivered as JavaSc
 name = "elpa_material"
 
 [dependencies]
-# The kit ships as JavaScript source strings only; embedding needs no deps.
+# The kit ships as JavaScript source strings only; the library itself needs no
+# deps. The `build_bytecode` binary (build-time tool) lowers those programs to VM
+# bytecode via the VM's compiler front-end — a light, GPU-free dependency.
+elpian-vm = { path = "../../crates/elpian-vm" }
+
+# The build-time bytecode generator. Run `cargo run -p elpa-material --bin
+# build_bytecode` to (re)compile the kit's JS programs to `assets/*.bc`, which the
+# web and native examples embed and load via `Elpa::new_from_bytecode` — so the
+# JS→AST→bytecode compile happens at build/deploy time, never in the shipped app.
+[[bin]]
+name = "build_bytecode"
+path = "src/bin/build_bytecode.rs"
 
 [dev-dependencies]
 # Drive the JS UI kit end to end through a real (headless) Elpa instance + VM,

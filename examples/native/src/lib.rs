@@ -87,31 +87,14 @@ fn safe_area_insets(w: u32, h: u32) -> Insets {
     Insets::ZERO
 }
 
-/// Map a wgpu surface format to the protocol's format token so the app's
-/// pipeline target matches the surface.
-fn format_token(fmt: wgpu::TextureFormat) -> String {
-    use wgpu::TextureFormat as F;
-    match fmt {
-        F::Bgra8Unorm => "bgra8unorm",
-        F::Bgra8UnormSrgb => "bgra8unorm-srgb",
-        F::Rgba8Unorm => "rgba8unorm",
-        F::Rgba8UnormSrgb => "rgba8unorm-srgb",
-        _ => "bgra8unorm",
-    }
-    .to_string()
-}
-
-/// Link the Material SDK and the widget-gallery app, then patch the pipeline
-/// target to the live surface format chosen by wgpu. The Material SDK defaults to
-/// `bgra8unorm` for headless/web-style examples, while native surfaces often
-/// prefer an sRGB format. (Swap `gallery_program` for `program` to run the
-/// smaller demo instead.)
-fn material_program(surface_format: &str) -> String {
-    elpa_material::gallery_program().replace(
-        r#"format: "bgra8unorm""#,
-        &format!(r#"format: "{surface_format}""#),
-    )
-}
+/// The Material gallery app, **precompiled to VM bytecode at build time** by the
+/// `elpa-material` `build_bytecode` tool (run in CI before the APK build). The
+/// app loads this straight into the VM via `Elpa::new_from_bytecode`, so no
+/// JS/AST front-end runs at startup. The SDK reads the live surface color format
+/// from `gpu.surfaceInfo` and builds its pipeline target to match (native
+/// surfaces often prefer an sRGB format), so one bytecode runs on any surface.
+/// (Swap to `demo.bc` / `graphics.bc` for the other apps.)
+const GALLERY_BYTECODE: &[u8] = include_bytes!("../../material/assets/gallery.bc");
 
 /// Everything that exists only while we hold a surface. On Android this is
 /// recreated on each `resumed` and torn down on each `suspended`.
@@ -178,13 +161,12 @@ impl ElpaApp {
             .expect("create surface from window");
         let backend = pollster::block_on(WgpuBackend::new(&instance, surface, w, h));
 
-        let program = material_program(&format_token(backend.surface_format()));
         // Seed the first frame with the current safe-area insets so the UI lays
         // out clear of the status / navigation bars from the very first paint
         // (no flash of content drawn under the status bar on Android).
         let surface_info = SurfaceInfo::new(w, h, scale).with_insets(safe_area_insets(w, h));
-        let mut app = Elpa::new_from_js(backend, surface_info, &program)
-            .expect("Material SDK demo JS compiles");
+        let mut app = Elpa::new_from_bytecode(backend, surface_info, GALLERY_BYTECODE.to_vec())
+            .expect("gallery bytecode loads");
         // Grant network + a blocking fetcher so the app can download a font by URL
         // at runtime (the gallery's `f` key calls `useFont(...)`).
         {

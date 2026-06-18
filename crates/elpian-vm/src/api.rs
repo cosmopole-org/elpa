@@ -143,6 +143,25 @@ pub fn create_vm_from_ast(machine_id: String, ast_json: String) -> bool {
     true
 }
 
+/// Create a VM from **prebuilt bytecode** — the output of [`compile_js_to_bytecode`]
+/// / [`compiler::compile_ast`], produced at build time and shipped as an asset.
+/// This skips the JS/AST front-end entirely at run time: the deployed app loads
+/// bytecode straight into the executor (which decodes it once into its in-memory
+/// operation structure). Always succeeds — bytecode is already validated by the
+/// build-time compile.
+pub fn create_vm_from_bytecode(machine_id: String, bytecode: Vec<u8>) -> bool {
+    let vm = VM::compile_and_create_of_bytecode(machine_id.clone(), bytecode, all_host_apis());
+    VMS.lock().unwrap().insert(machine_id, vm);
+    true
+}
+
+/// Compile JavaScript source to bytecode (the build-time half of the pipeline),
+/// so a tool can lower an app to bytecode once and ship the result. Returns the
+/// bytecode, or `None` if the source is outside the supported JS subset.
+pub fn compile_js_to_bytecode(code: &str) -> Option<Vec<u8>> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compiler::compile_js(code))).ok()
+}
+
 /// Create a VM directly from Elpian source code (uses the in-VM parser).
 pub fn create_vm_from_code(machine_id: String, code: String) -> bool {
     let vm = VM::compile_and_create_of_code(machine_id.clone(), code, 1, all_host_apis());

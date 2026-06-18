@@ -67,6 +67,20 @@ impl Runtime {
         }
     }
 
+    /// Register a VM from **prebuilt bytecode** (compiled at build time from JS
+    /// or AST). No front-end runs at load time — the deployed app ships the
+    /// bytecode as an asset and the executor decodes it once into its in-memory
+    /// operation structure. Always succeeds (the bytecode was validated when it
+    /// was built).
+    pub fn from_bytecode(machine_id: impl Into<String>, bytecode: Vec<u8>) -> Option<Runtime> {
+        let machine_id = machine_id.into();
+        if api::create_vm_from_bytecode(machine_id.clone(), bytecode) {
+            Some(Runtime { machine_id, cb_counter: 0 })
+        } else {
+            None
+        }
+    }
+
     pub fn machine_id(&self) -> &str {
         &self.machine_id
     }

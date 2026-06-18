@@ -683,6 +683,21 @@ impl<'s> GpuBackend for WgpuBackend<'s> {
             frame.present();
         }
     }
+
+    /// Map the live surface format to its protocol token so apps can target it
+    /// exactly. Covers the formats a swapchain commonly hands back; anything
+    /// else falls back to `"bgra8unorm"` (the renderer-wide default).
+    fn surface_format_token(&self) -> String {
+        use wgpu::TextureFormat as F;
+        match self.config.format {
+            F::Bgra8Unorm => "bgra8unorm",
+            F::Bgra8UnormSrgb => "bgra8unorm-srgb",
+            F::Rgba8Unorm => "rgba8unorm",
+            F::Rgba8UnormSrgb => "rgba8unorm-srgb",
+            _ => "bgra8unorm",
+        }
+        .to_string()
+    }
 }
 
 impl<'s> WgpuBackend<'s> {
