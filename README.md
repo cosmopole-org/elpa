@@ -28,6 +28,14 @@ JavaScript ─▶ Elpian AST ─▶ bytecode ─▶ VM (your app logic)
 The VM never links wgpu; the renderer never links the VM. They agree only on the
 `elpa-protocol` command tree.
 
+**The JS → bytecode compile runs at build time.** The bundled examples ship the
+app **precompiled to VM bytecode** (`examples/material/assets/*.bc`, produced by
+`cargo run -p elpa-material --bin build_bytecode` and refreshed in CI before each
+deploy). The deployed web/native app loads that bytecode directly
+(`Elpa::new_from_bytecode`) — no JS/AST front-end runs at startup. The executor
+decodes the bytecode **once** into an in-memory list of operation objects and
+traverses that each frame, rather than re-parsing the bytes on every step.
+
 ## The unified instance
 
 Add `elpa` as a dependency, construct one object with a GPU backend + your app
@@ -63,7 +71,7 @@ for the same triangle running in a winit window on **desktop
 | `examples/web` | Full-window DPI canvas drawing Elpa frames (wasm) | ✅ compiles (wasm32) |
 | `examples/native` | Same triangle in a winit window — desktop + Android | ✅ builds (Linux/Windows/Android) |
 | `examples/sdk` | **Engine SDK as Elpian AST** (`assets/*.ast.json`): importable 2D/3D shape definitions, math in WGSL | ✅ tested |
-| `examples/material` | **Flutter-style Material Design 3 framework in JavaScript** — an object-oriented SDK (`assets/sdk/*.js`: engine services + a `Widget` class hierarchy + the retained-tree `Material` runtime, `defineComponent`/`runApp`, per-component `update`) **plus a full painting layer** (a `dart:ui` `Canvas`/`CustomPaint`, gradients, opacity/colour filters, 2D transforms and a multi-pass `BackdropFilter` blur); the app composes a widget tree and never touches the GPU. Compiled to the VM with `Elpa::new_from_js` | ✅ tested |
+| `examples/material` | **Flutter-style Material Design 3 framework in JavaScript** — an object-oriented SDK (`assets/sdk/*.js`: engine services + a `Widget` class hierarchy + the retained-tree `Material` runtime, `defineComponent`/`runApp`, per-component `update`) **plus a full painting layer** (a `dart:ui` `Canvas`/`CustomPaint`, gradients, opacity/colour filters, 2D transforms and a multi-pass `BackdropFilter` blur); the app composes a widget tree and never touches the GPU. Compiled to VM bytecode at build time (`build_bytecode`); the web/native examples load it with `Elpa::new_from_bytecode` | ✅ tested |
 
 ## Reusable drawing definitions + module import
 
