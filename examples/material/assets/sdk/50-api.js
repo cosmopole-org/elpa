@@ -67,6 +67,37 @@ function httpReq(method, url, body, onDone) {
 }
 function randomUnit() { let r = askHost("random.next", []); if (isNull(r)) { return 0.0; } if (has(r, "value")) { return r.value; } return 0.0; }
 
+// ---- parallel tasks (worker-thread compute pool) ----------------------------
+// Elpa runs guest compute on a pool of worker threads, each with its own Elpian
+// executor, so per-frame work (tessellation, particle physics, layout math) is
+// divided across CPU cores instead of serialising on the render thread. Worker
+// VMs share no heap with the main VM — only JSON crosses the boundary — so tasks
+// must be pure: they take one JSON arg and `return` a JSON-encodable value.
+//
+// Spin up the pool once. `src` is a JS module string whose top level defines the
+// task functions; `workers` is the thread count (0 = match the CPU core count).
+function taskInit(src, workers) { return okOf(askHost("task.init", [{ source: src, workers: workers }])); }
+// Post `fn(args)` to the least-loaded worker; returns an integer task id (or -1).
+function taskSpawn(fn, args) { let r = askHost("task.spawn", [{ fn: fn, args: args }]); if (isNull(r)) { return -1; } if (has(r, "id")) { return r.id; } return -1; }
+// Hand `fn(args)` to a specific worker `to` over the worker-to-worker queue.
+function taskRelay(to, fn, args) { let r = askHost("task.relay", [{ to: to, fn: fn, args: args }]); if (isNull(r)) { return -1; } if (has(r, "id")) { return r.id; } return -1; }
+// Non-blocking: { ready: bool, result?: any }. The result is consumed once read.
+function taskPoll(id) { let r = askHost("task.poll", [{ id: id }]); if (isNull(r)) { return { ready: false }; } return r; }
+// Block (the host parks, no busy-wait) until every id in `ids` is done; returns
+// the results in order. The barrier for divide-and-conquer within a frame.
+function taskJoin(ids) { let r = askHost("task.join", [{ ids: ids }]); if (isNull(r)) { return []; } if (has(r, "results")) { return r.results; } return []; }
+// { workers, queued, completed } — a pool KPI snapshot for telemetry/HUDs.
+function taskStats() { let r = askHost("task.stats", []); if (isNull(r)) { return { workers: 0, queued: 0, completed: 0 }; } return r; }
+// Fan `fn` out over `chunks` (an array of arg objects), one task each, then join
+// — the convenience barrier the graphics / gallery demos use to split a frame's
+// compute across cores. Returns the per-chunk results in order.
+function parallelMap(fn, chunks) {
+    let ids = [];
+    let i = 0;
+    while (i < len(chunks)) { push(ids, taskSpawn(fn, chunks[i])); i = i + 1; }
+    return taskJoin(ids);
+}
+
 // ---- widget constructors -----------------------------------------------------
 // Layout.
 function Container(p) { return new ContainerWidget(p); }

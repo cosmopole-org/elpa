@@ -420,6 +420,10 @@ pub struct HostEnv {
     /// thread so loads run off the render loop.
     media: Option<MediaEngine>,
     media_fetcher: Option<MediaFetcher>,
+    /// The worker-thread task pool servicing `task.*` calls — a set of threads,
+    /// each running its own Elpian VM, that execute guest compute tasks in
+    /// parallel off the render thread. Started lazily on the guest's `task.init`.
+    tasks: crate::workers::TaskPool,
 }
 
 /// The default UI font — **Roboto** (Apache-2.0), Material Design's canonical
@@ -441,7 +445,7 @@ impl Default for HostEnv {
 
 impl HostEnv {
     pub fn new(fs: Box<dyn FileStore>, net: Box<dyn NetProvider>) -> Self {
-        HostEnv { toggles: EnvToggles::default(), fs, net, clock_ms: 0, rng_state: 0x9E3779B97F4A7C15, atlas_cache: BTreeMap::new(), default_font: None, media: None, media_fetcher: None }
+        HostEnv { toggles: EnvToggles::default(), fs, net, clock_ms: 0, rng_state: 0x9E3779B97F4A7C15, atlas_cache: BTreeMap::new(), default_font: None, media: None, media_fetcher: None, tasks: crate::workers::TaskPool::default() }
     }
 
     pub fn toggles(&self) -> EnvToggles {
@@ -498,8 +502,17 @@ impl HostEnv {
             "random" => Some(self.service_random(call)),
             "text" => Some(self.service_text(call)),
             "media" => Some(self.service_media(call)),
+            "task" => Some(self.tasks.service(&call.api_name, &call.payload)),
             _ => None,
         }
+    }
+
+    /// A KPI snapshot of the worker pool: (workers, queued, completed). Lets a
+    /// host or benchmark read how the task pool is loaded without a guest call.
+    pub fn task_stats(&self) -> Option<(usize, usize, u64)> {
+        // `stats` is read-only but lives behind the pool; expose it via the
+        // façade's own accessor for the host's telemetry.
+        self.tasks.pool_stats()
     }
 
     /// `media.*` — asynchronous image / animated-GIF loading.

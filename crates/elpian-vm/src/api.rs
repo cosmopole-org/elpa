@@ -85,6 +85,15 @@ fn all_host_apis() -> Vec<String> {
         "time.monotonic",
         "random.next",
         "random.bytes",
+        // Multi-threaded task offload: spawn guest compute onto a pool of worker
+        // threads, each running its own Elpian executor (serviced by the host's
+        // worker pool). Gated by the catch-all `Other` capability.
+        "task.init",
+        "task.spawn",
+        "task.poll",
+        "task.join",
+        "task.relay",
+        "task.stats",
     ]
     .iter()
     .map(|s| s.to_string())

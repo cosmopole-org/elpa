@@ -96,3 +96,40 @@ pub fn gallery_program() -> String {
 pub fn graphics_program() -> String {
     format!("{}\n{GRAPHICS_JS}", module_js())
 }
+
+/// The particle-field compute kernel (`field(spec)`), shared by the parallel
+/// showcase's inline and worker paths.
+pub const GRAPHICS_FIELD_WORKER_JS: &str = include_str!("../assets/graphics_field_worker.js");
+
+/// The *parallel graphics* showcase, as JavaScript source. Computes a per-frame
+/// particle field on the worker-thread pool (`taskInit` + `parallelMap`) and
+/// paints it through a CustomPaint — the demonstration that the painting layer
+/// can divide its per-frame geometry work across CPU cores.
+pub const GRAPHICS_PARALLEL_JS: &str = include_str!("../assets/graphics_parallel.js");
+
+/// The SDK linked ahead of the parallel-graphics showcase. The compute kernel is
+/// linked in twice over: once as runnable code (so the single-threaded path can
+/// call `field` directly) and once as the `FIELD_WORKER` source string the app
+/// hands to `taskInit` so every worker thread compiles it into its own executor.
+pub fn graphics_parallel_program() -> String {
+    // A minimal JSON string-literal encoder so the kernel source can be embedded
+    // as a JS string without a serde dependency in the library crate.
+    let mut lit = String::with_capacity(GRAPHICS_FIELD_WORKER_JS.len() + 16);
+    lit.push('"');
+    for c in GRAPHICS_FIELD_WORKER_JS.chars() {
+        match c {
+            '"' => lit.push_str("\\\""),
+            '\\' => lit.push_str("\\\\"),
+            '\n' => lit.push_str("\\n"),
+            '\r' => lit.push_str("\\r"),
+            '\t' => lit.push_str("\\t"),
+            c if (c as u32) < 0x20 => lit.push_str(&format!("\\u{:04x}", c as u32)),
+            c => lit.push(c),
+        }
+    }
+    lit.push('"');
+    format!(
+        "{}\n{GRAPHICS_FIELD_WORKER_JS}\nvar FIELD_WORKER = {lit};\n{GRAPHICS_PARALLEL_JS}",
+        module_js()
+    )
+}
