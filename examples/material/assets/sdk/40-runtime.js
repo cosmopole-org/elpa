@@ -79,6 +79,7 @@ class Material {
         this.icons = new IconEngine();
         this.media = new MediaEngine();
         this.clock = new AnimationClock();
+        this.graphics = new GraphicsEngine();
         this.media.app = this;
         this.root = 0; this.running = 0.0; this.layered = 0.0;
         this.inst = []; this.taps = []; this.drags = [];
@@ -168,6 +169,7 @@ class Material {
     }
     submit() {
         this.frameN = this.frameN + 1;
+        if (this.graphics.hasBackdrop(this.inst)) { this.submitBackdrop(); return 0; }
         if (this.media.imgHandleN == 0) { this.submitPlain(); return 0; }
         let bg = this.theme.bg();
         let plan = this.media.planDraws(this.inst);
@@ -187,6 +189,9 @@ class Material {
     // A layered frame: a cached static buffer (non-animating widgets, bytes
     // unchanged → the renderer skips re-uploading it) plus a small dynamic buffer.
     submitLayered(animating) {
+        // The frosted-glass compositor is a whole-frame multi-pass; it can't ride
+        // the static/dynamic split, so a frame with a backdrop falls back to it.
+        if (this.graphics.hasBackdrop(this.inst)) { this.submitBackdrop(); return 0; }
         for (let i = 0; i < len(animating); i++) { let c = animating[i]; c._animLayer = 1.0; }
         let dyn = [];
         let stat = this.root.bucket(dyn);
@@ -208,6 +213,94 @@ class Material {
                 clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
             commands: cmds };
         askHost("gpu.submit", [{ resources: res, commands: concat(uploads, [pass]) }]);
+        return 0;
+    }
+
+    // ---- backdrop blur (frosted glass) --------------------------------------
+    // A real two-stage frame: everything painted *before* a backdrop sentinel is
+    // rendered into an offscreen texture (pass A); the surface pass (B) redraws
+    // that content sharp, composites a blurred copy of it inside each backdrop
+    // region (multi-tap samples of the offscreen texture through the image
+    // pipeline — a box blur), then draws everything painted *after* on top.
+    sdfDrawCmds(runs) {
+        let cmds = [];
+        for (let i = 0; i < len(runs); i++) {
+            push(cmds, { cmd: "draw", vertex_count: 6, instance_count: runs[i].count, first_vertex: 0, first_instance: runs[i].first });
+        }
+        return cmds;
+    }
+    // Multi-tap blur composite of region `rg` sampling the offscreen scene texture.
+    backdropTapCmds(rg, sceneTex, res, tag) {
+        let m = this.metrics; let cmds = [];
+        let b = rg.blur; if (b < 0.5) { b = 0.5; }
+        let taps = [[0.0, 0.0, 1.0], [b, 0.0, 0.5], [-b, 0.0, 0.5], [0.0, b, 0.5], [0.0, -b, 0.5],
+            [b, b, 0.32], [-b, b, 0.32], [b, -b, 0.32], [-b, -b, 0.32]];
+        let u0b = (rg.cx - rg.hw) / m.vw; let v0b = (rg.cy - rg.hh) / m.vh;
+        let u1b = (rg.cx + rg.hw) / m.vw; let v1b = (rg.cy + rg.hh) / m.vh;
+        for (let i = 0; i < len(taps); i++) {
+            let dx = taps[i][0] / m.vw; let dy = taps[i][1] / m.vh; let a = taps[i][2];
+            let uid = concat(concat("elpa.m3.bd.u.", tag), str(i)); let bid = concat(concat("elpa.m3.bd.bg.", tag), str(i));
+            push(res, bufF32(uid, ["UNIFORM", "COPY_DST"],
+                [m.vw, m.vh, rg.cx, rg.cy, rg.hw, rg.hh, rg.r, 0.0, u0b + dx, v0b + dy, u1b + dx, v1b + dy, 1.0, 1.0, 1.0, a]));
+            push(res, { kind: "bindGroup", id: bid, layout: "elpa.m3.img.bgl", entries: [
+                { binding: 0, resource: { type: "buffer", buffer: uid } },
+                { binding: 1, resource: { type: "textureView", texture: sceneTex } },
+                { binding: 2, resource: { type: "sampler", sampler: "elpa.m3.img.samp" } } ] });
+            push(cmds, { cmd: "setPipeline", pipeline: "elpa.m3.img.pipe" });
+            push(cmds, { cmd: "setBindGroup", index: 0, bind_group: bid });
+            push(cmds, { cmd: "draw", vertex_count: 6, instance_count: 1, first_vertex: 0, first_instance: 0 });
+        }
+        return cmds;
+    }
+    submitBackdrop() {
+        let m = this.metrics; let bg = this.theme.bg();
+        let scan = this.graphics.scanBackdrops(this.inst);
+        let n = len(this.inst) / 16;
+        let below = this.graphics.sdfRuns(this.inst, 0, scan.last);
+        let above = this.graphics.sdfRuns(this.inst, scan.last + 1, n);
+        let sw = ceil(m.vw); let sh = ceil(m.vh); if (sw < 1) { sw = 1; } if (sh < 1) { sh = 1; }
+        // Size-versioned id: stable across steady frames (so the resource cache
+        // reuses the offscreen target), fresh on resize.
+        let sceneTex = concat(concat(concat("elpa.m3.bd.scene.", str(sw)), "x"), str(sh));
+        let res = concat(concat(sdfPipelineResources(), this.font.atlasTexRes()), concat(this.frameBindings(), [
+            bufF32("elpa.m3.inst", ["VERTEX", "COPY_DST"], this.inst),
+            { kind: "texture", id: sceneTex, size: { width: sw, height: sh }, format: "rgba8unorm",
+              usage: ["RENDER_ATTACHMENT", "TEXTURE_BINDING"] },
+        ]));
+        this.media.addImgPipeline(res);
+        let uploads = this.font.atlasUploadCmds();
+        // Pass A: render the below-backdrop content into the offscreen scene.
+        let sceneCmds = concat([
+            { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" },
+            { cmd: "setPipeline", pipeline: "elpa.m3.pipe" },
+            { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst", offset: 0 },
+        ], this.sdfDrawCmds(below));
+        let scenePass = { op: "renderPass", id: "elpa.m3.bd.scenePass",
+            color_attachments: [{ view: { kind: "texture", texture: sceneTex }, load: "clear",
+                clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
+            commands: sceneCmds };
+        // Pass B (surface): sharp below content, then a blurred composite inside
+        // each region, then the above content (the frost tint + child + the rest).
+        let surfCmds = concat([
+            { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" },
+            { cmd: "setPipeline", pipeline: "elpa.m3.pipe" },
+            { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst", offset: 0 },
+        ], this.sdfDrawCmds(below));
+        for (let k = 0; k < len(scan.marks); k++) {
+            let rg = this.graphics.regionAt(this.inst, scan.marks[k]);
+            surfCmds = concat(surfCmds, this.backdropTapCmds(rg, sceneTex, res, str(k)));
+        }
+        surfCmds = concat(surfCmds, [
+            { cmd: "setBindGroup", index: 0, bind_group: "elpa.m3.gb" },
+            { cmd: "setPipeline", pipeline: "elpa.m3.pipe" },
+            { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.m3.inst", offset: 0 },
+        ]);
+        surfCmds = concat(surfCmds, this.sdfDrawCmds(above));
+        let surfPass = { op: "renderPass", id: "elpa.m3.pass",
+            color_attachments: [{ view: { kind: "surface" }, load: "clear",
+                clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
+            commands: surfCmds };
+        askHost("gpu.submit", [{ resources: res, commands: concat(uploads, [scenePass, surfPass]) }]);
         return 0;
     }
 

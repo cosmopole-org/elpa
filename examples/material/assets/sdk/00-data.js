@@ -216,12 +216,40 @@ let ACC_DARK  = [[0.816,0.737,1.000],[0.306,0.847,0.859],[0.616,0.839,0.490],[1.
 let WHITE = [1.0, 1.0, 1.0, 1.0];
 let CLEAR = [0.0, 0.0, 0.0, 0.0];
 let IMG_MARK = 424242.0;            // sentinel marker in instance slot 0 (off-screen, unique)
+let BACKDROP_MARK = 525252.0;       // backdrop-blur sentinel marker in instance slot 0
 // A 1x1 placeholder pixel (RGBA #F4F4F6FF) shown until real pixels land,
 // pre-encoded as base64 (the VM JS subset has no base64 encoder).
 let IMG_PLACEHOLDER = "9PT2/w==";
 
 // ---- small shared helpers (pure functions, no state) -------------------------
 function clamp01(v) { if (v < 0.0) { return 0.0; } if (v > 1.0) { return 1.0; } return v; }
+// Linear-interpolate two rgba colours.
+function lerpCol(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3] + (b[3] - a[3]) * t]; }
+// Build a normalised stop list `[{ t, col }]` from a gradient's `colors` (rgba
+// arrays) and optional `stops` (positions in [0,1]); even spacing if absent.
+function gradStops(colors, stops) {
+    let n = len(colors); let out = [];
+    for (let i = 0; i < n; i++) {
+        let t = 0.0; if (n > 1) { t = num(i) / (n - 1.0); }
+        if (stops != 0) { if (i < len(stops)) { t = stops[i]; } }
+        push(out, { t: t, col: colors[i] });
+    }
+    return out;
+}
+// Sample a normalised stop list at position `t` (clamped, piecewise-linear).
+function gradColorAt(stops, t) {
+    let n = len(stops); if (n == 0) { return CLEAR; }
+    if (t <= stops[0].t) { return stops[0].col; }
+    if (t >= stops[n - 1].t) { return stops[n - 1].col; }
+    for (let i = 0; i < n - 1; i++) {
+        let a = stops[i]; let b = stops[i + 1];
+        if (t >= a.t) { if (t <= b.t) {
+            let span = b.t - a.t; let f = 0.0; if (span > 0.0001) { f = (t - a.t) / span; }
+            return lerpCol(a.col, b.col, f);
+        } }
+    }
+    return stops[n - 1].col;
+}
 function sel(a, b) { if (a == b) { return 1.0; } return 0.0; }
 function inRect(px, py, cx, cy, hw, hh) {
     if (px >= cx - hw) { if (px <= cx + hw) { if (py >= cy - hh) { if (py <= cy + hh) { return true; } } } }

@@ -53,6 +53,7 @@ pub const SDK_WIDGET_JS: &str = include_str!("../assets/sdk/20-widget.js");
 pub const SDK_WIDGETS_LAYOUT_JS: &str = include_str!("../assets/sdk/30-widgets-layout.js");
 pub const SDK_WIDGETS_MATERIAL_JS: &str = include_str!("../assets/sdk/31-widgets-material.js");
 pub const SDK_WIDGETS_MEDIA_JS: &str = include_str!("../assets/sdk/32-widgets-media.js");
+pub const SDK_GRAPHICS_JS: &str = include_str!("../assets/sdk/33-graphics.js");
 pub const SDK_RUNTIME_JS: &str = include_str!("../assets/sdk/40-runtime.js");
 pub const SDK_API_JS: &str = include_str!("../assets/sdk/50-api.js");
 
@@ -60,7 +61,7 @@ pub const SDK_API_JS: &str = include_str!("../assets/sdk/50-api.js");
 /// `assets/sdk/*.js` modules concatenated in dependency order.
 pub fn module_js() -> String {
     format!(
-        "{SDK_DATA_JS}\n{SDK_ENGINE_JS}\n{SDK_WIDGET_JS}\n{SDK_WIDGETS_LAYOUT_JS}\n{SDK_WIDGETS_MATERIAL_JS}\n{SDK_WIDGETS_MEDIA_JS}\n{SDK_RUNTIME_JS}\n{SDK_API_JS}"
+        "{SDK_DATA_JS}\n{SDK_ENGINE_JS}\n{SDK_WIDGET_JS}\n{SDK_WIDGETS_LAYOUT_JS}\n{SDK_WIDGETS_MATERIAL_JS}\n{SDK_WIDGETS_MEDIA_JS}\n{SDK_GRAPHICS_JS}\n{SDK_RUNTIME_JS}\n{SDK_API_JS}"
     )
 }
 
@@ -72,6 +73,12 @@ pub const DEMO_JS: &str = include_str!("../assets/demo.js");
 /// the platform-service wrappers. Also uses [`module_js`].
 pub const GALLERY_JS: &str = include_str!("../assets/gallery.js");
 
+/// The *graphics* showcase application, as JavaScript source. Exercises the
+/// painting layer: CustomPaint / Canvas, gradients, the Opacity / ColorFiltered /
+/// Transform / RotatedBox effect wrappers and the BackdropFilter frosted-glass
+/// blur (the multi-pass offscreen-capture path). Also uses [`module_js`].
+pub const GRAPHICS_JS: &str = include_str!("../assets/graphics.js");
+
 /// The full program a host runs: the SDK linked ahead of the app, in one VM.
 /// Pass the result to [`Elpa::new_from_js`](elpa::Elpa::new_from_js).
 pub fn program() -> String {
@@ -82,4 +89,10 @@ pub fn program() -> String {
 /// [`GALLERY_JS`].
 pub fn gallery_program() -> String {
     format!("{}\n{GALLERY_JS}", module_js())
+}
+
+/// The SDK linked ahead of the graphics showcase — the analog of [`program`] for
+/// [`GRAPHICS_JS`].
+pub fn graphics_program() -> String {
+    format!("{}\n{GRAPHICS_JS}", module_js())
 }

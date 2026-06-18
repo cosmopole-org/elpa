@@ -30,12 +30,62 @@ function bufF32(id, usage, data) { return { kind: "buffer", id: id, size: len(da
 // re-points only the instance stream so on-top decoration (badges, scrollbars)
 // lands after children.
 class Painter {
-    constructor() { this.out = []; this.taps = []; this.drags = []; }
+    constructor() {
+        this.out = []; this.taps = []; this.drags = [];
+        // Canvas-style state: an affine transform [a,b,c,d,e,f] (world = M·local),
+        // an opacity multiplier and a colour filter (mul/add), plus a save stack.
+        // All identity by default, so the hot path (xdepth == 0) is byte-for-byte
+        // the original emit; only CustomPaint / Opacity / Transform / ColorFiltered
+        // raise xdepth and pay for the transform.
+        this.xdepth = 0; this.m = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        this.alpha = 1.0; this.cfm = [1.0, 1.0, 1.0, 1.0]; this.cfa = [0.0, 0.0, 0.0, 0.0];
+        this.xstack = [];
+    }
     into(out, taps, drags) { this.out = out; this.taps = taps; this.drags = drags; }
     outInto(out) { this.out = out; }
+
+    // ---- Canvas-style transform / opacity / colour-filter stack --------------
+    save() {
+        push(this.xstack, [this.m[0], this.m[1], this.m[2], this.m[3], this.m[4], this.m[5],
+            this.alpha, this.cfm[0], this.cfm[1], this.cfm[2], this.cfm[3], this.cfa[0], this.cfa[1], this.cfa[2], this.cfa[3]]);
+        this.xdepth = this.xdepth + 1;
+    }
+    restore() {
+        if (this.xdepth <= 0) { return 0; }
+        let s = pop(this.xstack); this.xdepth = this.xdepth - 1;
+        this.m = [s[0], s[1], s[2], s[3], s[4], s[5]];
+        this.alpha = s[6]; this.cfm = [s[7], s[8], s[9], s[10]]; this.cfa = [s[11], s[12], s[13], s[14]];
+        return 0;
+    }
+    translate(dx, dy) { let m = this.m; m[4] = m[4] + m[0] * dx + m[2] * dy; m[5] = m[5] + m[1] * dx + m[3] * dy; }
+    scale(sx, sy) { let m = this.m; m[0] = m[0] * sx; m[1] = m[1] * sx; m[2] = m[2] * sy; m[3] = m[3] * sy; }
+    rotate(t) {
+        let c = cos(t); let s = sin(t); let m = this.m;
+        let a0 = m[0]; let b0 = m[1]; let c0 = m[2]; let d0 = m[3];
+        m[0] = a0 * c + c0 * s; m[1] = b0 * c + d0 * s; m[2] = a0 * (-s) + c0 * c; m[3] = b0 * (-s) + d0 * c;
+    }
+    setAlpha(a) { this.alpha = this.alpha * a; }
+    colorFilter(mul, add) {
+        this.cfm = [this.cfm[0] * mul[0], this.cfm[1] * mul[1], this.cfm[2] * mul[2], this.cfm[3] * mul[3]];
+        this.cfa = [this.cfa[0] + add[0], this.cfa[1] + add[1], this.cfa[2] + add[2], this.cfa[3] + add[3]];
+    }
+    xpt(x, y) { let m = this.m; return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]]; }
+    xsx() { let m = this.m; return sqrt(m[0] * m[0] + m[1] * m[1]); }
+    xsy() { let m = this.m; return sqrt(m[2] * m[2] + m[3] * m[3]); }
+    xrot() { let m = this.m; return atan2(m[1], m[0]); }
+    xcol(c) { return [c[0] * this.cfm[0] + this.cfa[0], c[1] * this.cfm[1] + this.cfa[1], c[2] * this.cfm[2] + this.cfa[2], c[3] * this.alpha * this.cfm[3]]; }
+
     // A rounded-rect SDF instance: center, half-size, radius, border, rotation,
-    // feather (1.0), fill rgba, border rgba.
+    // feather (1.0), fill rgba, border rgba. Honours the active transform/opacity.
     rect(cx, cy, hw, hh, r, border, rot, fill, bcol) {
+        if (this.xdepth > 0) {
+            let p = this.xpt(cx, cy); let sx = this.xsx(); let sy = this.xsy(); let sa = (sx + sy) * 0.5;
+            this.rawRect(p[0], p[1], hw * sx, hh * sy, r * sa, border * sa, rot + this.xrot(), this.xcol(fill), this.xcol(bcol));
+            return 0;
+        }
+        this.rawRect(cx, cy, hw, hh, r, border, rot, fill, bcol);
+    }
+    rawRect(cx, cy, hw, hh, r, border, rot, fill, bcol) {
         let o = this.out;
         push(o, cx); push(o, cy); push(o, hw); push(o, hh);
         push(o, r); push(o, border); push(o, rot); push(o, 1.0);
@@ -44,15 +94,36 @@ class Painter {
     }
     // A soft drop shadow: a grown, dropped, heavily-feathered black rect.
     shadow(cx, cy, hw, hh, r, grow, drop, blur) {
+        let a = 0.28;
+        if (this.xdepth > 0) {
+            let p = this.xpt(cx, cy + drop); let sx = this.xsx(); let sy = this.xsy(); let sa = (sx + sy) * 0.5;
+            cx = p[0]; cy = -drop + p[1]; hw = hw * sx; hh = hh * sy; r = r * sa; grow = grow * sa; blur = blur * sa; a = a * this.alpha;
+        }
         let o = this.out;
         push(o, cx); push(o, cy + drop); push(o, hw + grow); push(o, hh + grow);
         push(o, r + grow); push(o, 0.0); push(o, 0.0); push(o, blur);
-        push(o, 0.0); push(o, 0.0); push(o, 0.0); push(o, 0.28);
+        push(o, 0.0); push(o, 0.0); push(o, 0.0); push(o, a);
+        push(o, 0.0); push(o, 0.0); push(o, 0.0); push(o, 0.0);
+    }
+    // A soft drop shadow with an explicit colour (Canvas drawShadow / BoxShadow).
+    shadowCol(cx, cy, hw, hh, r, grow, drop, blur, col) {
+        if (this.xdepth > 0) {
+            let p = this.xpt(cx, cy + drop); let sx = this.xsx(); let sy = this.xsy(); let sa = (sx + sy) * 0.5;
+            cx = p[0]; cy = -drop + p[1]; hw = hw * sx; hh = hh * sy; r = r * sa; grow = grow * sa; blur = blur * sa; col = this.xcol(col);
+        }
+        let o = this.out;
+        push(o, cx); push(o, cy + drop); push(o, hw + grow); push(o, hh + grow);
+        push(o, r + grow); push(o, 0.0); push(o, 0.0); push(o, blur);
+        push(o, col[0]); push(o, col[1]); push(o, col[2]); push(o, col[3]);
         push(o, 0.0); push(o, 0.0); push(o, 0.0); push(o, 0.0);
     }
     // A textured glyph quad. b = atlas UV rect (u0,v0,u1,v1); bcol.x = 2 marks the
     // instance a glyph so the shader samples the atlas instead of the SDF.
     glyph(cx, cy, hw, hh, u0, v0, u1, v1, col) {
+        if (this.xdepth > 0) {
+            let p = this.xpt(cx, cy); let sx = this.xsx(); let sy = this.xsy();
+            cx = p[0]; cy = p[1]; hw = hw * sx; hh = hh * sy; col = this.xcol(col);
+        }
         let o = this.out;
         push(o, cx); push(o, cy); push(o, hw); push(o, hh);
         push(o, u0); push(o, v0); push(o, u1); push(o, v1);
@@ -63,11 +134,30 @@ class Painter {
     // draw the textured quad for `handle`, found and interleaved by the submitter.
     //   [0]=marker [1]=handle [2..6]=cx,cy,hw,hh,r [7..10]=u0,v0,u1,v1 [11..14]=tint
     image(handle, cx, cy, hw, hh, r, tint) {
+        if (this.xdepth > 0) {
+            let p = this.xpt(cx, cy); let sx = this.xsx(); let sy = this.xsy(); let sa = (sx + sy) * 0.5;
+            cx = p[0]; cy = p[1]; hw = hw * sx; hh = hh * sy; r = r * sa; tint = this.xcol(tint);
+        }
         let o = this.out;
         push(o, IMG_MARK); push(o, num(handle)); push(o, cx); push(o, cy);
         push(o, hw); push(o, hh); push(o, r); push(o, 0.0);
         push(o, 0.0); push(o, 1.0); push(o, 1.0); push(o, tint[0]);
         push(o, tint[1]); push(o, tint[2]); push(o, tint[3]); push(o, 0.0);
+    }
+    // A backdrop-blur sentinel (frosted glass): the submitter renders everything
+    // painted before it into an offscreen texture and composites a blurred copy
+    // inside this region. [0]=marker [1]=blurPx [2..5]=cx,cy,hw,hh [6]=r [7]=tintA
+    // [8..11]=tint rgba.
+    backdrop(cx, cy, hw, hh, r, blur, tint) {
+        if (this.xdepth > 0) {
+            let p = this.xpt(cx, cy); let sx = this.xsx(); let sy = this.xsy(); let sa = (sx + sy) * 0.5;
+            cx = p[0]; cy = p[1]; hw = hw * sx; hh = hh * sy; r = r * sa; blur = blur * sa; tint = this.xcol(tint);
+        }
+        let o = this.out;
+        push(o, BACKDROP_MARK); push(o, blur); push(o, cx); push(o, cy);
+        push(o, hw); push(o, hh); push(o, r); push(o, tint[3]);
+        push(o, tint[0]); push(o, tint[1]); push(o, tint[2]); push(o, tint[3]);
+        push(o, 0.0); push(o, 0.0); push(o, 0.0); push(o, 0.0);
     }
     // A stroked line as a rounded capsule between (ax,ay) and (bx,by), `thick` wide.
     seg(ax, ay, bx, by, thick, col) {
@@ -76,6 +166,46 @@ class Painter {
     }
     disc(cx, cy, r, col) { this.rect(cx, cy, r, r, r, 0.0, 0.0, col, CLEAR); }
     ring(cx, cy, r, w, col) { this.rect(cx, cy, r, r, r, w, 0.0, CLEAR, col); }
+    // A capsule (stadium) of arbitrary aspect — a rect whose radius is its short half.
+    capsule(cx, cy, hw, hh, rot, col) { this.rect(cx, cy, hw, hh, min(hw, hh), 0.0, rot, col, CLEAR); }
+
+    // ---- gradients (multi-stop, drawn from the one SDF primitive) -------------
+    // Linear gradient fill of a rounded rect: a base fill of the first stop, then
+    // axis-aligned colour bands across the dominant begin->end axis. `stops` is a
+    // list of { t, col } sorted by t in [0,1]; `bx0..by1` are begin/end in [0,1].
+    gradLinear(cx, cy, hw, hh, r, stops, bx0, by0, bx1, by1) {
+        let horiz = 1.0; if (abs(by1 - by0) > abs(bx1 - bx0)) { horiz = 0.0; }
+        let bands = 28; let base = gradColorAt(stops, 0.0);
+        this.rect(cx, cy, hw, hh, r, 0.0, 0.0, base, CLEAR);
+        for (let i = 0; i < bands; i++) {
+            let t0 = num(i) / bands; let t1 = (num(i) + 1.0) / bands; let tm = (t0 + t1) / 2.0;
+            let col = gradColorAt(stops, tm);
+            if (horiz > 0.5) {
+                let x = cx - hw + (t0 + t1) * hw; let bw = (t1 - t0) * hw + 0.6;
+                this.rect(x, cy, bw, hh, 0.0, 0.0, 0.0, col, CLEAR);
+            } else {
+                let y = cy - hh + (t0 + t1) * hh; let bh = (t1 - t0) * hh + 0.6;
+                this.rect(cx, y, hw, bh, 0.0, 0.0, 0.0, col, CLEAR);
+            }
+        }
+        this.rect(cx, cy, hw, hh, r, 0.0, 0.0, CLEAR, CLEAR);
+    }
+    // Radial gradient: concentric discs from the outer stop inwards.
+    gradRadial(cx, cy, radius, stops) {
+        let rings = 26;
+        for (let i = 0; i < rings; i++) {
+            let t = 1.0 - num(i) / rings; let rr = radius * (1.0 - num(i) / rings);
+            this.disc(cx, cy, rr + 0.6, gradColorAt(stops, t));
+        }
+    }
+    // Sweep (conic) gradient: angular spokes from `start`, colour lerped by angle.
+    gradSweep(cx, cy, radius, stops, start) {
+        let spokes = 96; let thick = (6.2831853 * radius / spokes) + 0.8;
+        for (let s = 0; s < spokes; s++) {
+            let t = (num(s) + 0.5) / spokes; let aa = start + t * 6.2831853;
+            this.seg(cx, cy, cx + cos(aa) * radius, cy + sin(aa) * radius, thick, gradColorAt(stops, t));
+        }
+    }
     addTap(cx, cy, hw, hh, id, onTap) { push(this.taps, { cx: cx, cy: cy, hw: hw, hh: hh, id: id, onTap: onTap }); }
     addDrag(cx, cy, hw, hh, onChanged, left, width) {
         push(this.drags, { cx: cx, cy: cy, hw: hw, hh: hh,
