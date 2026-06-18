@@ -196,8 +196,12 @@ compose boxes:
   that texture with a multi-tap box-blur kernel inside the panel before drawing
   the panel's tint and child sharp on top. This is the kit's one multi-pass path
   (the `tests/graphics.rs` test asserts the offscreen render-target and the
-  surface pass). Soft drop shadows / elevation (`Container({ elevation })`,
-  `Container({ shadow })`, `Canvas.drawShadow`) are the cheaper, single-pass blur.
+  surface pass). It is tuned for cost: blur is a low-frequency effect, so the
+  source is captured at **reduced resolution** (≈¼ the fill-rate; the linear
+  upsample only helps the blur) and composited with a handful of taps — so a
+  frosted panel stays cheap to scroll. Soft drop shadows / elevation
+  (`Container({ elevation })`, `Container({ shadow })`, `Canvas.drawShadow`) are
+  the cheaper, single-pass blur.
 
 ### Responsive layout, typography & SVG icons
 

@@ -217,6 +217,7 @@ let WHITE = [1.0, 1.0, 1.0, 1.0];
 let CLEAR = [0.0, 0.0, 0.0, 0.0];
 let IMG_MARK = 424242.0;            // sentinel marker in instance slot 0 (off-screen, unique)
 let BACKDROP_MARK = 525252.0;       // backdrop-blur sentinel marker in instance slot 0
+let BD_SCALE = 2.0;                 // backdrop blur source captured at 1/BD_SCALE resolution
 // A 1x1 placeholder pixel (RGBA #F4F4F6FF) shown until real pixels land,
 // pre-encoded as base64 (the VM JS subset has no base64 encoder).
 let IMG_PLACEHOLDER = "9PT2/w==";

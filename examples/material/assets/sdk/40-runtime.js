@@ -233,8 +233,10 @@ class Material {
     backdropTapCmds(rg, sceneTex, res, tag) {
         let m = this.metrics; let cmds = [];
         let b = rg.blur; if (b < 0.5) { b = 0.5; }
-        let taps = [[0.0, 0.0, 1.0], [b, 0.0, 0.5], [-b, 0.0, 0.5], [0.0, b, 0.5], [0.0, -b, 0.5],
-            [b, b, 0.32], [-b, b, 0.32], [b, -b, 0.32], [-b, -b, 0.32]];
+        // 5 taps (an opaque centre + four diagonals) are enough: the offscreen
+        // scene is already captured at reduced resolution, so its linear upsample
+        // pre-blurs it and a handful of offset samples finish the job.
+        let taps = [[0.0, 0.0, 1.0], [b, b, 0.5], [-b, b, 0.5], [b, -b, 0.5], [-b, -b, 0.5]];
         let u0b = (rg.cx - rg.hw) / m.vw; let v0b = (rg.cy - rg.hh) / m.vh;
         let u1b = (rg.cx + rg.hw) / m.vw; let v1b = (rg.cy + rg.hh) / m.vh;
         for (let i = 0; i < len(taps); i++) {
@@ -258,7 +260,12 @@ class Material {
         let n = len(this.inst) / 16;
         let below = this.graphics.sdfRuns(this.inst, 0, scan.last);
         let above = this.graphics.sdfRuns(this.inst, scan.last + 1, n);
-        let sw = ceil(m.vw); let sh = ceil(m.vh); if (sw < 1) { sw = 1; } if (sh < 1) { sh = 1; }
+        // The blur source is captured at reduced resolution (BD_SCALE): blur is a
+        // low-frequency effect, so a half-size offscreen target cuts the capture's
+        // fill-rate ~4x and its sampling bandwidth, while the linear upsample only
+        // helps the blur. Geometry maps by NDC (globals stay vw,vh), so the smaller
+        // attachment just rasterises the same scene at fewer pixels.
+        let sw = ceil(m.vw / BD_SCALE); let sh = ceil(m.vh / BD_SCALE); if (sw < 1) { sw = 1; } if (sh < 1) { sh = 1; }
         // Size-versioned id: stable across steady frames (so the resource cache
         // reuses the offscreen target), fresh on resize.
         let sceneTex = concat(concat(concat("elpa.m3.bd.scene.", str(sw)), "x"), str(sh));

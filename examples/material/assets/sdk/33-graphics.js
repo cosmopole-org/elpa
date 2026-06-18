@@ -198,7 +198,7 @@ class Canvas {
     // A filled triangle, approximated as a fan of short capsules from one vertex —
     // covers convex area without a triangle pipeline.
     fillTri(ax, ay, bx, by, cx, cy, col) {
-        let steps = 8;
+        let steps = 6;
         for (let i = 0; i <= steps; i++) {
             let t = num(i) / steps; let ex = bx + (cx - bx) * t; let ey = by + (cy - by) * t;
             this.pnt.seg(ax, ay, ex, ey, 0.5, col);
@@ -208,12 +208,22 @@ class Canvas {
     // Stroke (or pie-fill, with useCenter) an arc on the ellipse box (l,t,r,b).
     drawArc(l, t, r, b, start, sweep, useCenter, paint) {
         let cx = (l + r) / 2.0; let cy = (t + b) / 2.0; let rx = abs(r - l) / 2.0; let ry = abs(b - t) / 2.0;
-        let steps = 48; let col = this.pcol(paint); let w = this.pstroke(paint);
+        let steps = 40; let col = this.pcol(paint); let w = this.pstroke(paint);
+        if (useCenter > 0.5) {
+            // Pie fill: one centre->rim spoke per step (a capsule wide enough to
+            // close the gap to the next), not a triangle fan per step — ~steps
+            // instances instead of steps × fan.
+            let rim = max(rx, ry); let thick = rim * abs(sweep) / steps + 0.4;
+            for (let i = 0; i <= steps; i++) {
+                let a = start + sweep * num(i) / steps;
+                this.pnt.seg(cx, cy, cx + cos(a) * rx, cy + sin(a) * ry, thick, col);
+            }
+            return this;
+        }
         let px = cx + cos(start) * rx; let py = cy + sin(start) * ry;
         for (let i = 1; i <= steps; i++) {
             let a = start + sweep * num(i) / steps; let nx = cx + cos(a) * rx; let ny = cy + sin(a) * ry;
-            if (useCenter > 0.5) { this.fillTri(cx, cy, px, py, nx, ny, col); } else { this.pnt.seg(px, py, nx, ny, w, col); }
-            px = nx; py = ny;
+            this.pnt.seg(px, py, nx, ny, w, col); px = nx; py = ny;
         }
         return this;
     }
