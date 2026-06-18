@@ -264,7 +264,11 @@ class Material {
         let sceneTex = concat(concat(concat("elpa.m3.bd.scene.", str(sw)), "x"), str(sh));
         let res = concat(concat(sdfPipelineResources(), this.font.atlasTexRes()), concat(this.frameBindings(), [
             bufF32("elpa.m3.inst", ["VERTEX", "COPY_DST"], this.inst),
-            { kind: "texture", id: sceneTex, size: { width: sw, height: sh }, format: "rgba8unorm",
+            // The scene is a render target for the SDF + image pipelines, so its
+            // format must match their colour target (bgra8unorm, the surface
+            // format); an rgba8unorm target here is a wgpu format mismatch that
+            // errors the device on a real backend (the headless backend ignores it).
+            { kind: "texture", id: sceneTex, size: { width: sw, height: sh }, format: "bgra8unorm",
               usage: ["RENDER_ATTACHMENT", "TEXTURE_BINDING"] },
         ]));
         this.media.addImgPipeline(res);
