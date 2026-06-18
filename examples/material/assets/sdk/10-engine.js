@@ -175,7 +175,7 @@ class Painter {
     // list of { t, col } sorted by t in [0,1]; `bx0..by1` are begin/end in [0,1].
     gradLinear(cx, cy, hw, hh, r, stops, bx0, by0, bx1, by1) {
         let horiz = 1.0; if (abs(by1 - by0) > abs(bx1 - bx0)) { horiz = 0.0; }
-        let bands = 28; let base = gradColorAt(stops, 0.0);
+        let bands = 18; let base = gradColorAt(stops, 0.0);
         this.rect(cx, cy, hw, hh, r, 0.0, 0.0, base, CLEAR);
         for (let i = 0; i < bands; i++) {
             let t0 = num(i) / bands; let t1 = (num(i) + 1.0) / bands; let tm = (t0 + t1) / 2.0;
@@ -192,15 +192,18 @@ class Painter {
     }
     // Radial gradient: concentric discs from the outer stop inwards.
     gradRadial(cx, cy, radius, stops) {
-        let rings = 26;
+        let rings = 20;
         for (let i = 0; i < rings; i++) {
             let t = 1.0 - num(i) / rings; let rr = radius * (1.0 - num(i) / rings);
             this.disc(cx, cy, rr + 0.6, gradColorAt(stops, t));
         }
     }
     // Sweep (conic) gradient: angular spokes from `start`, colour lerped by angle.
+    // Spoke count scales with the radius (capped) so a small swatch isn't wasteful
+    // and a large one stays smooth; the spoke thickness always closes the gaps.
     gradSweep(cx, cy, radius, stops, start) {
-        let spokes = 96; let thick = (6.2831853 * radius / spokes) + 0.8;
+        let spokes = floor(radius * 0.8); if (spokes < 24) { spokes = 24; } if (spokes > 72) { spokes = 72; }
+        let thick = (6.2831853 * radius / spokes) + 0.8;
         for (let s = 0; s < spokes; s++) {
             let t = (num(s) + 0.5) / spokes; let aa = start + t * 6.2831853;
             this.seg(cx, cy, cx + cos(aa) * radius, cy + sin(aa) * radius, thick, gradColorAt(stops, t));

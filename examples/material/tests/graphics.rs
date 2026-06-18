@@ -67,6 +67,49 @@ fn pass_counts(app: &Elpa<HeadlessBackend>) -> (usize, usize) {
 }
 
 #[test]
+fn graphics_scene_stays_lightweight_and_downsamples_the_blur() {
+    // Performance guards. The CustomPaint scene must stay instance-light — a pie
+    // arc once emitted a triangle fan *per step* (~432 instances for one arc); now
+    // it is one spoke per step. And the BackdropFilter must capture its blur source
+    // at reduced resolution (a low-frequency effect doesn't need full res), which
+    // cuts the offscreen fill-rate ~4x. Both are what make the tab cheap to scroll.
+    let (sw, sh) = (1000u32, 1500u32);
+    let mut app = Elpa::new_from_js(
+        HeadlessBackend::default(),
+        SurfaceInfo::new(sw, sh, 1.0),
+        &elpa_material::graphics_program(),
+    )
+    .unwrap();
+    app.start();
+
+    let instances = instance_floats(&app).len() / 16;
+    assert!(
+        instances < 700,
+        "the graphics scene must stay lightweight (got {instances} instances)"
+    );
+
+    // The offscreen blur-capture texture is downsampled (smaller than the surface).
+    let scene = app
+        .last_frame()
+        .unwrap()
+        .resources
+        .iter()
+        .find_map(|r| match r {
+            ResourceDesc::Texture(t) if t.id.starts_with("elpa.m3.bd.scene") => Some(t.clone()),
+            _ => None,
+        })
+        .expect("the offscreen scene texture is declared");
+    assert!(
+        scene.size.width < sw && scene.size.height < sh,
+        "the blur source is captured at reduced resolution ({}x{} vs surface {sw}x{sh})",
+        scene.size.width,
+        scene.size.height
+    );
+    assert!(app.trap_reason().is_none());
+    assert!(app.take_log().is_empty());
+}
+
+#[test]
 fn graphics_shaders_are_valid_wgsl() {
     // The painting layer adds no new pipelines — gradients, transforms and the
     // canvas are all the rounded-rect SDF primitive; the backdrop reuses the image
