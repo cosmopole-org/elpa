@@ -579,10 +579,14 @@ class MediaEngine {
         if (!has(this.imgHandle, key)) { this.imgHandle[key] = this.imgHandleN; this.imgHandleN = this.imgHandleN + 1; }
         return this.imgHandle[key];
     }
-    // The texture id encodes its size, so a placeholder (1×1) → real-size swap
-    // yields a new id and the renderer recreates the texture; same-size frames
-    // keep the id stable so a video just re-uploads in place.
-    imgTexId(handle, w, h) { return concat(concat(concat(concat("elpa.m3.img.tex.", str(handle)), "."), str(w)), concat("x", str(h))); }
+    // The texture id encodes its size *and frame version*: a placeholder (1×1) →
+    // real-size swap yields a new id, and every decoded frame of a video gets its
+    // own id too. Re-uploading new pixels into one stable texture is not honoured
+    // by every backend (a cached, already-sampled GL texture keeps showing its
+    // first contents), so each frame is a fresh texture the renderer creates,
+    // binds and draws — the same path the (correct) still image already uses. The
+    // previous frame's texture isn't referenced, so the resource cache evicts it.
+    imgTexId(handle, w, h, ver) { return concat(concat(concat(concat(concat(concat("elpa.m3.img.tex.", str(handle)), "."), str(w)), concat("x", str(h))), ".v"), str(ver)); }
     // Register a media source (idempotent) and kick off its off-thread load.
     ensure(key, src, video) {
         this.mediaRef[key] = 1.0;
@@ -687,7 +691,7 @@ class MediaEngine {
     // Declare an image handle's texture (and stage its one-time upload), deduped.
     declareImageTex(handle, res, uploads, declared) {
         let frameN = this.app.frameN;
-        let t = this.imgTex[str(handle)]; let id = this.imgTexId(handle, t.w, t.h);
+        let t = this.imgTex[str(handle)]; let id = this.imgTexId(handle, t.w, t.h, t.ver);
         if (has(declared, id)) { return id; }
         declared[id] = 1.0;
         if (t.lastFrameN < frameN - 1) { t.up = 0.0; }
