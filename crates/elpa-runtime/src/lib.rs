@@ -20,7 +20,9 @@ pub mod definitions;
 pub mod host_env;
 pub mod media;
 pub mod scope;
+pub mod workers;
 pub use definitions::{DefinitionStore, ExpandError};
+pub use workers::{TaskPool, WorkerPool};
 pub use media::{MediaFetcher, MediaFrame, MediaSource, MediaState};
 pub use scope::{LayerStore, ScopeStats};
 pub use host_env::{
