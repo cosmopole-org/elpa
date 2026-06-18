@@ -1092,14 +1092,19 @@ impl Operation for DummyOp {
 
 pub struct Executor {
     executor_id: i16,
+    /// Program counter: an index into [`DecodedProgram::units`] (not a byte
+    /// offset). The interpreter advances it one unit at a time and branches by
+    /// assigning a target unit index directly.
     pointer: usize,
+    /// One past the last unit of the range currently executing (the top-level
+    /// program, or a function/control body). The step loop stops when
+    /// `pointer == end_at`.
     end_at: usize,
     ctx: Context,
-    program: Vec<u8>,
-    /// The bytecode decoded once into an addressable list of operation objects.
-    /// The interpreter traverses this instead of re-parsing `program` on every
-    /// step; `pointer`/`end_at` and every compiler-baked offset still address it
-    /// by byte position via [`DecodedProgram::index_at`]. See `program.rs`.
+    /// The program decoded once into an in-memory list of operation objects,
+    /// with all branch targets pre-translated to unit indices. The raw bytecode
+    /// is not retained — the interpreter traverses these units directly. See
+    /// `program.rs`.
     prog: DecodedProgram,
     cb_counter: i64,
     pending_func_result_value: Val,
@@ -1133,14 +1138,16 @@ impl Executor {
         for api_name in func_group.iter() {
             allowed_api.insert(api_name.clone(), true);
         }
+        // Decode the bytecode once into the in-memory unit list; the raw bytes
+        // are not kept past this point.
         let prog = DecodedProgram::decode(&program);
+        let end_at = prog.units.len();
         Executor {
             _allowed_api: allowed_api,
             executor_id: exec_id,
             pointer: 0,
-            end_at: program.len(),
+            end_at,
             ctx: Context::new(),
-            program,
             prog,
             cb_counter: 0,
             pending_func_result_value: Val::new(254, Payload::Null),
@@ -1269,7 +1276,7 @@ impl Executor {
                     self.processing = true;
                     let result = self.run_from(
                         0,
-                        self.program.len(),
+                        self.prog.units.len(),
                         false,
                         Val {
                             typ: 0,
@@ -1469,43 +1476,43 @@ impl Executor {
     // ---- decoded-unit readers ----------------------------------------------
     //
     // These replace the old byte-by-byte `extract_*` parsers. The bytecode is
-    // decoded once at construction (`program.rs`); here we just index the
-    // pre-decoded unit at the current byte offset and advance the program
-    // counter past it. Only the immediates a state transition consumes mid-flight
-    // (a call's argument count, a branch / case / body offset, a `cast` target
-    // type) are read this way — opcode dispatch and the value/literal units are
-    // handled directly in the run loop.
+    // decoded once at construction (`program.rs`); here we read the pre-decoded
+    // unit at the current program counter and advance it by one unit. Only the
+    // immediates a state transition consumes mid-flight (a call's argument count,
+    // a switch's case count, a `cast` target type) and the branch targets are
+    // read this way — opcode dispatch and the value/literal units are handled
+    // directly in the run loop.
     fn extract_i32(&mut self) -> i32 {
-        let i = self.prog.index_at(self.pointer);
-        let unit = &self.prog.units[i];
-        let len = unit.len as usize;
-        let v = match &unit.kind {
+        let v = match &self.prog.units[self.pointer] {
             UnitKind::I32(v) => *v,
-            _ => unreachable!("decoded program: expected I32 at offset {}", self.pointer),
+            _ => unreachable!("decoded program: expected I32 at unit {}", self.pointer),
         };
-        self.pointer += len;
+        self.pointer += 1;
         v
     }
     fn extract_i64(&mut self) -> i64 {
-        let i = self.prog.index_at(self.pointer);
-        let unit = &self.prog.units[i];
-        let len = unit.len as usize;
-        let v = match &unit.kind {
+        let v = match &self.prog.units[self.pointer] {
             UnitKind::I64(v) => *v,
-            _ => unreachable!("decoded program: expected I64 at offset {}", self.pointer),
+            _ => unreachable!("decoded program: expected I64 at unit {}", self.pointer),
         };
-        self.pointer += len;
+        self.pointer += 1;
+        v
+    }
+    /// Read a branch-target unit (a pre-translated unit index) and advance.
+    fn extract_target(&mut self) -> usize {
+        let v = match &self.prog.units[self.pointer] {
+            UnitKind::Target(t) => *t,
+            _ => unreachable!("decoded program: expected Target at unit {}", self.pointer),
+        };
+        self.pointer += 1;
         v
     }
     fn extract_str(&mut self) -> String {
-        let i = self.prog.index_at(self.pointer);
-        let unit = &self.prog.units[i];
-        let len = unit.len as usize;
-        let s = match &unit.kind {
+        let s = match &self.prog.units[self.pointer] {
             UnitKind::Str(s) => s.to_string(),
-            _ => unreachable!("decoded program: expected Str at offset {}", self.pointer),
+            _ => unreachable!("decoded program: expected Str at unit {}", self.pointer),
         };
-        self.pointer += len;
+        self.pointer += 1;
         s
     }
     /// Resolve an identifier reference to a value: a scope-chain binding shadows
@@ -3938,7 +3945,7 @@ impl Executor {
                         if self.registers.last().unwrap().get_state()
                             == ExecStates::SwitchStmtStarted
                         {
-                            let branch_after_start = self.extract_i64() as usize;
+                            let branch_after_start = self.extract_target();
                             let case_count = self.extract_i64() as usize;
                             self.registers.last_mut().unwrap().set_state(
                                 ExecStates::SwitchStmtExtractVal,
@@ -3954,8 +3961,8 @@ impl Executor {
                             || self.registers.last().unwrap().get_state()
                                 == ExecStates::SwitchStmtExtractCase
                         {
-                            let branch_true_start = self.extract_i64() as usize;
-                            let branch_true_end = self.extract_i64() as usize;
+                            let branch_true_start = self.extract_target();
+                            let branch_true_end = self.extract_target();
                             self.registers.last_mut().unwrap().set_state(
                                 ExecStates::SwitchStmtExtractCase,
                                 StateData::ValUsize2(main_reg.take().unwrap(), branch_true_start, branch_true_end),
@@ -4051,8 +4058,8 @@ impl Executor {
                         if self.registers.last().unwrap().get_state()
                             == ExecStates::CondBranchStarted
                         {
-                            let tb = self.extract_i64();
-                            let fb = self.extract_i64();
+                            let tb = self.extract_target() as i64;
+                            let fb = self.extract_target() as i64;
                             self.registers.last_mut().unwrap().set_state(
                                 ExecStates::CondBranchFinished,
                                 StateData::ValI64x2(main_reg.take().unwrap(), tb, fb),
@@ -4321,9 +4328,9 @@ impl Executor {
                             condition = cond_val.truthy();
                         }
                         if !has_condition {
-                            let branch_true_start = self.extract_i64() as usize;
-                            let branch_true_end = self.extract_i64() as usize;
-                            let branch_after_start = self.extract_i64() as usize;
+                            let branch_true_start = self.extract_target();
+                            let branch_true_end = self.extract_target();
+                            let branch_after_start = self.extract_target();
                             self.ctx
                                 .memory
                                 .last()
@@ -4339,10 +4346,10 @@ impl Executor {
                             self.pointer = branch_true_start;
                             self.end_at = branch_true_end;
                         } else {
-                            let branch_true_start = self.extract_i64() as usize;
-                            let branch_true_end = self.extract_i64() as usize;
-                            let branch_next_start = self.extract_i64() as usize;
-                            let branch_after_start = self.extract_i64() as usize;
+                            let branch_true_start = self.extract_target();
+                            let branch_true_end = self.extract_target();
+                            let branch_next_start = self.extract_target();
+                            let branch_after_start = self.extract_target();
                             if condition {
                                 self.ctx
                                     .memory
@@ -4372,9 +4379,9 @@ impl Executor {
                         let cond_val = regs[0].clone();
                         // JS truthiness for the loop guard (see if-statement above).
                         let condition = cond_val.truthy();
-                        let branch_true_start = self.extract_i64() as usize;
-                        let branch_true_end = self.extract_i64() as usize;
-                        let branch_after_start = self.extract_i64() as usize;
+                        let branch_true_start = self.extract_target();
+                        let branch_true_end = self.extract_target();
+                        let branch_after_start = self.extract_target();
                         if condition {
                             self.ctx
                                 .memory
@@ -5099,14 +5106,13 @@ impl Executor {
                 }
                 continue;
             }
-            // Fetch the pre-decoded operation at the current byte offset and
-            // advance the program counter past it (control-flow arms below
-            // override the pointer afterwards). The bytecode is never re-parsed:
-            // every operand was decoded once into the unit (see `program.rs`).
-            let u_idx = self.prog.index_at(self.pointer);
-            let u_len = self.prog.units[u_idx].len as usize;
-            let kind = self.prog.units[u_idx].kind.clone();
-            self.pointer += u_len;
+            // Fetch the pre-decoded operation at the program counter and advance
+            // to the next unit (control-flow arms below override the pointer
+            // afterwards). The bytecode is never re-parsed: every operand was
+            // decoded once into the unit, and branch targets are unit indices
+            // (see `program.rs`).
+            let kind = self.prog.units[self.pointer].clone();
+            self.pointer += 1;
             match kind {
                 // ----------------------------------
                 // arithmetic / comparison operators (op id 1..=12)
@@ -5264,7 +5270,11 @@ impl Executor {
                 // Bare immediates (consumed by a state transition, not dispatched
                 // here) and no-op padding: nothing to do, exactly like the old
                 // fall-through arm.
-                UnitKind::I32(_) | UnitKind::I64(_) | UnitKind::Str(_) | UnitKind::Nop => {}
+                UnitKind::I32(_)
+                | UnitKind::I64(_)
+                | UnitKind::Target(_)
+                | UnitKind::Str(_)
+                | UnitKind::Nop => {}
             }
         }
         Val::new(0, Payload::Null)
