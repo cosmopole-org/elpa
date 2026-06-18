@@ -5,5 +5,6 @@ pub mod data;
 pub mod executor;
 pub mod lifecycle;
 pub mod limits;
+pub mod program;
 pub mod stdlib;
 pub mod vm;
