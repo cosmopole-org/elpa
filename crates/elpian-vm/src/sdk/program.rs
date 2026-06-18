@@ -8,25 +8,25 @@
 //! thousands of operations this re-decoding dominated the per-frame cost.
 //!
 //! [`DecodedProgram`] lifts that work out of the hot loop. At construction the
-//! whole byte stream is decoded **once** into a flat, addressable list of
-//! [`Unit`]s — one object per opcode / immediate the interpreter ever reads —
-//! with every operand pre-parsed: literals prebuilt as [`Val`], names interned
-//! as `Rc<str>`/`Rc<Vec<String>>` (shared, never re-allocated), counts and
-//! branch data as plain integers. The interpreter then *traverses* this
-//! structure instead of re-parsing bytes, which is what makes repeated
-//! execution of the same program markedly cheaper.
+//! whole byte stream is decoded **once** into a flat list of [`UnitKind`]s — one
+//! self-contained object per operation, carrying *all* of its operands
+//! pre-parsed: literals prebuilt as [`Val`], names interned as
+//! `Rc<str>`/`Rc<Vec<String>>` (shared, never re-allocated), counts as plain
+//! integers, and every branch/body/case **target as a unit index**. The
+//! interpreter traverses this list directly, using a unit index as its program
+//! counter (`pc += 1`), and branches by assigning a target unit index straight
+//! to the pointer. Nothing is re-parsed and there are no trailing "immediate"
+//! units to read back — each opcode object already holds its data. The raw
+//! bytecode is not retained past decode.
 //!
-//! ## Addressing
+//! ## Unit-relative addressing
 //!
-//! The decoded units are addressed by the **same byte offsets** the compiler
-//! baked into the bytecode (jump targets, function/scope bounds, branch
-//! pointers). [`DecodedProgram::index_at`] maps each such offset to its unit
-//! index, so the interpreter keeps its existing byte-offset program counter and
-//! all of the compiler's offset arithmetic is preserved untouched — only the
-//! *reads* change from "parse bytes" to "index a pre-decoded unit". This keeps
-//! the control-flow semantics (loops, the if/else chain, switch, calls, the
-//! pause/resume continuation) byte-for-byte identical to the original
-//! interpreter while removing the per-step parsing and allocation.
+//! The compiler bakes control-flow targets into the bytecode as **byte offsets**
+//! (jump destinations, function/scope bounds, if/loop/switch/branch pointers). A
+//! second decode pass ([`Decoder::relocate`]) rewrites every one of those into
+//! the **index of the unit** at that offset. A target one past the program's last
+//! unit (a body/function that ends the stream) becomes `units.len()`, the same
+//! "end" sentinel the run loop compares against.
 //!
 //! The grammar decoded here mirrors exactly what `compiler::serialize_expr`,
 //! `compiler::serialize_condition_chain` and `compiler::compile_ast` emit; the
@@ -36,14 +36,14 @@ use std::rc::Rc;
 
 use crate::sdk::data::{Payload, Val};
 
-/// One decoded operation / immediate, as the interpreter reads it. Each variant
-/// carries its operands already parsed, so executing it never touches the raw
-/// bytes again. Cheap to clone (scalars are copied; names/parameter lists are
-/// `Rc` pointer bumps), which the dispatch loop relies on.
+/// One decoded operation, with every operand already parsed. Cheap to clone
+/// (scalars are copied; names, parameter lists and case tables are `Rc` pointer
+/// bumps), which the dispatch loop relies on. Every position field is a **unit
+/// index** after decode, not a byte offset.
 #[derive(Clone)]
 pub enum UnitKind {
-    /// A no-op byte (`0x00` padding for an empty body, or any unknown opcode —
-    /// matched the interpreter's old `_ => {}` arm).
+    /// A no-op (`0x00` padding for an empty body, or any unknown opcode — matched
+    /// the interpreter's old `_ => {}` arm).
     Nop,
 
     // ---- value-producing units (what the old `extract_val` returned) --------
@@ -53,48 +53,60 @@ pub enum UnitKind {
     /// builtins / the `askHost` seam at run time.
     Ident(Rc<str>),
     /// A function *literal* (`0x0a`). Closes over the live lexical environment
-    /// when evaluated.
+    /// when evaluated. `start`/`end` are unit indices.
     FuncLit { start: usize, end: usize, params: Rc<Vec<String>> },
 
-    // ---- operator / control units with no inline operand --------------------
+    // ---- operators / control, each carrying its own operands ----------------
     /// `0x0c` — indexer (`target[index]`).
     Indexer,
-    /// `0x0d` — function / host call.
-    Call,
+    /// `0x0d` — function / host call (`argc` arguments follow as expressions).
+    Call { argc: u32 },
     /// `0xfc` — boolean `!`.
     Not,
-    /// `0xfd` — `cast` to a named target type (the type name follows as a
-    /// [`UnitKind::Str`]).
-    Cast,
+    /// `0xfd` — `cast` of the following value expression to `target_type`.
+    Cast { target_type: Rc<str> },
     /// `0xf0..=0xfb` — an arithmetic / comparison operator, normalised to the
     /// `1..=12` id the interpreter switches on.
     Arith(i16),
     /// `0x14` — `return`.
     Return,
-    /// `0x11` — `while`/`for` loop head.
-    Loop,
-    /// `0x12` — `switch`.
-    Switch,
-    /// `0x16` — low-level conditional branch.
-    CondBranch,
+    /// `0x11` — `while`/`for` loop head (condition follows; bounds are unit
+    /// indices).
+    Loop { body_start: usize, body_end: usize, branch_after: usize },
+    /// `0x12` — `switch` (value follows; `cases` is the `(body_start, body_end)`
+    /// unit-index range of each case, in order; `branch_after` is where the whole
+    /// switch ends).
+    Switch { branch_after: usize, cases: Rc<Vec<(usize, usize)>> },
+    /// `0x16` — low-level conditional branch (condition follows; both targets are
+    /// unit indices).
+    CondBranch { true_branch: usize, false_branch: usize },
 
-    // ---- statement units with baked operands --------------------------------
+    // ---- statement heads ----------------------------------------------------
     /// `0x0e` — `let`/`const`/`var` of a simple name (value expression follows).
     DefineVar(Rc<str>),
     /// `0x0f` — assignment. `kind` is 1 for a plain identifier target and 2 for
     /// an indexed target (`a[i] = v` / `a.b = v`, whose index expression then
     /// precedes the value expression).
     AssignVar { name: Rc<str>, kind: i16 },
-    /// `0x10` — head of one arm of an if/else chain. `has_condition` is false
-    /// for the trailing unconditional `else`.
-    IfHead { has_condition: bool },
-    /// `0x15` — unconditional jump to a byte offset.
+    /// `0x10` — head of one arm of an if/else chain (condition follows when
+    /// `has_condition`; the bounds are unit indices). `next` is the following arm
+    /// (only meaningful when `has_condition`); `branch_after` is the end of the
+    /// whole chain.
+    IfHead {
+        has_condition: bool,
+        body_start: usize,
+        body_end: usize,
+        next: usize,
+        branch_after: usize,
+    },
+    /// `0x15` — unconditional jump to a unit index.
     Jump(usize),
     /// `0x08` — object-literal head (type id + property count).
     ObjHead { typ: i64, props_len: i32 },
     /// `0x09` — array-literal head (element count).
     ArrHead { len: i32 },
-    /// `0x13` — function definition (hoisted, body follows in the stream).
+    /// `0x13` — function definition (hoisted; body follows). `start`/`end` are
+    /// unit indices.
     FuncDef {
         name: Rc<str>,
         params: Rc<Vec<String>>,
@@ -102,67 +114,113 @@ pub enum UnitKind {
         start: usize,
         end: usize,
     },
-
-    // ---- bare immediates consumed by a later state transition ---------------
-    /// A 32-bit immediate (e.g. a call's argument count).
-    I32(i32),
-    /// A 64-bit immediate (e.g. a branch / body / case offset).
-    I64(i64),
-    /// A length-prefixed string immediate (e.g. a `cast` target type).
-    Str(Rc<str>),
 }
 
-/// A decoded unit plus the number of raw bytes it occupied, so the interpreter
-/// can advance its byte-offset program counter exactly as before.
-#[derive(Clone)]
-pub struct Unit {
-    pub kind: UnitKind,
-    pub len: u32,
-}
-
-/// The whole program decoded once into addressable [`Unit`]s.
+/// The whole program decoded once into a flat list of [`UnitKind`]s, traversed by
+/// unit index. The raw bytecode is dropped after decoding.
 pub struct DecodedProgram {
-    /// Decoded units in byte order.
-    pub units: Vec<Unit>,
-    /// Byte offset → index into [`units`]. `u32::MAX` marks an offset that is
-    /// interior to a unit (never a valid program-counter landing spot).
-    pub index_at: Vec<u32>,
+    pub units: Vec<UnitKind>,
 }
 
 const NONE: u32 = u32::MAX;
 
 impl DecodedProgram {
-    /// Decode an entire bytecode program. Mirrors the compiler's emission
+    /// Decode an entire bytecode program into units, then rewrite every baked
+    /// byte-offset target into a unit index. Mirrors the compiler's emission
     /// grammar; see the module docs.
     pub fn decode(bytes: &[u8]) -> DecodedProgram {
         let mut d = Decoder { bytes, units: Vec::new(), index_at: vec![NONE; bytes.len()] };
         if !bytes.is_empty() {
             d.decode_stmt_seq(0, bytes.len());
         }
-        DecodedProgram { units: d.units, index_at: d.index_at }
-    }
-
-    /// The unit index at byte offset `off`. The interpreter only ever asks for
-    /// offsets that are real unit starts (opcode positions, immediates reached
-    /// in order, control-flow targets the compiler aligned to statement
-    /// boundaries), so this is always a valid index in practice.
-    #[inline]
-    pub fn index_at(&self, off: usize) -> usize {
-        self.index_at[off] as usize
+        d.relocate();
+        DecodedProgram { units: d.units }
     }
 }
 
 struct Decoder<'a> {
     bytes: &'a [u8],
-    units: Vec<Unit>,
+    units: Vec<UnitKind>,
+    /// Byte offset → unit index (`NONE` for offsets interior to a unit).
     index_at: Vec<u32>,
 }
 
 impl<'a> Decoder<'a> {
     #[inline]
-    fn emit(&mut self, off: usize, kind: UnitKind, len: usize) {
-        self.index_at[off] = self.units.len() as u32;
-        self.units.push(Unit { kind, len: len as u32 });
+    fn emit(&mut self, off: usize, kind: UnitKind) -> usize {
+        let idx = self.units.len();
+        self.index_at[off] = idx as u32;
+        self.units.push(kind);
+        idx
+    }
+
+    /// Translate a target **byte offset** (stashed in a unit during decoding) to
+    /// a unit index. A target at or past the end of the stream becomes the
+    /// one-past-last sentinel `units.len()`; every other target is a unit start
+    /// the compiler aligned a branch to.
+    fn target_unit(&self, off: usize) -> usize {
+        if off >= self.bytes.len() {
+            return self.units.len();
+        }
+        let i = self.index_at[off];
+        debug_assert!(i != NONE, "branch target offset {off} is not a unit start");
+        if i == NONE {
+            self.units.len()
+        } else {
+            i as usize
+        }
+    }
+
+    /// Second pass: rewrite every position field from the byte offset stashed
+    /// during decoding to a unit index.
+    fn relocate(&mut self) {
+        for i in 0..self.units.len() {
+            let translated = match &self.units[i] {
+                UnitKind::Jump(off) => UnitKind::Jump(self.target_unit(*off)),
+                UnitKind::CondBranch { true_branch, false_branch } => UnitKind::CondBranch {
+                    true_branch: self.target_unit(*true_branch),
+                    false_branch: self.target_unit(*false_branch),
+                },
+                UnitKind::Loop { body_start, body_end, branch_after } => UnitKind::Loop {
+                    body_start: self.target_unit(*body_start),
+                    body_end: self.target_unit(*body_end),
+                    branch_after: self.target_unit(*branch_after),
+                },
+                UnitKind::IfHead { has_condition, body_start, body_end, next, branch_after } => {
+                    UnitKind::IfHead {
+                        has_condition: *has_condition,
+                        body_start: self.target_unit(*body_start),
+                        body_end: self.target_unit(*body_end),
+                        next: self.target_unit(*next),
+                        branch_after: self.target_unit(*branch_after),
+                    }
+                }
+                UnitKind::Switch { branch_after, cases } => {
+                    let cases: Vec<(usize, usize)> = cases
+                        .iter()
+                        .map(|(s, e)| (self.target_unit(*s), self.target_unit(*e)))
+                        .collect();
+                    UnitKind::Switch {
+                        branch_after: self.target_unit(*branch_after),
+                        cases: Rc::new(cases),
+                    }
+                }
+                UnitKind::FuncDef { name, params, frees, start, end } => UnitKind::FuncDef {
+                    name: name.clone(),
+                    params: params.clone(),
+                    frees: frees.clone(),
+                    start: self.target_unit(*start),
+                    end: self.target_unit(*end),
+                },
+                UnitKind::FuncLit { start, end, params } => UnitKind::FuncLit {
+                    start: self.target_unit(*start),
+                    end: self.target_unit(*end),
+                    params: params.clone(),
+                },
+                _ => continue,
+            };
+            self.units[i] = translated;
+        }
     }
 
     #[inline]
@@ -195,38 +253,39 @@ impl<'a> Decoder<'a> {
 
     // ---- expressions (mirror of `serialize_expr` / `extract_val`) -----------
 
-    /// Decode one expression starting at `pos`; return the offset just past it.
+    /// Decode one expression starting at byte offset `pos`; return the offset
+    /// just past it.
     fn decode_value(&mut self, pos: usize) -> usize {
         let tag = self.bytes[pos];
         match tag {
             1 => {
-                self.emit(pos, UnitKind::Lit(Val::new(1, Payload::from(self.read_i16(pos + 1)))), 3);
+                self.emit(pos, UnitKind::Lit(Val::new(1, Payload::from(self.read_i16(pos + 1)))));
                 pos + 3
             }
             2 => {
-                self.emit(pos, UnitKind::Lit(Val::new(2, Payload::from(self.read_i32(pos + 1)))), 5);
+                self.emit(pos, UnitKind::Lit(Val::new(2, Payload::from(self.read_i32(pos + 1)))));
                 pos + 5
             }
             3 => {
-                self.emit(pos, UnitKind::Lit(Val::new(3, Payload::from(self.read_i64(pos + 1)))), 9);
+                self.emit(pos, UnitKind::Lit(Val::new(3, Payload::from(self.read_i64(pos + 1)))));
                 pos + 9
             }
             4 => {
-                self.emit(pos, UnitKind::Lit(Val::new(4, Payload::from(self.read_f32(pos + 1)))), 5);
+                self.emit(pos, UnitKind::Lit(Val::new(4, Payload::from(self.read_f32(pos + 1)))));
                 pos + 5
             }
             5 => {
-                self.emit(pos, UnitKind::Lit(Val::new(5, Payload::from(self.read_f64(pos + 1)))), 9);
+                self.emit(pos, UnitKind::Lit(Val::new(5, Payload::from(self.read_f64(pos + 1)))));
                 pos + 9
             }
             6 => {
                 let b = self.bytes[pos + 1] == 0x01;
-                self.emit(pos, UnitKind::Lit(Val::new(6, Payload::from(b))), 2);
+                self.emit(pos, UnitKind::Lit(Val::new(6, Payload::from(b))));
                 pos + 2
             }
             7 => {
                 let (s, consumed) = self.read_str(pos + 1);
-                self.emit(pos, UnitKind::Lit(Val::new(7, Payload::from(s))), 1 + consumed);
+                self.emit(pos, UnitKind::Lit(Val::new(7, Payload::from(s))));
                 pos + 1 + consumed
             }
             0x0a => {
@@ -241,38 +300,37 @@ impl<'a> Decoder<'a> {
                     params.push(name);
                     p += consumed;
                 }
-                self.emit(
-                    pos,
-                    UnitKind::FuncLit { start, end, params: Rc::new(params) },
-                    p - pos,
-                );
+                // start/end stashed as byte offsets; `relocate` turns them into
+                // unit indices.
+                self.emit(pos, UnitKind::FuncLit { start, end, params: Rc::new(params) });
                 p
             }
             0x0b => {
                 let (name, consumed) = self.read_str(pos + 1);
-                self.emit(pos, UnitKind::Ident(Rc::from(name.as_str())), 1 + consumed);
+                self.emit(pos, UnitKind::Ident(Rc::from(name.as_str())));
                 pos + 1 + consumed
             }
             0x0c => {
                 // Indexer: opcode, then target expression, then index expression.
-                self.emit(pos, UnitKind::Indexer, 1);
+                self.emit(pos, UnitKind::Indexer);
                 let after_target = self.decode_value(pos + 1);
                 self.decode_value(after_target)
             }
             0xfc => {
-                self.emit(pos, UnitKind::Not, 1);
+                self.emit(pos, UnitKind::Not);
                 self.decode_value(pos + 1)
             }
             0xfd => {
-                // Cast: opcode, value expression, then the target-type string.
-                self.emit(pos, UnitKind::Cast, 1);
+                // Cast: opcode, value expression, then the target-type string —
+                // which is folded straight into the unit (no trailing immediate).
+                let idx = self.emit(pos, UnitKind::Cast { target_type: Rc::from("") });
                 let after_val = self.decode_value(pos + 1);
                 let (ty, consumed) = self.read_str(after_val);
-                self.emit(after_val, UnitKind::Str(Rc::from(ty.as_str())), consumed);
+                self.units[idx] = UnitKind::Cast { target_type: Rc::from(ty.as_str()) };
                 after_val + consumed
             }
             0xf0..=0xfb => {
-                self.emit(pos, UnitKind::Arith((tag - 0xf0 + 1) as i16), 1);
+                self.emit(pos, UnitKind::Arith((tag - 0xf0 + 1) as i16));
                 let after_op1 = self.decode_value(pos + 1);
                 self.decode_value(after_op1)
             }
@@ -283,13 +341,14 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    /// Decode a call expression/statement: opcode, callee, arg count, args.
+    /// Decode a call expression/statement: opcode, callee, arg count, args. The
+    /// argument count is folded into the `Call` unit.
     fn decode_call(&mut self, pos: usize) -> usize {
-        self.emit(pos, UnitKind::Call, 1);
+        let idx = self.emit(pos, UnitKind::Call { argc: 0 });
         let mut p = self.decode_value(pos + 1); // callee
-        let argc = self.read_i32(p);
-        self.emit(p, UnitKind::I32(argc), 4);
+        let argc = self.read_i32(p) as u32;
         p += 4;
+        self.units[idx] = UnitKind::Call { argc };
         for _ in 0..argc {
             p = self.decode_value(p);
         }
@@ -299,7 +358,7 @@ impl<'a> Decoder<'a> {
     fn decode_object(&mut self, pos: usize) -> usize {
         let typ = self.read_i64(pos + 1);
         let props_len = self.read_i32(pos + 9);
-        self.emit(pos, UnitKind::ObjHead { typ, props_len }, 1 + 8 + 4);
+        self.emit(pos, UnitKind::ObjHead { typ, props_len });
         let mut p = pos + 13;
         for _ in 0..props_len {
             p = self.decode_value(p); // key (a tag-7 string literal)
@@ -310,7 +369,7 @@ impl<'a> Decoder<'a> {
 
     fn decode_array(&mut self, pos: usize) -> usize {
         let len = self.read_i32(pos + 1);
-        self.emit(pos, UnitKind::ArrHead { len }, 1 + 4);
+        self.emit(pos, UnitKind::ArrHead { len });
         let mut p = pos + 5;
         for _ in 0..len {
             p = self.decode_value(p);
@@ -335,40 +394,40 @@ impl<'a> Decoder<'a> {
         match tag {
             0x15 => {
                 let dest = self.read_i64(pos + 1) as usize;
-                self.emit(pos, UnitKind::Jump(dest), 1 + 8);
+                self.emit(pos, UnitKind::Jump(dest)); // byte offset → unit in relocate
                 pos + 9
             }
             0x16 => {
-                self.emit(pos, UnitKind::CondBranch, 1);
+                let idx = self.emit(pos, UnitKind::CondBranch { true_branch: 0, false_branch: 0 });
                 let mut p = self.decode_value(pos + 1); // condition
-                let tb = self.read_i64(p);
-                self.emit(p, UnitKind::I64(tb), 8);
+                let tb = self.read_i64(p) as usize;
                 p += 8;
-                let fb = self.read_i64(p);
-                self.emit(p, UnitKind::I64(fb), 8);
+                let fb = self.read_i64(p) as usize;
                 p += 8;
+                self.units[idx] = UnitKind::CondBranch { true_branch: tb, false_branch: fb };
                 p
             }
             0x0d => self.decode_call(pos),
             0x14 => {
-                self.emit(pos, UnitKind::Return, 1);
+                self.emit(pos, UnitKind::Return);
                 self.decode_value(pos + 1)
             }
             0x10 => self.decode_if_chain(pos),
             0x11 => {
                 // loop: opcode, condition, body_start, body_end, branch_after, body.
-                self.emit(pos, UnitKind::Loop, 1);
+                let idx = self.emit(
+                    pos,
+                    UnitKind::Loop { body_start: 0, body_end: 0, branch_after: 0 },
+                );
                 let mut p = self.decode_value(pos + 1); // condition
                 let body_start = self.read_i64(p) as usize;
-                self.emit(p, UnitKind::I64(body_start as i64), 8);
                 p += 8;
                 let body_end = self.read_i64(p) as usize;
-                self.emit(p, UnitKind::I64(body_end as i64), 8);
                 p += 8;
-                let branch_after = self.read_i64(p);
-                self.emit(p, UnitKind::I64(branch_after), 8);
+                let branch_after = self.read_i64(p) as usize;
                 p += 8;
                 debug_assert_eq!(p, body_start);
+                self.units[idx] = UnitKind::Loop { body_start, body_end, branch_after };
                 self.decode_stmt_seq(body_start, body_end);
                 body_end
             }
@@ -377,7 +436,7 @@ impl<'a> Decoder<'a> {
             0x0e => {
                 // definition: 0x0e, 0x0b discriminator, name, value expression.
                 let (name, consumed) = self.read_str(pos + 2);
-                self.emit(pos, UnitKind::DefineVar(Rc::from(name.as_str())), 2 + consumed);
+                self.emit(pos, UnitKind::DefineVar(Rc::from(name.as_str())));
                 self.decode_value(pos + 2 + consumed)
             }
             0x0f => {
@@ -386,7 +445,7 @@ impl<'a> Decoder<'a> {
                 let disc = self.bytes[pos + 1];
                 let kind = if disc == 0x0c { 2 } else { 1 };
                 let (name, consumed) = self.read_str(pos + 2);
-                self.emit(pos, UnitKind::AssignVar { name: Rc::from(name.as_str()), kind }, 2 + consumed);
+                self.emit(pos, UnitKind::AssignVar { name: Rc::from(name.as_str()), kind });
                 let mut p = pos + 2 + consumed;
                 if kind == 2 {
                     p = self.decode_value(p); // index expression
@@ -396,7 +455,7 @@ impl<'a> Decoder<'a> {
             // `0x00` (empty body) and anything unknown: a no-op, exactly like the
             // interpreter's old fall-through arm.
             _ => {
-                self.emit(pos, UnitKind::Nop, 1);
+                self.emit(pos, UnitKind::Nop);
                 pos + 1
             }
         }
@@ -406,26 +465,44 @@ impl<'a> Decoder<'a> {
     /// just past the whole chain (its shared `branch_after`).
     fn decode_if_chain(&mut self, pos: usize) -> usize {
         let conditioned = self.bytes[pos + 1] == 0x01;
-        self.emit(pos, UnitKind::IfHead { has_condition: conditioned }, 2);
+        let idx = self.emit(
+            pos,
+            UnitKind::IfHead {
+                has_condition: conditioned,
+                body_start: 0,
+                body_end: 0,
+                next: 0,
+                branch_after: 0,
+            },
+        );
         let mut p = pos + 2;
         if conditioned {
             p = self.decode_value(p); // condition
         }
         let body_start = self.read_i64(p) as usize;
-        self.emit(p, UnitKind::I64(body_start as i64), 8);
         p += 8;
         let body_end = self.read_i64(p) as usize;
-        self.emit(p, UnitKind::I64(body_end as i64), 8);
         p += 8;
-        if conditioned {
-            let next = self.read_i64(p);
-            self.emit(p, UnitKind::I64(next), 8);
+        // The conditioned form carries the "next arm" pointer; the unconditional
+        // `else` does not, so reuse `branch_after` for `next` (it is never read).
+        let next = if conditioned {
+            let n = self.read_i64(p) as usize;
             p += 8;
-        }
+            n
+        } else {
+            0
+        };
         let branch_after = self.read_i64(p) as usize;
-        self.emit(p, UnitKind::I64(branch_after as i64), 8);
         p += 8;
         debug_assert_eq!(p, body_start);
+        let next = if conditioned { next } else { branch_after };
+        self.units[idx] = UnitKind::IfHead {
+            has_condition: conditioned,
+            body_start,
+            body_end,
+            next,
+            branch_after,
+        };
         self.decode_stmt_seq(body_start, body_end);
         // The trailing else-if / else arm (if any) lives between this arm's body
         // and the chain's shared end.
@@ -436,27 +513,26 @@ impl<'a> Decoder<'a> {
     }
 
     fn decode_switch(&mut self, pos: usize) -> usize {
-        self.emit(pos, UnitKind::Switch, 1);
+        let idx = self.emit(pos, UnitKind::Switch { branch_after: 0, cases: Rc::new(vec![]) });
         let mut p = self.decode_value(pos + 1); // switch value
-        let branch_after = self.read_i64(p);
-        self.emit(p, UnitKind::I64(branch_after), 8);
+        let branch_after = self.read_i64(p) as usize;
         p += 8;
         let case_count = self.read_i64(p);
-        self.emit(p, UnitKind::I64(case_count), 8);
         p += 8;
+        let mut cases = Vec::with_capacity(case_count.max(0) as usize);
         for _ in 0..case_count {
-            p = self.decode_value(p); // case value
+            p = self.decode_value(p); // case value (an expression, evaluated at run time)
             let case_start = self.read_i64(p) as usize;
-            self.emit(p, UnitKind::I64(case_start as i64), 8);
             p += 8;
             let case_end = self.read_i64(p) as usize;
-            self.emit(p, UnitKind::I64(case_end as i64), 8);
             p += 8;
             debug_assert_eq!(p, case_start);
+            cases.push((case_start, case_end)); // byte offsets; relocate -> unit indices
             self.decode_stmt_seq(case_start, case_end);
             p = case_end;
         }
-        branch_after as usize
+        self.units[idx] = UnitKind::Switch { branch_after, cases: Rc::new(cases) };
+        branch_after
     }
 
     fn decode_funcdef(&mut self, pos: usize) -> usize {
@@ -484,6 +560,8 @@ impl<'a> Decoder<'a> {
         let func_end = self.read_i64(p) as usize;
         p += 8;
         debug_assert_eq!(p, func_start);
+        // start/end stashed as byte offsets; `relocate` turns them into unit
+        // indices.
         self.emit(
             pos,
             UnitKind::FuncDef {
@@ -493,7 +571,6 @@ impl<'a> Decoder<'a> {
                 start: func_start,
                 end: func_end,
             },
-            p - pos,
         );
         self.decode_stmt_seq(func_start, func_end);
         func_end
