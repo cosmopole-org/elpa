@@ -121,7 +121,7 @@ fn backdrop_filter_is_a_multipass_offscreen_capture() {
     let frame = app.last_frame().unwrap();
     let scene = frame.resources.iter().find(|r| r.id().starts_with("elpa.m3.bd.scene"));
     assert!(scene.is_some(), "the offscreen scene texture resource is declared");
-    match scene.unwrap() {
+    let scene_fmt = match scene.unwrap() {
         ResourceDesc::Texture(t) => {
             assert!(
                 t.usage.iter().any(|u| u == "RENDER_ATTACHMENT"),
@@ -131,9 +131,37 @@ fn backdrop_filter_is_a_multipass_offscreen_capture() {
                 t.usage.iter().any(|u| u == "TEXTURE_BINDING"),
                 "scene texture is sampleable (so the blur pass can read it)"
             );
+            t.format.clone()
         }
         _ => panic!("elpa.m3.bd.scene* should be a texture"),
-    }
+    };
+    // The offscreen scene is a render target for the SDF + image pipelines, so its
+    // texture format MUST equal their colour-target format — a mismatch is a wgpu
+    // device error that hangs a real backend (the headless backend can't catch it,
+    // so assert the invariant here).
+    let pipe_fmt = frame
+        .resources
+        .iter()
+        .find_map(|r| {
+            let v = serde_json::to_value(r).ok()?;
+            if v.get("kind")?.as_str()? != "renderPipeline" {
+                return None;
+            }
+            if v.get("id")?.as_str()? != "elpa.m3.pipe" {
+                return None;
+            }
+            v.get("fragment")?
+                .get("targets")?
+                .get(0)?
+                .get("format")?
+                .as_str()
+                .map(|s| s.to_string())
+        })
+        .expect("the SDF pipeline declares a colour-target format");
+    assert_eq!(
+        scene_fmt, pipe_fmt,
+        "offscreen render-target format must match the pipeline colour target"
+    );
     assert!(app.trap_reason().is_none(), "no trap building the backdrop frame");
     assert!(app.take_log().is_empty(), "no host errors building the backdrop frame");
 }
