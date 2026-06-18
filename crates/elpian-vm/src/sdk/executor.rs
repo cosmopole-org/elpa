@@ -52,7 +52,6 @@ pub enum ExecStates {
     CallFuncFinished,
     ReturnValStarted,
     ReturnValFinished,
-    IfStmtStarted,
     IfStmtIsConditioned,
     IfStmtFinished,
     LoopStmtStarted,
@@ -103,15 +102,10 @@ impl fmt::Display for ExecStates {
 pub enum StateData {
     Empty,
     Val(Val),
-    Bool(bool),
     I16(i16),
     I32(i32),
     Str(String),
     StrI16(String, i16),
-    ValUsize(Val, usize),
-    ValUsize2(Val, usize, usize),
-    ValI64x2(Val, i64, i64),
-    ValStr(Val, String),
     I64I32(i64, i32),
 }
 
@@ -121,13 +115,6 @@ impl StateData {
         match self {
             StateData::Val(v) => v,
             _ => unreachable!("StateData::val on a non-Val payload"),
-        }
-    }
-    #[inline]
-    fn boolean(self) -> bool {
-        match self {
-            StateData::Bool(v) => v,
-            _ => unreachable!("StateData::boolean on a non-Bool payload"),
         }
     }
     #[inline]
@@ -159,34 +146,6 @@ impl StateData {
         }
     }
     #[inline]
-    fn val_usize(self) -> (Val, usize) {
-        match self {
-            StateData::ValUsize(v, n) => (v, n),
-            _ => unreachable!("StateData::val_usize on a non-ValUsize payload"),
-        }
-    }
-    #[inline]
-    fn val_usize2(self) -> (Val, usize, usize) {
-        match self {
-            StateData::ValUsize2(v, a, b) => (v, a, b),
-            _ => unreachable!("StateData::val_usize2 on a non-ValUsize2 payload"),
-        }
-    }
-    #[inline]
-    fn val_i64x2(self) -> (Val, i64, i64) {
-        match self {
-            StateData::ValI64x2(v, a, b) => (v, a, b),
-            _ => unreachable!("StateData::val_i64x2 on a non-ValI64x2 payload"),
-        }
-    }
-    #[inline]
-    fn val_str(self) -> (Val, String) {
-        match self {
-            StateData::ValStr(v, s) => (v, s),
-            _ => unreachable!("StateData::val_str on a non-ValStr payload"),
-        }
-    }
-    #[inline]
     fn i64_i32(self) -> (i64, i32) {
         match self {
             StateData::I64I32(a, b) => (a, b),
@@ -200,6 +159,13 @@ pub trait Operation {
     fn get_state(&self) -> ExecStates;
     fn set_state(&mut self, state: ExecStates, data: StateData);
     fn get_data(&self) -> Vec<Val>;
+    /// For a [`SwitchStmt`] mid-collection: the `(body_start, body_end)` unit
+    /// range of the *next* case about to be collected. The run loop reads the
+    /// end to skip the case body once its value has been evaluated. Other
+    /// operations never collect cases, so the default is unused.
+    fn next_case_bounds(&self) -> (usize, usize) {
+        (0, 0)
+    }
 }
 
 impl fmt::Debug for dyn Operation {
@@ -393,12 +359,15 @@ struct CallFunction {
 }
 
 impl CallFunction {
-    pub fn new() -> Self {
+    /// `param_count` is the number of arguments the *call site* provides, folded
+    /// into the `Call` unit at decode time (so it no longer trails the callee in
+    /// the instruction stream).
+    pub fn new(param_count: i32) -> Self {
         CallFunction {
             typ: OperationTypes::CallFunc,
             state: ExecStates::CallFuncStarted,
             func: None,
-            param_count: 0,
+            param_count,
             is_native: false,
             params: vec![],
         }
@@ -417,12 +386,13 @@ impl Operation for CallFunction {
     fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state;
         if state == ExecStates::CallFuncExtractFunc {
-            let val = data.val_usize();
-            if val.0.typ == 10 {
-                self.func = Some(val.0.as_func());
-                self.param_count = val.1 as i32;
+            // The callee value just evaluated; the argument count is already known
+            // (folded into the `Call` unit, stored as `param_count` at creation).
+            let callee = data.val();
+            if callee.typ == 10 {
+                self.func = Some(callee.as_func());
                 self.is_native = false;
-            } else if val.0.typ == 255 {
+            } else if callee.typ == 255 {
                 self.func = Some(Rc::new(RefCell::new(Function::new(
                     "".to_string(),
                     0,
@@ -431,15 +401,14 @@ impl Operation for CallFunction {
                 ))));
                 self.param_count = 2;
                 self.is_native = true;
-            } else if val.0.typ == 252 {
+            } else if callee.typ == 252 {
                 // Native standard-library builtin. Its arity is the number of
                 // arguments the call site provides; we name the formal params
                 // `arg0..argN` so the generic "params filled" finish check fires.
-                let name = val.0.as_string();
-                let provided = val.1;
+                let name = callee.as_string();
+                let provided = self.param_count;
                 let params: Vec<String> = (0..provided).map(|i| format!("arg{i}")).collect();
                 self.func = Some(Rc::new(RefCell::new(Function::new(name, 0, 0, params))));
-                self.param_count = provided as i32;
                 self.is_native = true;
             } else {
                 panic!("elpian error: the specified data is not runnable");
@@ -526,15 +495,40 @@ struct IfStmt {
     state: ExecStates,
     pub has_condition: bool,
     pub condition: Option<Val>,
+    // Branch targets, as unit indices, folded into the `IfHead` unit at decode.
+    body_start: usize,
+    body_end: usize,
+    next: usize,
+    branch_after: usize,
 }
 
 impl IfStmt {
-    pub fn new() -> Self {
+    pub fn new(
+        has_condition: bool,
+        body_start: usize,
+        body_end: usize,
+        next: usize,
+        branch_after: usize,
+    ) -> Self {
         IfStmt {
             typ: OperationTypes::IfStmt,
-            state: ExecStates::IfStmtStarted,
-            has_condition: false,
-            condition: None,
+            // A conditioned arm waits for its condition to evaluate; an
+            // unconditional `else` is already decided (it always runs).
+            state: if has_condition {
+                ExecStates::IfStmtIsConditioned
+            } else {
+                ExecStates::IfStmtFinished
+            },
+            has_condition,
+            condition: if has_condition {
+                None
+            } else {
+                Some(Val { typ: 6, data: Payload::from(true) })
+            },
+            body_start,
+            body_end,
+            next,
+            branch_after,
         }
     }
 }
@@ -550,24 +544,19 @@ impl Operation for IfStmt {
 
     fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state;
-        if state == ExecStates::IfStmtIsConditioned {
-            self.has_condition = data.boolean();
-            if !self.has_condition {
-                self.condition = None;
-                self.state = ExecStates::IfStmtFinished;
-            }
-        } else if state == ExecStates::IfStmtFinished {
+        if state == ExecStates::IfStmtFinished {
             self.condition = Some(data.val());
         }
     }
 
     fn get_data(&self) -> Vec<Val> {
         vec![
-            Val {
-                typ: 6,
-                data: Payload::from(self.has_condition),
-            },
+            Val { typ: 6, data: Payload::from(self.has_condition) },
             self.condition.clone().unwrap(),
+            Val { typ: 3, data: Payload::from(self.body_start as i64) },
+            Val { typ: 3, data: Payload::from(self.body_end as i64) },
+            Val { typ: 3, data: Payload::from(self.next as i64) },
+            Val { typ: 3, data: Payload::from(self.branch_after as i64) },
         ]
     }
 }
@@ -576,14 +565,21 @@ struct LoopStmt {
     typ: OperationTypes,
     state: ExecStates,
     pub condition: Option<Val>,
+    // Loop bounds, as unit indices, folded into the `Loop` unit at decode.
+    body_start: usize,
+    body_end: usize,
+    branch_after: usize,
 }
 
 impl LoopStmt {
-    pub fn new() -> Self {
+    pub fn new(body_start: usize, body_end: usize, branch_after: usize) -> Self {
         LoopStmt {
             typ: OperationTypes::LoopStmt,
             state: ExecStates::LoopStmtStarted,
             condition: None,
+            body_start,
+            body_end,
+            branch_after,
         }
     }
 }
@@ -605,7 +601,12 @@ impl Operation for LoopStmt {
     }
 
     fn get_data(&self) -> Vec<Val> {
-        vec![self.condition.clone().unwrap()]
+        vec![
+            self.condition.clone().unwrap(),
+            Val { typ: 3, data: Payload::from(self.body_start as i64) },
+            Val { typ: 3, data: Payload::from(self.body_end as i64) },
+            Val { typ: 3, data: Payload::from(self.branch_after as i64) },
+        ]
     }
 }
 
@@ -616,17 +617,22 @@ struct SwitchStmt {
     pub branch_after_start: usize,
     pub case_count: usize,
     pub cases: Vec<(Val, usize, usize)>,
+    /// The `(body_start, body_end)` unit range of each case, in order, folded
+    /// into the `Switch` unit at decode. Each case value is still an expression
+    /// evaluated at run time; as it arrives it is paired with the next entry.
+    cases_bounds: std::rc::Rc<Vec<(usize, usize)>>,
 }
 
 impl SwitchStmt {
-    pub fn new() -> Self {
+    pub fn new(branch_after: usize, cases_bounds: std::rc::Rc<Vec<(usize, usize)>>) -> Self {
         SwitchStmt {
             typ: OperationTypes::SwitchStmt,
             state: ExecStates::SwitchStmtStarted,
             comparing_value: None,
-            branch_after_start: 0,
-            case_count: 0,
+            branch_after_start: branch_after,
+            case_count: cases_bounds.len(),
             cases: vec![],
+            cases_bounds,
         }
     }
 }
@@ -640,17 +646,20 @@ impl Operation for SwitchStmt {
         self.typ
     }
 
+    fn next_case_bounds(&self) -> (usize, usize) {
+        self.cases_bounds.get(self.cases.len()).copied().unwrap_or((0, 0))
+    }
+
     fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state;
         if state == ExecStates::SwitchStmtExtractVal {
-            let (comparing_val, branch_after_start, case_count) =
-                data.val_usize2();
-            self.comparing_value = Some(comparing_val.clone());
-            self.branch_after_start = branch_after_start;
-            self.case_count = case_count;
+            // The switch value just evaluated; the case table is already known.
+            self.comparing_value = Some(data.val());
         } else if state == ExecStates::SwitchStmtExtractCase {
-            self.cases
-                .push(data.val_usize2());
+            // A case value just evaluated; pair it with the next case's body range.
+            let value = data.val();
+            let (start, end) = self.next_case_bounds();
+            self.cases.push((value, start, end));
         }
         if self.case_count == self.cases.len() {
             self.state = ExecStates::SwitchStmtFinished;
@@ -966,13 +975,15 @@ struct CondBranch {
 }
 
 impl CondBranch {
-    pub fn new() -> Self {
+    /// `true_branch`/`false_branch` are unit indices folded into the `CondBranch`
+    /// unit at decode.
+    pub fn new(true_branch: usize, false_branch: usize) -> Self {
         CondBranch {
             typ: OperationTypes::CondBrch,
             state: ExecStates::CondBranchStarted,
             condition: None,
-            true_branch: 0,
-            false_branch: 0,
+            true_branch: true_branch as i64,
+            false_branch: false_branch as i64,
         }
     }
 }
@@ -989,10 +1000,8 @@ impl Operation for CondBranch {
     fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state;
         if state == ExecStates::CondBranchFinished {
-            let (cond, tb, fb) = data.val_i64x2();
-            self.condition = Some(cond);
-            self.true_branch = tb;
-            self.false_branch = fb;
+            // The condition just evaluated; both targets are already known.
+            self.condition = Some(data.val());
         }
     }
 
@@ -1019,12 +1028,13 @@ struct CastOp {
 }
 
 impl CastOp {
-    pub fn new() -> Self {
+    /// `target_type` is folded into the `Cast` unit at decode.
+    pub fn new(target_type: String) -> Self {
         CastOp {
             typ: OperationTypes::CastOprt,
             state: ExecStates::CastOprtStarted,
             data: None,
-            target_type: "".to_string(),
+            target_type,
         }
     }
 }
@@ -1041,9 +1051,8 @@ impl Operation for CastOp {
     fn set_state(&mut self, state: ExecStates, data: StateData) {
         self.state = state;
         if state == ExecStates::CastOprtFinished {
-            let (data, tt) = data.val_str();
-            self.data = Some(data);
-            self.target_type = tt;
+            // The value just evaluated; the target type is already known.
+            self.data = Some(data.val());
         }
     }
 
@@ -1472,48 +1481,6 @@ impl Executor {
                 );
             }
         }
-    }
-    // ---- decoded-unit readers ----------------------------------------------
-    //
-    // These replace the old byte-by-byte `extract_*` parsers. The bytecode is
-    // decoded once at construction (`program.rs`); here we read the pre-decoded
-    // unit at the current program counter and advance it by one unit. Only the
-    // immediates a state transition consumes mid-flight (a call's argument count,
-    // a switch's case count, a `cast` target type) and the branch targets are
-    // read this way — opcode dispatch and the value/literal units are handled
-    // directly in the run loop.
-    fn extract_i32(&mut self) -> i32 {
-        let v = match &self.prog.units[self.pointer] {
-            UnitKind::I32(v) => *v,
-            _ => unreachable!("decoded program: expected I32 at unit {}", self.pointer),
-        };
-        self.pointer += 1;
-        v
-    }
-    fn extract_i64(&mut self) -> i64 {
-        let v = match &self.prog.units[self.pointer] {
-            UnitKind::I64(v) => *v,
-            _ => unreachable!("decoded program: expected I64 at unit {}", self.pointer),
-        };
-        self.pointer += 1;
-        v
-    }
-    /// Read a branch-target unit (a pre-translated unit index) and advance.
-    fn extract_target(&mut self) -> usize {
-        let v = match &self.prog.units[self.pointer] {
-            UnitKind::Target(t) => *t,
-            _ => unreachable!("decoded program: expected Target at unit {}", self.pointer),
-        };
-        self.pointer += 1;
-        v
-    }
-    fn extract_str(&mut self) -> String {
-        let s = match &self.prog.units[self.pointer] {
-            UnitKind::Str(s) => s.to_string(),
-            _ => unreachable!("decoded program: expected Str at unit {}", self.pointer),
-        };
-        self.pointer += 1;
-        s
     }
     /// Resolve an identifier reference to a value: a scope-chain binding shadows
     /// everything; otherwise `askHost` is the host-call seam (typ 255) and a
@@ -3808,10 +3775,12 @@ impl Executor {
                         if self.registers.last().unwrap().get_state()
                             == ExecStates::CallFuncStarted
                         {
-                            let arg_count = self.extract_i32() as usize;
+                            // The callee just evaluated; the argument count is
+                            // already stored in the operation (folded into the
+                            // `Call` unit at decode).
                             self.registers.last_mut().unwrap().set_state(
                                 ExecStates::CallFuncExtractFunc,
-                                StateData::ValUsize(main_reg.take().unwrap(), arg_count),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3945,11 +3914,12 @@ impl Executor {
                         if self.registers.last().unwrap().get_state()
                             == ExecStates::SwitchStmtStarted
                         {
-                            let branch_after_start = self.extract_target();
-                            let case_count = self.extract_i64() as usize;
+                            // The switch value just evaluated; the branch-after and
+                            // case table are already stored in the operation
+                            // (folded into the `Switch` unit at decode).
                             self.registers.last_mut().unwrap().set_state(
                                 ExecStates::SwitchStmtExtractVal,
-                                StateData::ValUsize2(main_reg.take().unwrap(), branch_after_start, case_count),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -3961,11 +3931,14 @@ impl Executor {
                             || self.registers.last().unwrap().get_state()
                                 == ExecStates::SwitchStmtExtractCase
                         {
-                            let branch_true_start = self.extract_target();
-                            let branch_true_end = self.extract_target();
+                            // A case value just evaluated. Its body range is the
+                            // next entry in the operation's case table; read the
+                            // end before recording the case so we can skip the body.
+                            let (_, branch_true_end) =
+                                self.registers.last().unwrap().next_case_bounds();
                             self.registers.last_mut().unwrap().set_state(
                                 ExecStates::SwitchStmtExtractCase,
-                                StateData::ValUsize2(main_reg.take().unwrap(), branch_true_start, branch_true_end),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -4058,11 +4031,12 @@ impl Executor {
                         if self.registers.last().unwrap().get_state()
                             == ExecStates::CondBranchStarted
                         {
-                            let tb = self.extract_target() as i64;
-                            let fb = self.extract_target() as i64;
+                            // The condition just evaluated; both targets are
+                            // already stored in the operation (folded into the
+                            // `CondBranch` unit at decode).
                             self.registers.last_mut().unwrap().set_state(
                                 ExecStates::CondBranchFinished,
-                                StateData::ValI64x2(main_reg.take().unwrap(), tb, fb),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -4076,10 +4050,11 @@ impl Executor {
                         if self.registers.last().unwrap().get_state()
                             == ExecStates::CastOprtStarted
                         {
-                            let tt = self.extract_str();
+                            // The value just evaluated; the target type is already
+                            // stored in the operation (folded into the `Cast` unit).
                             self.registers.last_mut().unwrap().set_state(
                                 ExecStates::CastOprtFinished,
-                                StateData::ValStr(main_reg.take().unwrap(), tt),
+                                StateData::Val(main_reg.take().unwrap()),
                             );
                             main_reg = None;
                             is_reg_state_final =
@@ -4318,9 +4293,16 @@ impl Executor {
                     } else if self.registers.last().unwrap().get_state()
                         == ExecStates::IfStmtFinished
                     {
+                        // The branch targets are part of the operation (folded into
+                        // the `IfHead` unit at decode): regs = [has_condition,
+                        // condition, body_start, body_end, next, branch_after].
                         let regs = self.registers.last().unwrap().get_data();
                         let has_condition = regs[0].as_bool();
                         let cond_val = regs[1].clone();
+                        let branch_true_start = regs[2].as_i64() as usize;
+                        let branch_true_end = regs[3].as_i64() as usize;
+                        let branch_next_start = regs[4].as_i64() as usize;
+                        let branch_after_start = regs[5].as_i64() as usize;
                         let mut condition = false;
                         if has_condition {
                             // JS truthiness — any non-falsy value (object, number,
@@ -4328,9 +4310,6 @@ impl Executor {
                             condition = cond_val.truthy();
                         }
                         if !has_condition {
-                            let branch_true_start = self.extract_target();
-                            let branch_true_end = self.extract_target();
-                            let branch_after_start = self.extract_target();
                             self.ctx
                                 .memory
                                 .last()
@@ -4346,10 +4325,6 @@ impl Executor {
                             self.pointer = branch_true_start;
                             self.end_at = branch_true_end;
                         } else {
-                            let branch_true_start = self.extract_target();
-                            let branch_true_end = self.extract_target();
-                            let branch_next_start = self.extract_target();
-                            let branch_after_start = self.extract_target();
                             if condition {
                                 self.ctx
                                     .memory
@@ -4375,13 +4350,16 @@ impl Executor {
                     } else if self.registers.last().unwrap().get_state()
                         == ExecStates::LoopStmtFinished
                     {
+                        // The loop bounds are part of the operation (folded into the
+                        // `Loop` unit at decode): regs = [condition, body_start,
+                        // body_end, branch_after].
                         let regs = self.registers.last().unwrap().get_data();
                         let cond_val = regs[0].clone();
                         // JS truthiness for the loop guard (see if-statement above).
                         let condition = cond_val.truthy();
-                        let branch_true_start = self.extract_target();
-                        let branch_true_end = self.extract_target();
-                        let branch_after_start = self.extract_target();
+                        let branch_true_start = regs[1].as_i64() as usize;
+                        let branch_true_end = regs[2].as_i64() as usize;
+                        let branch_after_start = regs[3].as_i64() as usize;
                         if condition {
                             self.ctx
                                 .memory
@@ -5127,9 +5105,9 @@ impl Executor {
                 UnitKind::Not => {
                     self.registers.push(Box::new(NotValue::new()));
                 }
-                // cast operation
-                UnitKind::Cast => {
-                    self.registers.push(Box::new(CastOp::new()));
+                // cast operation (target type folded into the unit)
+                UnitKind::Cast { target_type } => {
+                    self.registers.push(Box::new(CastOp::new(target_type.to_string())));
                 }
                 // ----------------------------------
                 // program operators:
@@ -5137,9 +5115,9 @@ impl Executor {
                 UnitKind::Indexer => {
                     self.registers.push(Box::new(IndexerValue::new()));
                 }
-                // function call
-                UnitKind::Call => {
-                    self.registers.push(Box::new(CallFunction::new()));
+                // function call (argument count folded into the unit)
+                UnitKind::Call { argc } => {
+                    self.registers.push(Box::new(CallFunction::new(argc as i32)));
                 }
                 // definition statement (name pre-decoded; value expression follows)
                 UnitKind::DefineVar(name) => {
@@ -5157,35 +5135,31 @@ impl Executor {
                         StateData::StrI16(name.to_string(), kind),
                     );
                 }
-                // if statement (one arm of an if/else chain)
-                UnitKind::IfHead { has_condition } => {
-                    self.registers.push(Box::new(IfStmt::new()));
-                    if has_condition {
-                        self.registers
-                            .last_mut()
-                            .unwrap()
-                            .set_state(ExecStates::IfStmtIsConditioned, StateData::Bool(true));
-                    } else {
-                        self.registers
-                            .last_mut()
-                            .unwrap()
-                            .set_state(ExecStates::IfStmtIsConditioned, StateData::Bool(false));
-                        self.registers.last_mut().unwrap().set_state(
-                            ExecStates::IfStmtFinished,
-                            StateData::Val(Val { typ: 6, data: Payload::from(true) }),
-                        );
+                // if statement (one arm of an if/else chain; targets folded in)
+                UnitKind::IfHead { has_condition, body_start, body_end, next, branch_after } => {
+                    self.registers.push(Box::new(IfStmt::new(
+                        has_condition,
+                        body_start,
+                        body_end,
+                        next,
+                        branch_after,
+                    )));
+                    if !has_condition {
+                        // The unconditional `else` arm is already decided (the
+                        // operation starts finished); run its finalizer next step.
                         main_reg = None;
                         is_reg_state_final = true;
                         continue;
                     }
                 }
-                // loop statement
-                UnitKind::Loop => {
-                    self.registers.push(Box::new(LoopStmt::new()));
+                // loop statement (bounds folded into the unit)
+                UnitKind::Loop { body_start, body_end, branch_after } => {
+                    self.registers
+                        .push(Box::new(LoopStmt::new(body_start, body_end, branch_after)));
                 }
-                // switch case statement
-                UnitKind::Switch => {
-                    self.registers.push(Box::new(SwitchStmt::new()));
+                // switch case statement (branch-after + case table folded in)
+                UnitKind::Switch { branch_after, cases } => {
+                    self.registers.push(Box::new(SwitchStmt::new(branch_after, cases)));
                 }
                 // function definition (header pre-decoded; body skipped here)
                 UnitKind::FuncDef { name, params, frees, start, end } => {
@@ -5213,9 +5187,9 @@ impl Executor {
                 UnitKind::Jump(dest) => {
                     self.pointer = dest;
                 }
-                // conditional branch
-                UnitKind::CondBranch => {
-                    self.registers.push(Box::new(CondBranch::new()));
+                // conditional branch (targets folded into the unit)
+                UnitKind::CondBranch { true_branch, false_branch } => {
+                    self.registers.push(Box::new(CondBranch::new(true_branch, false_branch)));
                 }
                 // ----------------------------------
                 // expressions
@@ -5270,11 +5244,7 @@ impl Executor {
                 // Bare immediates (consumed by a state transition, not dispatched
                 // here) and no-op padding: nothing to do, exactly like the old
                 // fall-through arm.
-                UnitKind::I32(_)
-                | UnitKind::I64(_)
-                | UnitKind::Target(_)
-                | UnitKind::Str(_)
-                | UnitKind::Nop => {}
+                UnitKind::Nop => {}
             }
         }
         Val::new(0, Payload::Null)
