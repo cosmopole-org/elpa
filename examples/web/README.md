@@ -32,10 +32,11 @@ wgpu + web-sys stack and only targets wasm). Build it on its own.
 ### Run the 3D game demo instead
 
 The same host can run the **Game3D engine demo** ([`examples/game3d`](../game3d)) —
-a lit, animated 3D scene (a ground plane, a spinning metallic cube, a bobbing
-sphere and an orbiting point light) from the object-oriented `elpa-game3d` SDK.
-Build with the `game3d` feature, which embeds `game3d/assets/demo.bc` instead of
-the Material gallery:
+a low-poly **island village** (terrain, sea, cottages, trees, a turning windmill,
+boats, villagers and drifting clouds) from the object-oriented `elpa-game3d` SDK,
+explored with a turntable camera (**drag to orbit, scroll/pinch to zoom, right-drag
+to pan**). Build with the `game3d` feature, which embeds `game3d/assets/demo.bc`
+instead of the Material gallery:
 
 ```bash
 trunk build --release --features game3d
