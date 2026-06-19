@@ -322,6 +322,43 @@ fn gltf_glb_loads_real_geometry() {
     assert_eq!(n, 1, "the loaded triangle is one 3-index draw");
 }
 
+#[test]
+fn demo_model_assets_decode_to_real_geometry() {
+    // The demo embeds two models (`assets/models.js`, linked by `module_js`) and
+    // loads them through both loader entry points: the crystal from a base64 `.glb`
+    // binary container, the gem from a `.gltf` JSON document with a `data:` buffer.
+    // Both must decode to real interleaved geometry on the live pipeline.
+    let app_js = concat!(
+        "let scene = createScene();\n",
+        "let cam = perspectiveCamera(60.0, 0.1, 100.0);\n",
+        "cam.setPosition(0.0, 0.0, 4.0); cam.lookAt(0.0, 0.0, 0.0);\n",
+        "useScene(scene); useCamera(cam);\n",
+        "scene.add(directionalLight([1.0, 1.0, 1.0], 1.0, v3(0.0, 0.0, -1.0)));\n",
+        "scene.add(loadGLBBase64(GEM_GLB_B64));\n",      // .glb path
+        "scene.add(loadGLTF(diamondGLTF(), 0));\n",       // .gltf + data: buffer path
+        "startGame();\n"
+    );
+    let program = format!("{}\n{}", elpa_game3d::module_js(), app_js);
+    let mut app = instance_for(&program);
+    app.start();
+    assert!(app.trap_reason().is_none(), "no trap loading demo models: {:?}", app.trap_reason());
+
+    // Collect the float-lengths of every loaded vertex buffer this frame. The gem
+    // is a flat-shaded octahedron (8 facets × 3 verts × 8 floats = 192); the gold
+    // gem a hex bipyramid (12 facets × 3 verts × 8 floats = 288).
+    let frame = app.last_frame().expect("frame");
+    let vbo_lens: Vec<usize> = frame
+        .resources
+        .iter()
+        .filter_map(|r| match r {
+            ResourceDesc::Buffer(b) if b.id.starts_with("g3d.vbo.") => b.data_f32.as_ref().map(|d| d.len()),
+            _ => None,
+        })
+        .collect();
+    assert!(vbo_lens.contains(&192), "the .glb octahedron crystal decoded (vbos: {vbo_lens:?})");
+    assert!(vbo_lens.contains(&288), "the .gltf hex-bipyramid gem decoded (vbos: {vbo_lens:?})");
+}
+
 // ---- physics / collision ------------------------------------------------------
 
 #[test]

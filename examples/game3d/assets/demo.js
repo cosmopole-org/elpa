@@ -4,9 +4,12 @@
 // ringed by a sandy beach in an open sea, a cluster of cottages with roofs,
 // windows and chimneys, scattered trees, gentle hills, a working windmill whose
 // sails turn, sailboats bobbing offshore, villagers hopping about and clouds
-// drifting overhead — all lit by a warm sun and a cool sky fill.
+// drifting overhead — all lit by a warm sun and a cool sky fill. In the square,
+// two pedestals display gems **loaded at runtime through the SDK's glTF/GLB
+// loader** (one base64 `.glb`, one `.gltf` JSON with a `data:` buffer), so the
+// loader path runs on the live GPU and not only in the headless tests.
 //
-// Everything is assembled from the SDK's primitives sharing a handful of cached
+// Everything else is assembled from the SDK's primitives sharing a handful of cached
 // geometries (one box, one pyramid, one cone, one cylinder, one sphere) reused
 // across ~100 meshes via per-node transforms, so the whole village costs only a
 // few vertex buffers. The camera is a turntable rig: **drag to orbit, scroll /
@@ -118,6 +121,37 @@ function makeVillager(A, x, z, shirt) {
     return g;
 }
 
+// A small stone pedestal (a tapered plinth with a flat cap) for a display piece.
+function makePedestal(A, x, z) {
+    let g = group();
+    let base = mesh(A.gTower, A.stone); base.setScale(0.55, 0.5, 0.55); base.setPosition(0.0, 0.25, 0.0); g.add(base);
+    let cap = mesh(A.gBox, A.stone); cap.setScale(0.95, 0.18, 0.95); cap.setPosition(0.0, 0.6, 0.0); g.add(cap);
+    g.setPosition(x, 0.0, z);
+    return g;
+}
+
+// The village "shrine": two pedestals each displaying a model loaded at runtime
+// through the SDK's glTF/GLB loader — proving both loader paths run on a live GPU,
+// not just in the headless tests. The crystal comes from a base64 **.glb** binary
+// container; the gold gem from a **.gltf** JSON document with a `data:` buffer.
+// Returns the spinnable pivots (with their float heights) for the animation loop.
+function buildShrine(scene, A) {
+    scene.add(makePedestal(A, -1.7, -2.3));
+    scene.add(makePedestal(A, 1.7, -2.3));
+
+    let gemY = 1.55;
+    let gem = group(); gem.setUniformScale(0.55); gem.setPosition(-1.7, gemY, -2.3);
+    gem.add(loadGLBBase64(GEM_GLB_B64));          // .glb: 12-byte header + JSON + BIN
+    scene.add(gem);
+
+    let diaY = 1.6;
+    let diamond = group(); diamond.setUniformScale(0.5); diamond.setPosition(1.7, diaY, -2.3);
+    diamond.add(loadGLTF(diamondGLTF(), 0));       // .gltf: JSON doc + data: base64 buffer
+    scene.add(diamond);
+
+    return { gem: gem, diamond: diamond, gemY: gemY, diaY: diaY };
+}
+
 // A puffy cloud: three overlapping flattened spheres.
 function makeCloud(A, x, y, z, s) {
     let g = group();
@@ -194,6 +228,7 @@ buildLighting(scene);
 buildTerrain(scene, A);
 let millHub = buildVillage(scene, A);
 buildNature(scene, A);
+let shrine = buildShrine(scene, A);   // glTF/GLB models loaded onto pedestals
 let life = buildLife(scene, A);
 let boats = life.boats; let villagers = life.villagers; let clouds = life.clouds;
 useScene(scene);
@@ -204,6 +239,10 @@ enableOrbit({ target: v3(0.0, 1.2, 0.0), distance: 30.0, minDistance: 8.0, maxDi
 onUpdate((dt, g) => {
     let t = g.time;
     millHub.rotateZ(dt * 0.7);                 // the windmill sails turn
+    shrine.gem.rotateY(dt * 0.9);              // the loaded GLB crystal spins
+    shrine.gem.position.set(-1.7, shrine.gemY + sin(t * 1.6) * 0.08, -2.3);
+    shrine.diamond.rotateY(dt * -0.7);         // the loaded glTF gem counter-spins
+    shrine.diamond.position.set(1.7, shrine.diaY + sin(t * 1.6 + 1.6) * 0.08, -2.3);
     for (let i = 0; i < len(clouds); i++) {    // clouds drift east, wrapping
         let c = clouds[i]; let nx = c.position.x + dt * 0.6;
         if (nx > 26.0) { nx = -26.0; }
