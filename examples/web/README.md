@@ -49,9 +49,10 @@ on tap). Regenerate the bytecode after editing the SDK with
 `cargo run -p elpa-game3d --bin build_bytecode`.
 
 The **GitHub Pages deploy builds both apps automatically** on every push: the
-Material gallery at the site root and the Game3D demo under
-`https://<owner>.github.io/<repo>/game3d/` — so the 3D demo is live there with no
-manual step (see [`.github/workflows/deploy-pages.yml`](../../.github/workflows/deploy-pages.yml)).
+Game3D demo at the site root (the default build uses `--features game3d`) and
+the Material gallery under `https://<owner>.github.io/<repo>/material/` — so the
+3D scene is what the site shows by default, with no manual step (see
+[`.github/workflows/deploy-pages.yml`](../../.github/workflows/deploy-pages.yml)).
 
 ## What it shows
 
