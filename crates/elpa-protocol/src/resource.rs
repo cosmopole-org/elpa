@@ -230,6 +230,25 @@ pub struct BindGroupEntry {
     pub resource: BindingResource,
 }
 
+impl BindGroupDesc {
+    /// The resource ids this bind group binds (buffers, texture views, samplers).
+    ///
+    /// A bind group's *descriptor* is stable frame to frame, but a buffer it
+    /// binds may be refilled in place (an animated uniform: camera, transforms).
+    /// A pass that reads this bind group must therefore fold in these resources'
+    /// content hashes — not just the bind group's own hash — to notice the change.
+    pub fn bound_resources(&self) -> Vec<ResourceId> {
+        self.entries
+            .iter()
+            .map(|e| match &e.resource {
+                BindingResource::Buffer { buffer, .. } => buffer.clone(),
+                BindingResource::TextureView { texture } => texture.clone(),
+                BindingResource::Sampler { sampler } => sampler.clone(),
+            })
+            .collect()
+    }
+}
+
 /// What a bind-group slot points at.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]

@@ -139,6 +139,33 @@ fn animation_moves_the_scene() {
 }
 
 #[test]
+fn animation_re_presents_every_frame() {
+    // The scene's per-frame data (camera, model and light uniforms) is bound to
+    // the surface pass through bind groups. When that data changes in place the
+    // renderer must still re-present, or the canvas freezes between forced
+    // repaints (a resize). The windmill turns every tick, so each animated frame
+    // must report a present.
+    let mut app = instance_for(&elpa_game3d::program());
+    app.start();
+    app.animate(16.0);
+    assert!(app.last_stats().presented, "an animated frame must present, not stay cached");
+    assert!(app.trap_reason().is_none(), "no trap while animating");
+}
+
+#[test]
+fn orbit_drag_re_presents_the_frame() {
+    // Dragging changes only the camera uniform (bound through a bind group), so
+    // it exercises the same present path the canvas-freeze bug broke: the camera
+    // moved in memory but the surface was never re-presented.
+    let mut app = instance_for(&elpa_game3d::program());
+    app.start();
+    app.send_event(&InputEvent::PointerDown { x: 640.0, y: 360.0, button: 0 });
+    app.send_event(&InputEvent::PointerMove { x: 900.0, y: 420.0 });
+    assert!(app.last_stats().presented, "an orbit drag must re-present the frame");
+    assert!(app.trap_reason().is_none(), "no trap while orbiting");
+}
+
+#[test]
 fn orbit_drag_rotates_the_camera() {
     // Dragging the pointer must rotate the turntable camera, changing the view
     // matrix in the scene uniform.

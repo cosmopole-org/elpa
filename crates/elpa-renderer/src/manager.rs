@@ -247,7 +247,7 @@ impl<B: GpuBackend> Renderer<B> {
         let mut h = Xxh3::new();
         h.update(&content_hash(rp).to_le_bytes());
         for id in rp.referenced_resources() {
-            h.update(&self.resources.resource_hash(&id).to_le_bytes());
+            self.fold_resource(&mut h, &id);
         }
         h.digest()
     }
@@ -256,9 +256,21 @@ impl<B: GpuBackend> Renderer<B> {
         let mut h = Xxh3::new();
         h.update(&content_hash(cp).to_le_bytes());
         for id in cp.referenced_resources() {
-            h.update(&self.resources.resource_hash(&id).to_le_bytes());
+            self.fold_resource(&mut h, &id);
         }
         h.digest()
+    }
+
+    /// Fold a referenced resource's content hash into a pass hash. For a bind
+    /// group, also fold in the hashes of the resources it binds: the bind group
+    /// descriptor is stable frame to frame, but a uniform buffer behind it may be
+    /// refilled in place (animated camera / transforms), and the pass that reads
+    /// it must invalidate so the frame re-presents.
+    fn fold_resource(&self, h: &mut Xxh3, id: &str) {
+        h.update(&self.resources.resource_hash(id).to_le_bytes());
+        for child in self.resources.bound_resources(id) {
+            h.update(&self.resources.resource_hash(child).to_le_bytes());
+        }
     }
 
     /// Add a surface pass's scissor rects to the dirty region; if it has none,
@@ -475,6 +487,73 @@ mod tests {
         let s = r.render(&scene_frame(64, Some(Rect::new(0, 0, 800, 600))));
         assert_eq!(s.layers_reused, 0);
         assert_eq!(s.passes_cached, 1, "back to ordinary pass caching");
+    }
+
+    /// A uniform buffer bound through a bind group, with new contents each frame
+    /// (the game3d camera / model uniforms), must still invalidate the surface
+    /// pass that reads it — otherwise the renderer skips the present and the
+    /// canvas freezes until something else (a resize) forces a full repaint.
+    #[test]
+    fn in_place_uniform_behind_a_bind_group_re_presents() {
+        use elpa_protocol::resource::{BindGroupDesc, BindGroupEntry, BindingResource};
+
+        fn uniform(data: &[f32]) -> ResourceDesc {
+            ResourceDesc::Buffer(BufferDesc {
+                id: "scene.ubo".into(),
+                size: (data.len() * 4) as u64,
+                usage: vec!["UNIFORM".into(), "COPY_DST".into()],
+                data_f32: Some(data.to_vec()),
+                ..Default::default()
+            })
+        }
+        fn bind_group() -> ResourceDesc {
+            ResourceDesc::BindGroup(BindGroupDesc {
+                id: "scene.bg".into(),
+                layout: "scene.bgl".into(),
+                entries: vec![BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer {
+                        buffer: "scene.ubo".into(),
+                        offset: 0,
+                        size: None,
+                    },
+                }],
+            })
+        }
+        fn frame(data: &[f32]) -> Frame {
+            // A surface pass that binds the uniform via the bind group and draws —
+            // exactly how game3d submits its per-frame camera/model uniforms.
+            let pass = EncoderCommand::RenderPass(RenderPass {
+                id: Some("g3d.pass".into()),
+                color_attachments: vec![ColorAttachment {
+                    view: TargetView::Surface,
+                    resolve_target: None,
+                    load: "clear".into(),
+                    store: true,
+                    clear_color: None,
+                }],
+                depth_stencil: None,
+                commands: vec![
+                    RenderCommand::SetBindGroup { index: 0, bind_group: "scene.bg".into(), dynamic_offsets: vec![] },
+                    RenderCommand::Draw { vertex_count: 3, instance_count: 1, first_vertex: 0, first_instance: 0 },
+                ],
+            });
+            Frame { resources: vec![uniform(data), bind_group()], commands: vec![pass] }
+        }
+
+        let mut r = Renderer::new(Mock::default());
+        let s = r.render(&frame(&[1.0, 2.0, 3.0, 4.0]));
+        assert!(s.presented, "cold frame presents");
+
+        // Re-submit with the *same* uniform contents: steady state, no present.
+        let s = r.render(&frame(&[1.0, 2.0, 3.0, 4.0]));
+        assert!(!s.presented, "an unchanged frame stays cached");
+
+        // Now the uniform changes contents in place (camera moved). The bind group
+        // descriptor is identical, but the pass that reads it must still re-present.
+        let s = r.render(&frame(&[9.0, 8.0, 7.0, 6.0]));
+        assert_eq!(s.resources_updated, 1, "uniform refilled in place, not recreated");
+        assert!(s.presented, "a uniform change behind a bind group re-presents the frame");
     }
 
     #[test]
