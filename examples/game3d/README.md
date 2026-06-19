@@ -110,3 +110,15 @@ cd examples/native && cargo apk run --release --features game3d
 
 Without the feature both hosts run the Material gallery as before; the feature
 just swaps the embedded `assets/demo.bc` produced by `build_bytecode`.
+
+The repo's CI wires this up for you:
+
+* **GitHub Pages** ([`deploy-pages.yml`](../../.github/workflows/deploy-pages.yml))
+  builds both apps on every push and serves this demo live at
+  `https://<owner>.github.io/<repo>/game3d/` (the Material gallery stays at the
+  root).
+* **APK** ([`android-apk.yml`](../../.github/workflows/android-apk.yml)) — run the
+  "Build APK" workflow with `app=game3d` to produce and commit `elpa-game3d.apk`
+  (the Material build remains `elpa.apk`).
+* **Bytecode** ([`build-bytecode.yml`](../../.github/workflows/build-bytecode.yml))
+  recompiles and commits `assets/demo.bc` whenever this SDK's JavaScript changes.

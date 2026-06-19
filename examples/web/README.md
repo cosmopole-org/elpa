@@ -47,6 +47,11 @@ Pointer/resize events flow into the engine unchanged (the demo casts a pick ray
 on tap). Regenerate the bytecode after editing the SDK with
 `cargo run -p elpa-game3d --bin build_bytecode`.
 
+The **GitHub Pages deploy builds both apps automatically** on every push: the
+Material gallery at the site root and the Game3D demo under
+`https://<owner>.github.io/<repo>/game3d/` — so the 3D demo is live there with no
+manual step (see [`.github/workflows/deploy-pages.yml`](../../.github/workflows/deploy-pages.yml)).
+
 ## What it shows
 
 - A single `Elpa` instance owning the VM + renderer + live `WgpuBackend`, running

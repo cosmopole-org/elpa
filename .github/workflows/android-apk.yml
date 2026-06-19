@@ -1,13 +1,24 @@
 name: Build APK
 
 # Builds the Android APK on demand only (manual run). The `android` job then
-# commits the signed release APK to the root of the repository as `elpa.apk`.
+# commits the signed release APK to the root of the repository: the Material app
+# as `elpa.apk`, the Game3D engine demo as `elpa-game3d.apk` (chosen by the `app`
+# input, default `material`).
 #
-# Run it from the GitHub UI (Actions → "Build APK" → "Run workflow") or via the
-# API/CLI (`gh workflow run "Build APK" --ref <branch>`).
+# Run it from the GitHub UI (Actions → "Build APK" → "Run workflow", pick the
+# app) or via the API/CLI
+# (`gh workflow run "Build APK" --ref <branch> -f app=game3d`).
 
 on:
   workflow_dispatch:
+    inputs:
+      app:
+        description: "Which app to package into the APK"
+        type: choice
+        options:
+          - material
+          - game3d
+        default: material
 
 permissions:
   contents: write # the android job pushes the built APK back to the repo
@@ -53,12 +64,15 @@ jobs:
       - name: Install cargo-apk
         run: cargo install --locked cargo-apk
 
-      # Compile the Material app's JavaScript to VM bytecode *now*, at build time,
-      # into examples/material/assets/*.bc. The native example embeds that
+      # Compile the apps' JavaScript to VM bytecode *now*, at build time, into
+      # examples/*/assets/*.bc. The native example embeds the selected app's
       # bytecode (include_bytes!) and loads it with Elpa::new_from_bytecode, so
-      # the app never runs the JS/AST front-end at startup.
-      - name: Compile app to bytecode
-        run: cargo run -p elpa-material --bin build_bytecode
+      # the app never runs the JS/AST front-end at startup. Both are compiled so
+      # whichever the `game3d` feature selects is present.
+      - name: Compile apps to bytecode
+        run: |
+          cargo run -p elpa-material --bin build_bytecode
+          cargo run -p elpa-game3d --bin build_bytecode
 
       # A throwaway keystore generated per run. cargo-apk reads the path and
       # password from these env vars (no secrets committed to the repo).
@@ -77,25 +91,31 @@ jobs:
           CARGO_APK_RELEASE_KEYSTORE_PASSWORD: android
         run: |
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/${NDK_VERSION}"
+          FEATURES=""
+          if [ "${{ inputs.app }}" = "game3d" ]; then FEATURES="--features game3d"; fi
           # `--lib` packages the Android cdylib (this crate also has a desktop bin).
-          cargo apk build --release --lib
+          cargo apk build --release --lib $FEATURES
 
       # Also expose it as a normal workflow artifact for direct download.
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: elpa-android-apk
+          name: elpa-android-apk-${{ inputs.app }}
           path: examples/native/target/release/apk/elpa_native_example.apk
 
       - name: Commit APK to repository root
         run: |
-          cp examples/native/target/release/apk/elpa_native_example.apk ./elpa.apk
+          # Material → elpa.apk (unchanged); Game3D → elpa-game3d.apk, so the two
+          # builds don't clobber each other at the repo root.
+          DEST=elpa.apk
+          if [ "${{ inputs.app }}" = "game3d" ]; then DEST=elpa-game3d.apk; fi
+          cp examples/native/target/release/apk/elpa_native_example.apk "./$DEST"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add elpa.apk
+          git add "$DEST"
           if git diff --cached --quiet; then
-            echo "APK unchanged; nothing to commit."
+            echo "APK ($DEST) unchanged; nothing to commit."
           else
-            git commit -m "ci: build Android APK [skip ci]"
+            git commit -m "ci: build Android APK (${{ inputs.app }}) [skip ci]"
             git push origin HEAD:${{ github.ref_name }}
           fi
