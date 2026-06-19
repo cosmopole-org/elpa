@@ -46,12 +46,18 @@ fn xhr_get_bytes(method: &str, url: &str) -> Result<Vec<u8>, String> {
 /// A live app instance with a canvas-backed wgpu surface (`'static`).
 type App = Elpa<WgpuBackend<'static>>;
 
-/// The Material gallery app, **precompiled to VM bytecode at build time** by the
-/// `elpa-material` `build_bytecode` tool (run in CI before the Pages build). The
-/// browser loads this straight into the VM via `Elpa::new_from_bytecode`, so no
-/// JS/AST front-end runs at startup. Swap to `demo.bc` / `graphics.bc` for the
-/// other apps.
-const GALLERY_BYTECODE: &[u8] = include_bytes!("../../material/assets/gallery.bc");
+/// The app bytecode embedded in this build, **precompiled to VM bytecode at
+/// build time** by the owning crate's `build_bytecode` tool and loaded straight
+/// into the VM via `Elpa::new_from_bytecode` (no JS/AST front-end runs in the
+/// browser). By default this is the **Material Design 3 gallery**; build with
+/// `trunk build --features game3d` (or `--features game3d` on the wasm build) to
+/// embed the **Game3D engine demo** instead — a lit, animated 3D scene driven by
+/// the object-oriented `elpa-game3d` SDK. Swap the Material const to
+/// `demo.bc` / `graphics.bc` for the other Material apps.
+#[cfg(not(feature = "game3d"))]
+const APP_BYTECODE: &[u8] = include_bytes!("../../material/assets/gallery.bc");
+#[cfg(feature = "game3d")]
+const APP_BYTECODE: &[u8] = include_bytes!("../../game3d/assets/demo.bc");
 
 #[wasm_bindgen(start)]
 pub fn start() {
@@ -140,8 +146,8 @@ async fn run() {
     // target matches the surface exactly (the browser surface may be `*-srgb`,
     // which wgpu requires the pipeline to match) without any source patching.
     let surface_info = SurfaceInfo::new(w, h, dpr);
-    let mut app = Elpa::new_from_bytecode(backend, surface_info, GALLERY_BYTECODE.to_vec())
-        .expect("gallery bytecode loads");
+    let mut app = Elpa::new_from_bytecode(backend, surface_info, APP_BYTECODE.to_vec())
+        .expect("app bytecode loads");
     // Grant network + a synchronous binary fetcher so the app can download a font
     // by URL at runtime (the gallery's `f` key calls `useFont(...)`).
     {

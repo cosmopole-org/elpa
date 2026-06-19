@@ -49,15 +49,25 @@ jobs:
       # time, into examples/material/assets/*.bc. The web example embeds that
       # bytecode (include_bytes!) and loads it with Elpa::new_from_bytecode, so
       # the browser never runs the JS/AST front-end — the compiler phase has
-      # already happened here in the build.
-      - name: Compile app to bytecode
-        run: cargo run -p elpa-material --bin build_bytecode
+      # already happened here in the build. Both apps are compiled; the web crate
+      # embeds whichever its `game3d` feature selects.
+      - name: Compile apps to bytecode
+        run: |
+          cargo run -p elpa-material --bin build_bytecode
+          cargo run -p elpa-game3d --bin build_bytecode
 
-      # `--public-url /<repo>/` makes asset URLs resolve under the project-page
-      # subpath. Output goes to examples/web/dist.
-      - name: Build web example
+      # Two apps share one Pages site: the Material gallery at the site root and
+      # the Game3D engine demo under `/<repo>/game3d/`, each with the matching
+      # `--public-url` so its asset URLs resolve. Build Material first (it writes
+      # the default `dist/`), then Game3D into the `dist/game3d` subdir; the
+      # second build only manages its own dist, so the two coexist in one upload.
+      - name: Build web example (Material, site root)
         working-directory: examples/web
         run: trunk build --release --public-url "/${{ github.event.repository.name }}/"
+
+      - name: Build web example (Game3D, /game3d/)
+        working-directory: examples/web
+        run: trunk build --release --features game3d --public-url "/${{ github.event.repository.name }}/game3d/" --dist dist/game3d
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

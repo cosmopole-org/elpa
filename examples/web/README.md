@@ -29,6 +29,29 @@ JavaScript, not in this crate.
 This crate is intentionally **excluded from the workspace** (it pulls the full
 wgpu + web-sys stack and only targets wasm). Build it on its own.
 
+### Run the 3D game demo instead
+
+The same host can run the **Game3D engine demo** ([`examples/game3d`](../game3d)) —
+a lit, animated 3D scene (a ground plane, a spinning metallic cube, a bobbing
+sphere and an orbiting point light) from the object-oriented `elpa-game3d` SDK.
+Build with the `game3d` feature, which embeds `game3d/assets/demo.bc` instead of
+the Material gallery:
+
+```bash
+trunk build --release --features game3d
+# or, with wasm-pack:
+wasm-pack build --release -- --features game3d
+```
+
+Pointer/resize events flow into the engine unchanged (the demo casts a pick ray
+on tap). Regenerate the bytecode after editing the SDK with
+`cargo run -p elpa-game3d --bin build_bytecode`.
+
+The **GitHub Pages deploy builds both apps automatically** on every push: the
+Material gallery at the site root and the Game3D demo under
+`https://<owner>.github.io/<repo>/game3d/` — so the 3D demo is live there with no
+manual step (see [`.github/workflows/deploy-pages.yml`](../../.github/workflows/deploy-pages.yml)).
+
 ## What it shows
 
 - A single `Elpa` instance owning the VM + renderer + live `WgpuBackend`, running

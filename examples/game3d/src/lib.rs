@@ -1,0 +1,68 @@
+//! # elpa-game3d
+//!
+//! A **3D game-making SDK** for Elpa, written as **JavaScript** — a clean,
+//! object-oriented engine plus an interactive demo that uses it. Like the engine
+//! [`elpa-sdk`](../../sdk) and the [`elpa-material`](../../material) UI kit, it is
+//! **not Rust**: Elpa compiles the JS to its VM and runs it directly.
+//!
+//! ## What the SDK is
+//!
+//! A heavier-3D-game engine, organised into single-responsibility modules under
+//! `assets/sdk/`, concatenated in dependency order:
+//!
+//! * `00-math` — `Vec3`, `Quat`, column-major `Mat4` (the wgpu layout), with
+//!   projection / look-at / TRS-compose / inverse kernels.
+//! * `10-core` — the scene graph (`Object3D`, `Scene`) and cameras
+//!   (`PerspectiveCamera`, `OrthographicCamera`).
+//! * `20-lighting` — `DirectionalLight` / `PointLight` (scene-graph lights).
+//! * `30-geometry` — `Geometry` + `Box`/`Sphere`/`Plane` primitives, `Material`
+//!   (PBR-ish) and `Mesh`.
+//! * `40-binary` / `45-gltf` — base64 + little-endian readers (incl. an
+//!   arithmetic IEEE-754 f32 decoder) and a full **glTF 2.0 / GLB loader**.
+//! * `50-physics` — `Box3` / `Sphere` volumes, a `Ray`, and a `Raycaster` for
+//!   picking and collision queries.
+//! * `60-renderer` — the forward Blinn-Phong renderer: the WGSL pipeline and the
+//!   per-frame `gpu.submit` command-tree builder.
+//! * `70-engine` / `80-api` — the `Game` runtime (loop, input, picking) and the
+//!   `new`-free public constructors + host entry points apps call.
+//!
+//! Apps compose a scene graph, register an `onUpdate(dt, game)` callback and call
+//! `startGame()`; they never touch the GPU command tree.
+//!
+//! ## Linking
+//!
+//! The SDK and an app run in **one** VM. [`program`] concatenates the SDK ahead
+//! of the app (exactly like a game `import`ing its engine), and the result is
+//! handed to [`Elpa::new_from_js`](elpa::Elpa::new_from_js) — or compiled to
+//! bytecode by the `build_bytecode` binary and loaded with
+//! `Elpa::new_from_bytecode`.
+
+/// The engine modules, as JavaScript source, in dependency order.
+pub const SDK_MATH_JS: &str = include_str!("../assets/sdk/00-math.js");
+pub const SDK_CORE_JS: &str = include_str!("../assets/sdk/10-core.js");
+pub const SDK_LIGHTING_JS: &str = include_str!("../assets/sdk/20-lighting.js");
+pub const SDK_GEOMETRY_JS: &str = include_str!("../assets/sdk/30-geometry.js");
+pub const SDK_BINARY_JS: &str = include_str!("../assets/sdk/40-binary.js");
+pub const SDK_GLTF_JS: &str = include_str!("../assets/sdk/45-gltf.js");
+pub const SDK_PHYSICS_JS: &str = include_str!("../assets/sdk/50-physics.js");
+pub const SDK_RENDERER_JS: &str = include_str!("../assets/sdk/60-renderer.js");
+pub const SDK_ENGINE_JS: &str = include_str!("../assets/sdk/70-engine.js");
+pub const SDK_API_JS: &str = include_str!("../assets/sdk/80-api.js");
+
+/// The 3D engine SDK as one JavaScript source — the ten `assets/sdk/*.js` modules
+/// concatenated in dependency order. The VM hoists every `class`/`function`
+/// declaration, so this is just textual concatenation.
+pub fn module_js() -> String {
+    format!(
+        "{SDK_MATH_JS}\n{SDK_CORE_JS}\n{SDK_LIGHTING_JS}\n{SDK_GEOMETRY_JS}\n{SDK_BINARY_JS}\n{SDK_GLTF_JS}\n{SDK_PHYSICS_JS}\n{SDK_RENDERER_JS}\n{SDK_ENGINE_JS}\n{SDK_API_JS}"
+    )
+}
+
+/// The interactive demo application, as JavaScript source. Uses [`module_js`].
+pub const DEMO_JS: &str = include_str!("../assets/demo.js");
+
+/// The full program a host runs: the SDK linked ahead of the demo, in one VM.
+/// Pass the result to [`Elpa::new_from_js`](elpa::Elpa::new_from_js).
+pub fn program() -> String {
+    format!("{}\n{DEMO_JS}", module_js())
+}
