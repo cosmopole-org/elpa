@@ -56,18 +56,19 @@ jobs:
           cargo run -p elpa-material --bin build_bytecode
           cargo run -p elpa-game3d --bin build_bytecode
 
-      # Two apps share one Pages site: the Material gallery at the site root and
-      # the Game3D engine demo under `/<repo>/game3d/`, each with the matching
-      # `--public-url` so its asset URLs resolve. Build Material first (it writes
-      # the default `dist/`), then Game3D into the `dist/game3d` subdir; the
-      # second build only manages its own dist, so the two coexist in one upload.
-      - name: Build web example (Material, site root)
+      # Two apps share one Pages site: the Game3D engine demo at the site root
+      # (the default build now uses `--features game3d`) and the Material gallery
+      # under `/<repo>/material/`, each with the matching `--public-url` so its
+      # asset URLs resolve. Build Game3D first (it writes the default `dist/`),
+      # then Material into the `dist/material` subdir; the second build only
+      # manages its own dist, so the two coexist in one upload.
+      - name: Build web example (Game3D, site root)
         working-directory: examples/web
-        run: trunk build --release --public-url "/${{ github.event.repository.name }}/"
+        run: trunk build --release --features game3d --public-url "/${{ github.event.repository.name }}/"
 
-      - name: Build web example (Game3D, /game3d/)
+      - name: Build web example (Material, /material/)
         working-directory: examples/web
-        run: trunk build --release --features game3d --public-url "/${{ github.event.repository.name }}/game3d/" --dist dist/game3d
+        run: trunk build --release --public-url "/${{ github.event.repository.name }}/material/" --dist dist/material
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
