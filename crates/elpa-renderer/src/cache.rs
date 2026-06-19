@@ -121,6 +121,11 @@ pub struct ResourceCache {
     /// Shapes of resident buffers, to route data-only changes to an in-place
     /// write instead of a destroy+recreate.
     buffers: HashMap<ResourceId, BufferShape>,
+    /// For each resident bind group, the resources it binds. A bind group's
+    /// descriptor is stable across frames, but the buffers it binds may be
+    /// refilled in place, so a pass that reads the bind group must fold in these
+    /// resources' content hashes to notice an animated uniform changed.
+    bind_group_refs: HashMap<ResourceId, Vec<ResourceId>>,
 }
 
 impl ResourceCache {
@@ -202,6 +207,12 @@ impl ResourceCache {
                 self.buffers
                     .insert(id.clone(), BufferShape { shape: buffer_shape(b), writable: buffer_is_writable(b) });
             }
+            // Remember what a bind group binds, so a pass that reads it can fold
+            // in those resources' content hashes (a uniform refilled in place
+            // leaves the bind group descriptor — and its hash — unchanged).
+            if let ResourceDesc::BindGroup(bg) = desc {
+                self.bind_group_refs.insert(id.clone(), bg.bound_resources());
+            }
             report.created += 1;
         }
         // Evict resources absent from this frame. Collect into an arena vec to
@@ -215,8 +226,16 @@ impl ResourceCache {
             backend.destroy_resource(&id);
             self.hashes.remove(&id);
             self.buffers.remove(&id);
+            self.bind_group_refs.remove(&id);
         }
         report
+    }
+
+    /// The resources a resident bind group binds (empty for anything that is not
+    /// a known bind group). A pass that reads a bind group folds these in so an
+    /// in-place buffer update behind it still invalidates the pass.
+    pub fn bound_resources(&self, id: &str) -> &[ResourceId] {
+        self.bind_group_refs.get(id).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     /// Current hash of a resource (0 if unknown) — folded into pass hashes.
