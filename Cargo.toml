@@ -8,6 +8,7 @@ members = [
     "crates/elpa",
     "examples/sdk",
     "examples/material",
+    "examples/game3d",
 ]
 
 # The web example pulls in wgpu + web-sys and only targets wasm; keep it out of
