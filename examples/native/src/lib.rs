@@ -87,14 +87,25 @@ fn safe_area_insets(w: u32, h: u32) -> Insets {
     Insets::ZERO
 }
 
-/// The Material gallery app, **precompiled to VM bytecode at build time** by the
-/// `elpa-material` `build_bytecode` tool (run in CI before the APK build). The
-/// app loads this straight into the VM via `Elpa::new_from_bytecode`, so no
-/// JS/AST front-end runs at startup. The SDK reads the live surface color format
-/// from `gpu.surfaceInfo` and builds its pipeline target to match (native
-/// surfaces often prefer an sRGB format), so one bytecode runs on any surface.
-/// (Swap to `demo.bc` / `graphics.bc` for the other apps.)
-const GALLERY_BYTECODE: &[u8] = include_bytes!("../../material/assets/gallery.bc");
+/// The app bytecode embedded in this build, **precompiled to VM bytecode at
+/// build time** by the owning crate's `build_bytecode` tool and loaded straight
+/// into the VM via `Elpa::new_from_bytecode` (no JS/AST front-end runs at
+/// startup). The SDK reads the live surface color format from `gpu.surfaceInfo`
+/// and builds its pipeline target to match, so one bytecode runs on any surface.
+/// By default this is the **Material Design 3 gallery**; build with
+/// `--features game3d` to embed the **Game3D engine demo** instead — a lit,
+/// animated 3D scene driven by the object-oriented `elpa-game3d` SDK. (Swap the
+/// Material const to `demo.bc` / `graphics.bc` for the other Material apps.)
+#[cfg(not(feature = "game3d"))]
+const APP_BYTECODE: &[u8] = include_bytes!("../../material/assets/gallery.bc");
+#[cfg(feature = "game3d")]
+const APP_BYTECODE: &[u8] = include_bytes!("../../game3d/assets/demo.bc");
+
+/// The winit window title for the embedded app.
+#[cfg(not(feature = "game3d"))]
+const WINDOW_TITLE: &str = "Elpa — Material demo";
+#[cfg(feature = "game3d")]
+const WINDOW_TITLE: &str = "Elpa — Game3D demo";
 
 /// Everything that exists only while we hold a surface. On Android this is
 /// recreated on each `resumed` and torn down on each `suspended`.
@@ -144,7 +155,7 @@ impl ElpaApp {
     fn init(&mut self, event_loop: &ActiveEventLoop) {
         let window = Arc::new(
             event_loop
-                .create_window(Window::default_attributes().with_title("Elpa — Material demo"))
+                .create_window(Window::default_attributes().with_title(WINDOW_TITLE))
                 .expect("create window"),
         );
         let size = window.inner_size();
@@ -165,8 +176,8 @@ impl ElpaApp {
         // out clear of the status / navigation bars from the very first paint
         // (no flash of content drawn under the status bar on Android).
         let surface_info = SurfaceInfo::new(w, h, scale).with_insets(safe_area_insets(w, h));
-        let mut app = Elpa::new_from_bytecode(backend, surface_info, GALLERY_BYTECODE.to_vec())
-            .expect("gallery bytecode loads");
+        let mut app = Elpa::new_from_bytecode(backend, surface_info, APP_BYTECODE.to_vec())
+            .expect("app bytecode loads");
         // Grant network + a blocking fetcher so the app can download a font by URL
         // at runtime (the gallery's `f` key calls `useFont(...)`).
         {

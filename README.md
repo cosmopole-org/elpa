@@ -72,6 +72,7 @@ for the same triangle running in a winit window on **desktop
 | `examples/native` | Same triangle in a winit window — desktop + Android | ✅ builds (Linux/Windows/Android) |
 | `examples/sdk` | **Engine SDK as Elpian AST** (`assets/*.ast.json`): importable 2D/3D shape definitions, math in WGSL | ✅ tested |
 | `examples/material` | **Flutter-style Material Design 3 framework in JavaScript** — an object-oriented SDK (`assets/sdk/*.js`: engine services + a `Widget` class hierarchy + the retained-tree `Material` runtime, `defineComponent`/`runApp`, per-component `update`) **plus a full painting layer** (a `dart:ui` `Canvas`/`CustomPaint`, gradients, opacity/colour filters, 2D transforms and a multi-pass `BackdropFilter` blur); the app composes a widget tree and never touches the GPU. Compiled to VM bytecode at build time (`build_bytecode`); the web/native examples load it with `Elpa::new_from_bytecode` | ✅ tested |
+| `examples/game3d` | **Object-oriented 3D game-making SDK in JavaScript** (`assets/sdk/*.js`): a scene graph (`Object3D`/`Scene`), perspective/orthographic cameras, directional/point lights, primitive + **glTF/GLB** geometry, PBR-ish materials, a forward Blinn-Phong renderer, and a physics layer (AABB/sphere volumes, ray casting, collision). Apps compose a scene graph and register an update callback. Compiled to bytecode (`build_bytecode`); the web/native hosts load it behind `--features game3d` | ✅ tested |
 
 ## Reusable drawing definitions + module import
 

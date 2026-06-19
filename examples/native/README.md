@@ -28,6 +28,21 @@ cd examples/native
 cargo run --release            # build & run on the host OS
 ```
 
+### Run the 3D game demo instead
+
+The same host can run the **Game3D engine demo** ([`examples/game3d`](../game3d)) —
+a lit, animated 3D scene from the object-oriented `elpa-game3d` SDK — by enabling
+the `game3d` feature, which embeds `game3d/assets/demo.bc` instead of the Material
+gallery:
+
+```bash
+cargo run --release --features game3d        # desktop
+cargo apk run --release --features game3d    # Android
+```
+
+Regenerate the bytecode after editing the SDK with
+`cargo run -p elpa-game3d --bin build_bytecode`.
+
 A window opens with the Material demo. Click/tap controls, drag the slider, use
 the mouse wheel where supported, or press `d`, `Space`, `r`, `ArrowLeft`, and
 `ArrowRight` to exercise the demo keyboard handlers. Resizing reconfigures the

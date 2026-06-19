@@ -93,3 +93,20 @@ validates the WGSL with `naga` exactly as wgpu does, proves the app builds a
 depth-tested 3D pass with one indexed draw per mesh, that animation moves the
 scene, that the GLB loader decodes real binary geometry, and that the ray-cast /
 AABB collision queries are correct.
+
+## Run it on a real GPU (web / native)
+
+The [`web`](../web) and [`native`](../native) example hosts can embed this demo's
+bytecode and run it on a live wgpu surface, behind a `game3d` Cargo feature:
+
+```bash
+# Browser (full-window canvas)
+cd examples/web && trunk build --release --features game3d
+
+# Desktop (Windows / macOS / Linux) and Android
+cd examples/native && cargo run --release --features game3d
+cd examples/native && cargo apk run --release --features game3d
+```
+
+Without the feature both hosts run the Material gallery as before; the feature
+just swaps the embedded `assets/demo.bc` produced by `build_bytecode`.

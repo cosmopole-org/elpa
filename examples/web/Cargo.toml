@@ -8,6 +8,13 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+default = []
+# Embed the Game3D engine demo (a lit, animated 3D scene from the object-oriented
+# `elpa-game3d` SDK) instead of the Material gallery. Build with
+# `trunk build --features game3d`.
+game3d = []
+
 [dependencies]
 elpa = { path = "../../crates/elpa", features = ["wgpu"] }
 # The Material Design 3 framework + app, shipped as JavaScript; this crate links

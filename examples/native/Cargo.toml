@@ -14,6 +14,13 @@ crate-type = ["lib", "cdylib"]
 name = "elpa-native-example"
 path = "src/main.rs"
 
+[features]
+default = []
+# Embed the Game3D engine demo (a lit, animated 3D scene from the object-oriented
+# `elpa-game3d` SDK) instead of the Material gallery. Build/run with
+# `cargo run --features game3d`.
+game3d = []
+
 [dependencies]
 elpa = { path = "../../crates/elpa", features = ["wgpu"] }
 elpa-material = { path = "../material" }
