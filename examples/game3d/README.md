@@ -120,13 +120,20 @@ path runs on the live GPU in the web/native hosts, not only in the headless test
   keyed by geometry id (built once, then re-referenced — never re-tessellated);
   only the small per-frame uniforms (camera, transforms, lights) are refilled in
   place. Elpa's resource cache turns static geometry into zero per-frame GPU work.
-* **The HUD is cached, not re-tessellated.** The overlay fingerprints its visible
-  content each frame (dims, panel positions/state, resolved text/gauge values) and
-  only rebuilds its vertex soup when that signature changes — so a static HUD adds
-  ~no per-frame CPU while the scene rotates beneath it (`tests/bench.rs` measures
-  interpreter steps/frame: the HUD's steady-state overhead is ~1%, down from ~4×
-  when it rebuilt every frame). The bitmap font run-length-merges lit cells to keep
-  the soup small.
+* **Interactions only pay for what moved.** Three caches keep dragging and
+  orbiting cheap; `tests/bench.rs` tracks interpreter steps per event/frame as a
+  regression guard:
+  * *Per-mesh uniform cache, keyed by a transform `worldVersion`.* `updateWorld`
+    recomputes a node's matrices only when its transform actually changed and bumps
+    `worldVersion`; the renderer re-packs a mesh's uniform (and its costly
+    normal-matrix inverse) only when that version or its material changed. A scene
+    watched by a moving camera re-packs nothing — **orbit-drag dropped ~4.5×** — and
+    plain animation re-packs only the meshes that move (**rotation ~8.8×**).
+  * *Per-panel HUD geometry, cached in two levels.* Each panel re-tessellates only
+    when its content changes and re-projects only when it moves, and is its own
+    vertex buffer + draw — so a static HUD adds ~1% while the scene rotates,
+    **dragging a panel costs ~6.6× less**, and a gauge tick touches only its panel.
+  * The bitmap font run-length-merges lit cells to keep each soup small.
 * **No bitwise ops, no `&&`/`||`/`?:`** — the engine is written in the JS subset
   Elpa's in-VM front-end supports (nested `if` + numeric flags, like the Material
   kit). The glTF `f32` decoder reconstructs IEEE-754 singles with pure arithmetic.

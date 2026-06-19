@@ -4,7 +4,11 @@
 // transform (position / quaternion / scale), a parent pointer and a child list,
 // exactly the three.js / Unity transform-hierarchy model. `updateWorld` folds a
 // parent's world matrix into each child once per frame, so the renderer reads a
-// finished `worldMatrix` off every node instead of recomputing ancestry.
+// finished `worldMatrix` off every node instead of recomputing ancestry. It is
+// dirty-aware: a node recomposes its matrices only when its transform actually
+// changed (compared by value, so in-place `position.set(...)` is caught) and
+// bumps a `worldVersion` the renderer's per-mesh uniform cache keys off — so a
+// static subtree, and a scene watched by a moving camera, cost next to nothing.
 //
 // `Scene` is the hierarchy root. `PerspectiveCamera` / `OrthographicCamera` are
 // `Object3D`s that additionally produce a view + projection matrix.
@@ -29,6 +33,17 @@ class Object3D {
         // Cached matrices, refreshed by `updateWorld` each frame.
         this.localMatrix = mat4();
         this.worldMatrix = mat4();
+        // Transform dirty-tracking. `worldVersion` bumps only when this node's
+        // world matrix actually changes; the renderer keys its per-mesh uniform
+        // cache off it, so a static mesh never re-packs (and never recomputes its
+        // normal-matrix inverse). The snapshot is the TRS the cached matrices were
+        // built from — compared by value so it works whether the transform was set
+        // through a setter or mutated in place (e.g. `node.position.set(...)`).
+        this.worldVersion = 0;
+        this.hasSnap = 0.0;
+        this.spx = 0.0; this.spy = 0.0; this.spz = 0.0;
+        this.sqx = 0.0; this.sqy = 0.0; this.sqz = 0.0; this.sqw = 1.0;
+        this.ssx = 1.0; this.ssy = 1.0; this.ssz = 1.0;
         // Type tag the renderer/collector dispatch on without instanceof chains.
         this.nodeType = "object";
     }
@@ -58,14 +73,38 @@ class Object3D {
 
     // ---- world transform ----------------------------------------------------
     // Recompute this node's local + world matrices and recurse to children.
-    // `parentMatrix` is a Mat4 (or null at the root).
-    updateWorld(parentMatrix) {
-        this.localMatrix = mat4Compose(this.position, this.quaternion, this.scaling);
-        // The root passes no parent (null) or the `0` sentinel; anything that is
-        // not a Mat4 object means "world == local".
-        if (typeOf(parentMatrix) != "object") { this.worldMatrix = this.localMatrix; }
-        else { this.worldMatrix = parentMatrix.mul(this.localMatrix); }
-        for (let i = 0; i < len(this.children); i++) { this.children[i].updateWorld(this.worldMatrix); }
+    // `parentMatrix` is a Mat4 (or the `0` sentinel at the root); `parentChanged`
+    // is 1 when an ancestor's world matrix moved this frame. Work is skipped where
+    // nothing changed: the local matrix is recomposed only when this node's TRS
+    // differs from its snapshot, and the world matrix (and `worldVersion`) only
+    // when either the local or the parent changed — so a static subtree costs a
+    // cheap value-compare per node and no matrix math at all.
+    updateWorld(parentMatrix, parentChanged) {
+        let p = this.position; let q = this.quaternion; let s = this.scaling;
+        let localChanged = 0.0;
+        if (this.hasSnap < 0.5) { localChanged = 1.0; }
+        else {
+            let d = abs(p.x - this.spx) + abs(p.y - this.spy) + abs(p.z - this.spz)
+                + abs(q.x - this.sqx) + abs(q.y - this.sqy) + abs(q.z - this.sqz) + abs(q.w - this.sqw)
+                + abs(s.x - this.ssx) + abs(s.y - this.ssy) + abs(s.z - this.ssz);
+            if (d > 0.0) { localChanged = 1.0; }
+        }
+        if (localChanged > 0.5) {
+            this.localMatrix = mat4Compose(p, q, s);
+            this.spx = p.x; this.spy = p.y; this.spz = p.z;
+            this.sqx = q.x; this.sqy = q.y; this.sqz = q.z; this.sqw = q.w;
+            this.ssx = s.x; this.ssy = s.y; this.ssz = s.z; this.hasSnap = 1.0;
+        }
+        let changed = 0.0;
+        if (!isNull(parentChanged)) { if (parentChanged > 0.5) { changed = 1.0; } }
+        if (localChanged > 0.5) { changed = 1.0; }
+        if (changed > 0.5) {
+            // The root passes the `0` sentinel; anything not a Mat4 means world == local.
+            if (typeOf(parentMatrix) != "object") { this.worldMatrix = this.localMatrix; }
+            else { this.worldMatrix = parentMatrix.mul(this.localMatrix); }
+            this.worldVersion = this.worldVersion + 1;
+        }
+        for (let i = 0; i < len(this.children); i++) { this.children[i].updateWorld(this.worldMatrix, changed); }
         return this;
     }
     // World-space position (the translation of the world matrix).

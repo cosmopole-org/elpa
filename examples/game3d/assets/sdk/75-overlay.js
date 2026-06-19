@@ -19,12 +19,15 @@
 // (exactly when the 3D scene or a panel changed); when nothing moves, its vertex
 // buffer is byte-identical and the engine's content cache skips the whole frame.
 //
-// The geometry is cached on the CPU too: each frame the overlay fingerprints its
-// visible content (dims, panel positions/state, and the resolved text/gauge
-// values) and only rebuilds the vertex soup when that signature changes. So while
-// the scene rotates with a static HUD, the per-frame overlay cost is just the
-// cheap signature — not a full re-tessellation of every glyph quad. (The bitmap
-// font run-length-merges adjacent lit cells per row to keep the soup small.)
+// Geometry is cached *per panel*, in two levels, so an interaction only pays for
+// the panel it touches. Each panel keeps its vertex soup in panel-local pixels,
+// re-tessellated only when its content changes (a cheap content fingerprint), and
+// the screen-space projection of that soup, rebuilt only when the panel moves or
+// the surface resizes. Each panel is its own vertex buffer + draw. So a static HUD
+// over a rotating scene costs only the fingerprints; dragging a window re-projects
+// just that one panel (pure arithmetic, no re-tessellation); a gauge tick
+// re-tessellates only its own panel. (The bitmap font also run-length-merges
+// adjacent lit cells per row to keep each soup small.)
 
 // The 2D overlay shader: a pass-through clip-space position with a per-vertex
 // RGBA colour, alpha-blended over the scene. Positions arrive already in NDC
@@ -76,9 +79,9 @@ function buildUIFont() {
 let UI_GLYPHS = buildUIFont();
 
 // ----------------------------------------------------------- the quad builder --
-// Accumulates coloured quads in **logical-pixel** screen space (origin top-left).
-// `finish(w, h)` converts the whole batch to a flat NDC + RGBA vertex array for
-// the GPU (6 floats / vertex: clipX, clipY, r, g, b, a — two triangles / quad).
+// Accumulates coloured quads as a flat vertex array in pixel space — 6 floats per
+// vertex (x, y, r, g, b, a), two triangles per quad. Panels draw into one of these
+// in panel-local pixels; `Overlay.localToNDC` later projects it to the GPU buffer.
 class UIBatch {
     constructor() { this.px = []; }      // flat: x, y (px), r, g, b, a per vertex
     vert(x, y, c) { push(this.px, x); push(this.px, y); push(this.px, c[0]); push(this.px, c[1]); push(this.px, c[2]); push(this.px, c[3]); }
@@ -119,16 +122,6 @@ class UIBatch {
         }
         return cx;
     }
-    // Convert the accumulated logical-pixel quads to a clip-space vertex array.
-    finish(w, h) {
-        let out = []; let n = len(this.px); let i = 0;
-        for (i = 0; i < n; i = i + 6) {
-            push(out, this.px[i] / w * 2.0 - 1.0);        // x px → clip x
-            push(out, 1.0 - this.px[i + 1] / h * 2.0);    // y px → clip y (flip)
-            push(out, this.px[i + 2]); push(out, this.px[i + 3]); push(out, this.px[i + 4]); push(out, this.px[i + 5]);
-        }
-        return out;
-    }
     vertexCount() { return floor(len(this.px) / 6); }
 }
 
@@ -151,6 +144,14 @@ class UIPanel {
         this.labelH = 16.0; this.barH = 12.0; this.barLabelH = 14.0; this.buttonH = 38.0;
         this.fontS = 2.0; this.titleFontS = 2.4; this.buttonFontS = 2.4;
         this.bodyH = 0.0;   // computed each build
+        // Per-panel geometry cache. `local` is the panel's vertex soup in
+        // panel-local pixels (origin at its top-left), tessellated only when the
+        // panel's *content* changes (`localSig`); `final` is that soup translated
+        // to the panel's screen position and projected to NDC, rebuilt only when
+        // the panel moves or the surface resizes (`finalSig`). So dragging a panel
+        // re-projects one panel; a gauge tick re-tessellates only its own panel.
+        this.localSig = "?"; this.local = 0; this.localCount = 0;
+        this.finalSig = "?"; this.final = 0;
     }
     label(text) { push(this.rows, { type: "label", text: text }); return this; }
     bar(lbl, value, color) { push(this.rows, { type: "bar", label: lbl, value: value, color: color }); return this; }
@@ -194,10 +195,10 @@ class Overlay {
         this.visible = 1.0;
         this.W = 1280.0; this.H = 720.0;   // last build dims (for drag clamping)
         this.active = 0;                    // panel currently captured by a drag
-        // Geometry cache: the HUD rebuilds its vertex soup only when its visible
-        // content changes (a cheap per-frame signature), not every frame — so a
-        // static HUD costs nothing to draw while the 3D scene rotates beneath it.
-        this.cacheSig = "?"; this.cacheVerts = 0; this.cacheCount = 0;
+        // Geometry is cached *per panel* (see `UIPanel`): each frame a panel is
+        // re-tessellated only when its content changes and re-projected only when
+        // it moves, so a static HUD costs ~nothing while the scene rotates, and an
+        // interaction only touches the one panel it affects.
         this.theme = {
             body: [0.07, 0.09, 0.15, 0.84],
             title: [0.16, 0.40, 0.70, 0.96],
@@ -272,7 +273,8 @@ class Overlay {
             let row = p.rows[i];
             if (row.type == "button") {
                 if (has(row, "rx")) {
-                    let r = { x: row.rx, y: row.ry, w: row.rw, h: row.rh };
+                    // Button rects are stored panel-local; add the live position.
+                    let r = { x: p.x + row.rx, y: p.y + row.ry, w: row.rw, h: row.rh };
                     if (this.inRect(px, py, r) > 0.5) { let f = row.onTap; if (f != 0) { f(game); } return 0; }
                 }
             }
@@ -296,75 +298,84 @@ class Overlay {
         return captured;
     }
 
-    // A cheap fingerprint of everything that affects the HUD's geometry this
-    // frame: the dims, and per visible panel its id, position, collapse/drag state
-    // and the *resolved* content of each row (dynamic `fn(game)` values are
-    // evaluated here, once, and stashed on the row for the paint pass). When the
-    // signature is unchanged the cached vertex soup is reused verbatim — the
-    // expensive geometry build is skipped entirely.
-    buildSignature(game, w, h) {
+    // A cheap fingerprint of one panel's *content* (everything that shapes its
+    // local geometry, but not where it sits): its width, collapse/drag state, and
+    // the resolved content of each row. Dynamic `fn(game)` values are evaluated
+    // here, once, and stashed on the row for the paint pass. When this is unchanged
+    // the panel's tessellated geometry is reused verbatim.
+    panelContentSig(game, p) {
         let parts = [];
-        push(parts, str(floor(w))); push(parts, str(floor(h)));
-        for (let i = 0; i < len(this.panels); i++) {
-            let p = this.panels[i];
-            if (p.visible > 0.5) {
-                push(parts, p.id);
-                push(parts, str(floor(p.x))); push(parts, str(floor(p.y)));
-                push(parts, str(floor(p.collapsed))); push(parts, str(floor(p.dragging)));
-                if (p.collapsed < 0.5) {
-                    for (let r = 0; r < len(p.rows); r++) {
-                        let row = p.rows[r];
-                        if (row.type == "label") { row.rtext = p.rowText(row, game); push(parts, row.rtext); }
-                        else if (row.type == "bar") { row.rval = p.barValue(row, game); push(parts, concat(row.label, str(floor(row.rval * 1000.0)))); }
-                        else if (row.type == "button") { push(parts, row.label); }
-                    }
-                }
+        push(parts, p.title); push(parts, str(floor(p.w)));
+        push(parts, str(floor(p.collapsed))); push(parts, str(floor(p.dragging)));
+        if (p.collapsed < 0.5) {
+            for (let r = 0; r < len(p.rows); r++) {
+                let row = p.rows[r];
+                if (row.type == "label") { row.rtext = p.rowText(row, game); push(parts, row.rtext); }
+                else if (row.type == "bar") { row.rval = p.barValue(row, game); push(parts, concat(row.label, str(floor(row.rval * 1000.0)))); }
+                else if (row.type == "button") { push(parts, row.label); }
             }
         }
         return join(parts, "|");
     }
 
+    // Project a panel's local-pixel vertex soup (stride 6: x,y,r,g,b,a) to a
+    // clip-space buffer at screen offset (ox,oy). Pure arithmetic per vertex — no
+    // re-tessellation — so re-placing a dragged panel is cheap.
+    localToNDC(local, ox, oy, w, h) {
+        let out = []; let n = len(local);
+        for (let i = 0; i < n; i = i + 6) {
+            push(out, (local[i] + ox) / w * 2.0 - 1.0);
+            push(out, 1.0 - (local[i + 1] + oy) / h * 2.0);
+            push(out, local[i + 2]); push(out, local[i + 3]); push(out, local[i + 4]); push(out, local[i + 5]);
+        }
+        return out;
+    }
+
     // ---- build the HUD render pass ------------------------------------------
     // Returns { resources, pass } to splice into the frame the 3D renderer submits,
-    // or 0 when there is nothing to draw.
+    // or 0 when there is nothing to draw. Each panel is its own vertex buffer +
+    // draw, so an interaction only re-uploads the panel it touched.
     build(game, w, h, colorFormat) {
         this.W = w; this.H = h;
         if (this.visible < 0.5) { return 0; }
-        // Keep every panel on-screen first (a desktop layout must not strand a
-        // window off a small phone viewport) — this feeds into the signature.
+
+        let res = [
+            { kind: "shader", id: "g3d.ui.shader", wgsl: UI_WGSL },
+            this.pipelineDesc(colorFormat)];
+        let cmds = [{ cmd: "setPipeline", pipeline: "g3d.ui.pipe" }];
+        let drew = 0.0;
         for (let i = 0; i < len(this.panels); i++) {
             let p = this.panels[i];
             if (p.visible > 0.5) {
+                // Keep the panel on-screen (a desktop layout must not strand a
+                // window off a small phone), then refresh its two cache levels.
                 p.x = clamp(p.x, 4.0, max(4.0, w - p.w - 4.0));
                 p.y = clamp(p.y, 4.0, max(4.0, h - p.titleH - 4.0));
+
+                let csig = this.panelContentSig(game, p);
+                if (csig != p.localSig) {
+                    let b = new UIBatch(); this.drawPanelLocal(b, p);
+                    p.local = b.px; p.localCount = b.vertexCount(); p.localSig = csig;
+                    p.finalSig = "?";   // content changed → re-project too
+                }
+                let fsig = concat(concat(concat(concat(concat(csig, "@"),
+                    str(floor(p.x))), ","), str(floor(p.y))),
+                    concat(concat(concat(":", str(floor(w))), "x"), str(floor(h))));
+                if (fsig != p.finalSig) { p.final = this.localToNDC(p.local, p.x, p.y, w, h); p.finalSig = fsig; }
+
+                if (p.localCount > 0) {
+                    let bufId = concat("g3d.ui.vbo.", p.id);
+                    push(res, { kind: "buffer", id: bufId, size: len(p.final) * 4, usage: ["VERTEX"], data_f32: p.final });
+                    push(cmds, { cmd: "setVertexBuffer", slot: 0, buffer: bufId, offset: 0 });
+                    push(cmds, { cmd: "draw", vertex_count: p.localCount, instance_count: 1, first_vertex: 0, first_instance: 0 });
+                    drew = 1.0;
+                }
             }
         }
+        if (drew < 0.5) { return 0; }
 
-        // Rebuild the vertex soup only when the visible HUD actually changed.
-        let sig = this.buildSignature(game, w, h);
-        if (sig != this.cacheSig) {
-            let b = new UIBatch(); let drew = 0.0;
-            for (let i = 0; i < len(this.panels); i++) {
-                let p = this.panels[i];
-                if (p.visible > 0.5) { this.drawPanel(b, p, game); drew = 1.0; }
-            }
-            this.cacheSig = sig; this.cacheCount = b.vertexCount();
-            if (drew > 0.5) { this.cacheVerts = b.finish(w, h); } else { this.cacheVerts = 0; }
-        }
-        if (this.cacheVerts == 0) { return 0; }
-        if (this.cacheCount < 1) { return 0; }
-
-        let verts = this.cacheVerts;
-        let res = [
-            { kind: "shader", id: "g3d.ui.shader", wgsl: UI_WGSL },
-            this.pipelineDesc(colorFormat),
-            { kind: "buffer", id: "g3d.ui.vbo", size: len(verts) * 4, usage: ["VERTEX"], data_f32: verts }];
-        let cmds = [
-            { cmd: "setPipeline", pipeline: "g3d.ui.pipe" },
-            { cmd: "setVertexBuffer", slot: 0, buffer: "g3d.ui.vbo", offset: 0 },
-            { cmd: "draw", vertex_count: this.cacheCount, instance_count: 1, first_vertex: 0, first_instance: 0 }];
         // No `id`: a HUD pass re-records whenever the surface repaints, and the
-        // engine still skips it when the vertex bytes are unchanged frame to frame.
+        // engine still skips it when every panel's bytes are unchanged.
         let pass = { op: "renderPass",
             color_attachments: [{ view: { kind: "surface" }, load: "load", store: true }],
             commands: cmds };
@@ -387,36 +398,39 @@ class Overlay {
             primitive: { topology: "triangle-list", front_face: "ccw", cull_mode: "none" } };
     }
 
-    // ---- paint one panel into the batch -------------------------------------
-    drawPanel(b, p, game) {
+    // ---- paint one panel into the batch, in panel-local pixels --------------
+    // Everything is laid out with the panel's top-left at (0,0); `build` projects
+    // the result to the panel's screen position. Button hit-rects are likewise
+    // stored panel-local (`tapRows` adds the live offset), so they survive drags.
+    drawPanelLocal(b, p) {
         let th = this.theme;
         p.bodyH = p.measureBody();
         let total = p.titleH + p.bodyH;
         // Body + title bar + frame.
-        if (p.collapsed < 0.5) { b.rect(p.x, p.y + p.titleH, p.w, p.bodyH, th.body); }
+        if (p.collapsed < 0.5) { b.rect(0.0, p.titleH, p.w, p.bodyH, th.body); }
         let titleCol = th.titleIdle; if (p.dragging > 0.5) { titleCol = th.title; }
-        b.rect(p.x, p.y, p.w, p.titleH, titleCol);
-        b.border(p.x, p.y, p.w, total, 1.2, th.border);
+        b.rect(0.0, 0.0, p.w, p.titleH, titleCol);
+        b.border(0.0, 0.0, p.w, total, 1.2, th.border);
         // Title text (left padded, vertically centred).
-        let tFs = p.titleFontS; let tY = p.y + (p.titleH - 5.0 * tFs) / 2.0;
-        b.text(p.title, p.x + p.pad, tY, tFs, th.text);
-        // Collapse grip: a "-" when open, "+" when collapsed.
-        let cr = this.collapseRect(p);
+        let tFs = p.titleFontS; let tY = (p.titleH - 5.0 * tFs) / 2.0;
+        b.text(p.title, p.pad, tY, tFs, th.text);
+        // Collapse grip: a "-" when open, "+" when collapsed (right of the bar).
+        let cgx = p.w - p.titleH;
         let sign = "-"; if (p.collapsed > 0.5) { sign = "+"; }
-        b.text(sign, cr.x + (cr.w - 3.0 * tFs) / 2.0, cr.y + (cr.h - 5.0 * tFs) / 2.0, tFs, th.grip);
+        b.text(sign, cgx + (p.titleH - 3.0 * tFs) / 2.0, (p.titleH - 5.0 * tFs) / 2.0, tFs, th.grip);
         if (p.collapsed > 0.5) { return 0; }
         // Body rows.
-        let cy = p.y + p.titleH + p.pad; let n = len(p.rows);
+        let cy = p.titleH + p.pad; let n = len(p.rows);
         for (let i = 0; i < n; i++) {
             let row = p.rows[i]; let rh = p.rowHeight(row);
-            this.drawRow(b, p, row, p.x + p.pad, cy, p.w - p.pad * 2.0, rh, game);
+            this.drawRow(b, p, row, p.pad, cy, p.w - p.pad * 2.0, rh);
             cy = cy + rh + p.rowGap;
         }
         return 0;
     }
-    drawRow(b, p, row, x, y, w, h, game) {
+    drawRow(b, p, row, x, y, w, h) {
         let th = this.theme;
-        // Dynamic values were resolved in `buildSignature` and stashed on the row,
+        // Dynamic values were resolved in `panelContentSig` and stashed on the row,
         // so the paint pass never re-evaluates the `fn(game)` callbacks.
         if (row.type == "label") {
             b.text(row.rtext, x, y + (h - 5.0 * p.fontS) / 2.0, p.fontS, th.text);

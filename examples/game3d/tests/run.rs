@@ -261,25 +261,42 @@ fn hud_composites_a_second_overlay_pass() {
         "the HUD pass preserves (loads) the 3D image rather than clearing it"
     );
 
-    // The HUD pipeline/shader/vertex-buffer resources are present, and the HUD
-    // draws its panel geometry with a non-indexed draw of many vertices.
+    // The HUD pipeline/shader resources are present, and each panel contributes
+    // its own vertex buffer + non-indexed draw (per-panel caching: one buffer per
+    // window so an interaction only re-uploads the panel it touched).
     let frame = app.last_frame().unwrap();
     assert!(frame.resources.iter().any(|r| r.id() == "g3d.ui.pipe"), "HUD pipeline created");
     assert!(frame.resources.iter().any(|r| r.id() == "g3d.ui.shader"), "HUD shader created");
-    assert!(frame.resources.iter().any(|r| r.id() == "g3d.ui.vbo"), "HUD vertex buffer created");
-    let drew = hud_pass
+    let panel_vbos = frame
+        .resources
+        .iter()
+        .filter(|r| r.id().starts_with("g3d.ui.vbo."))
+        .count();
+    assert!(panel_vbos >= 4, "each visible HUD panel has its own vertex buffer (got {panel_vbos})");
+    let draws = hud_pass
         .commands
         .iter()
-        .any(|c| matches!(c, RenderCommand::Draw { vertex_count, .. } if *vertex_count > 30));
-    assert!(drew, "the HUD pass issues a quad-soup draw for the panels");
+        .filter(|c| matches!(c, RenderCommand::Draw { vertex_count, .. } if *vertex_count > 30))
+        .count();
+    assert!(draws >= 4, "the HUD pass issues one quad-soup draw per panel (got {draws})");
 }
 
-/// The HUD vertex buffer this frame (the panel geometry), if present.
+/// The full HUD geometry this frame: every panel's vertex buffer concatenated in
+/// id order (the bytes that change when a panel moves or its content updates).
 fn hud_vbo(app: &Elpa<HeadlessBackend>) -> Option<Vec<f32>> {
-    app.last_frame()?.resources.iter().find_map(|r| match r {
-        ResourceDesc::Buffer(b) if b.id == "g3d.ui.vbo" => b.data_f32.clone(),
-        _ => None,
-    })
+    let frame = app.last_frame()?;
+    let mut named: Vec<(String, Vec<f32>)> = frame
+        .resources
+        .iter()
+        .filter_map(|r| match r {
+            ResourceDesc::Buffer(b) if b.id.starts_with("g3d.ui.vbo.") => {
+                b.data_f32.clone().map(|d| (b.id.clone(), d))
+            }
+            _ => None,
+        })
+        .collect();
+    named.sort_by(|a, b| a.0.cmp(&b.0));
+    Some(named.into_iter().flat_map(|(_, d)| d).collect())
 }
 
 #[test]
