@@ -70,25 +70,27 @@ fn model_uniforms(app: &Elpa<HeadlessBackend>) -> Vec<f32> {
 // ------------------------------------------------------------------ tests ------
 
 #[test]
-fn engine_shader_is_valid_wgsl() {
+fn engine_shaders_are_valid_wgsl() {
     // Validate the engine's WGSL exactly as wgpu does. The SDK is JavaScript, so
-    // lower it to Elpian AST first and walk that for the embedded shader string.
+    // lower it to Elpian AST first and walk that for the embedded shader strings.
     let ast: serde_json::Value =
         serde_json::from_str(&elpa::compile_js_to_ast(elpa_game3d::module_js())).unwrap();
     let mut shaders = Vec::new();
     collect_wgsl(&ast, &mut shaders);
     shaders.sort();
     shaders.dedup();
-    assert_eq!(shaders.len(), 1, "the engine has one forward shader");
-    let src = &shaders[0];
-    let module = naga::front::wgsl::parse_str(src)
-        .unwrap_or_else(|e| panic!("WGSL parse failed: {}", e.emit_to_string(src)));
-    naga::valid::Validator::new(
-        naga::valid::ValidationFlags::all(),
-        naga::valid::Capabilities::all(),
-    )
-    .validate(&module)
-    .expect("WGSL validation failed");
+    // Two shaders: the 3D forward (Blinn-Phong) shader and the 2D HUD overlay shader.
+    assert_eq!(shaders.len(), 2, "the engine has a 3D forward shader and a 2D HUD shader");
+    for src in &shaders {
+        let module = naga::front::wgsl::parse_str(src)
+            .unwrap_or_else(|e| panic!("WGSL parse failed: {}", e.emit_to_string(src)));
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("WGSL validation failed");
+    }
 }
 
 #[test]
@@ -220,6 +222,129 @@ fn pointer_pick_does_not_trap() {
     app.send_event(&InputEvent::PointerDown { x: 640.0, y: 360.0, button: 0 });
     assert!(app.trap_reason().is_none(), "no trap on a pointer pick");
     assert!(app.take_log().is_empty(), "no host errors on a pointer pick");
+}
+
+// ---- HUD overlay --------------------------------------------------------------
+
+/// All render passes submitted this frame, in order.
+fn render_passes(app: &Elpa<HeadlessBackend>) -> Vec<elpa::protocol::RenderPass> {
+    app.last_frame()
+        .expect("frame")
+        .commands
+        .iter()
+        .filter_map(|c| match c {
+            EncoderCommand::RenderPass(rp) => Some(rp.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn hud_composites_a_second_overlay_pass() {
+    // The demo builds floating HUD panels, so the frame must carry a *second*
+    // render pass on top of the depth-tested 3D pass: a depth-less, surface pass
+    // that `load`s (preserves) the scene and alpha-blends the panels over it.
+    let mut app = instance_for(&elpa_game3d::program());
+    app.start();
+    assert!(app.trap_reason().is_none(), "no trap building the HUD: {:?}", app.trap_reason());
+
+    let passes = render_passes(&app);
+    assert_eq!(passes.len(), 2, "a 3D pass plus the 2D HUD overlay pass");
+
+    // The 3D pass is depth-tested and clears; the HUD pass has no depth and loads.
+    let scene_pass = &passes[0];
+    let hud_pass = &passes[1];
+    assert!(scene_pass.depth_stencil.is_some(), "the 3D pass is depth-tested");
+    assert!(hud_pass.depth_stencil.is_none(), "the HUD pass has no depth test");
+    assert!(
+        hud_pass.color_attachments.iter().all(|a| a.load == "load"),
+        "the HUD pass preserves (loads) the 3D image rather than clearing it"
+    );
+
+    // The HUD pipeline/shader/vertex-buffer resources are present, and the HUD
+    // draws its panel geometry with a non-indexed draw of many vertices.
+    let frame = app.last_frame().unwrap();
+    assert!(frame.resources.iter().any(|r| r.id() == "g3d.ui.pipe"), "HUD pipeline created");
+    assert!(frame.resources.iter().any(|r| r.id() == "g3d.ui.shader"), "HUD shader created");
+    assert!(frame.resources.iter().any(|r| r.id() == "g3d.ui.vbo"), "HUD vertex buffer created");
+    let drew = hud_pass
+        .commands
+        .iter()
+        .any(|c| matches!(c, RenderCommand::Draw { vertex_count, .. } if *vertex_count > 30));
+    assert!(drew, "the HUD pass issues a quad-soup draw for the panels");
+}
+
+/// The HUD vertex buffer this frame (the panel geometry), if present.
+fn hud_vbo(app: &Elpa<HeadlessBackend>) -> Option<Vec<f32>> {
+    app.last_frame()?.resources.iter().find_map(|r| match r {
+        ResourceDesc::Buffer(b) if b.id == "g3d.ui.vbo" => b.data_f32.clone(),
+        _ => None,
+    })
+}
+
+#[test]
+fn dragging_a_panel_title_moves_it_not_the_camera() {
+    // Pressing on a panel's title bar and dragging must move the panel (the HUD
+    // geometry changes) while leaving the camera untouched — the HUD captures the
+    // gesture so it never leaks through to the orbit rig. The "VILLAGE" panel sits
+    // at logical (16,16) with a 30px title bar, so (40,28) lands on its title.
+    let mut app = instance_for(&elpa_game3d::program());
+    app.start();
+    let cam_before = scene_uniform(&app);
+    let hud_before = hud_vbo(&app).expect("HUD vbo present");
+
+    app.send_event(&InputEvent::PointerDown { x: 40.0, y: 28.0, button: 0 });
+    app.send_event(&InputEvent::PointerMove { x: 240.0, y: 180.0 });
+    app.send_event(&InputEvent::PointerUp { x: 240.0, y: 180.0, button: 0 });
+    assert!(app.trap_reason().is_none(), "no trap dragging a panel: {:?}", app.trap_reason());
+
+    let cam_after = scene_uniform(&app);
+    let hud_after = hud_vbo(&app).expect("HUD vbo present");
+    assert_eq!(cam_after, cam_before, "dragging a panel must not orbit the camera");
+    assert!(hud_after != hud_before, "dragging a panel moved its geometry");
+}
+
+#[test]
+fn dragging_empty_space_still_orbits_the_camera() {
+    // A press that misses every panel must fall through to the orbit rig, so the
+    // HUD does not swallow camera gestures over the open scene. Centre of a
+    // 1280×720 surface is clear of the top-left panel column.
+    let mut app = instance_for(&elpa_game3d::program());
+    app.start();
+    let before = scene_uniform(&app);
+
+    app.send_event(&InputEvent::PointerDown { x: 640.0, y: 360.0, button: 0 });
+    app.send_event(&InputEvent::PointerMove { x: 900.0, y: 420.0 });
+    let after = scene_uniform(&app);
+
+    assert!(after != before, "dragging open space orbits the camera as before");
+    assert!(app.trap_reason().is_none(), "no trap orbiting past the HUD");
+}
+
+#[test]
+fn tapping_a_button_runs_its_action() {
+    // The CAMERA panel's "RESET VIEW" button restores the default orbit pose, so
+    // tapping it after the camera has moved must change the view matrix back. We
+    // orbit first, then tap the button, and confirm the camera uniform changed.
+    let mut app = instance_for(&elpa_game3d::program());
+    app.start();
+
+    // Move the camera away from the default pose.
+    app.send_event(&InputEvent::PointerDown { x: 640.0, y: 360.0, button: 0 });
+    app.send_event(&InputEvent::PointerMove { x: 980.0, y: 300.0 });
+    app.send_event(&InputEvent::PointerUp { x: 980.0, y: 300.0, button: 0 });
+    let moved = scene_uniform(&app);
+
+    // The CAMERA panel is at logical (16,188): title 30px, pad 10, then a 26px
+    // ZOOM bar (+8 gap) and three 38px buttons (+8 gaps). Body starts at y=228, so
+    // "RESET VIEW" (the third button) spans y≈354..392 — tap roughly its centre.
+    //   228 + 26+8 (bar) + 38+8 (zoom in) + 38+8 (zoom out) = 354; centre ≈ 373.
+    app.send_event(&InputEvent::PointerDown { x: 120.0, y: 373.0, button: 0 });
+    app.send_event(&InputEvent::PointerUp { x: 120.0, y: 373.0, button: 0 });
+    assert!(app.trap_reason().is_none(), "no trap tapping a HUD button: {:?}", app.trap_reason());
+
+    let reset = scene_uniform(&app);
+    assert!(reset != moved, "tapping RESET VIEW restored the camera (view matrix changed)");
 }
 
 // ---- glTF / GLB ---------------------------------------------------------------

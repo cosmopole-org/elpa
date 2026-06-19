@@ -23,8 +23,10 @@
 //!   picking and collision queries.
 //! * `60-renderer` — the forward Blinn-Phong renderer: the WGSL pipeline and the
 //!   per-frame `gpu.submit` command-tree builder.
-//! * `70-engine` / `80-api` — the `Game` runtime (loop, input, picking) and the
-//!   `new`-free public constructors + host entry points apps call.
+//! * `70-engine` — the `Game` runtime (loop, input, picking).
+//! * `75-overlay` — the 2D HUD: floating, draggable (mobile-friendly) panels of
+//!   labels, gauges and buttons, composited over the 3D scene in a second pass.
+//! * `80-api` — the `new`-free public constructors + host entry points apps call.
 //!
 //! Apps compose a scene graph, register an `onUpdate(dt, game)` callback and call
 //! `startGame()`; they never touch the GPU command tree.
@@ -47,6 +49,7 @@ pub const SDK_GLTF_JS: &str = include_str!("../assets/sdk/45-gltf.js");
 pub const SDK_PHYSICS_JS: &str = include_str!("../assets/sdk/50-physics.js");
 pub const SDK_RENDERER_JS: &str = include_str!("../assets/sdk/60-renderer.js");
 pub const SDK_ENGINE_JS: &str = include_str!("../assets/sdk/70-engine.js");
+pub const SDK_OVERLAY_JS: &str = include_str!("../assets/sdk/75-overlay.js");
 pub const SDK_API_JS: &str = include_str!("../assets/sdk/80-api.js");
 
 /// Generated demo model assets (a base64 `.glb` and a `data:`-buffer `.gltf`) the
@@ -54,12 +57,13 @@ pub const SDK_API_JS: &str = include_str!("../assets/sdk/80-api.js");
 /// `scripts/gen_demo_models.py`.
 pub const DEMO_MODELS_JS: &str = include_str!("../assets/models.js");
 
-/// The 3D engine SDK as one JavaScript source — the ten `assets/sdk/*.js` modules
-/// concatenated in dependency order, plus the demo's embedded model assets. The VM
-/// hoists every `class`/`function` declaration, so this is just textual concatenation.
+/// The 3D engine SDK as one JavaScript source — the eleven `assets/sdk/*.js`
+/// modules concatenated in dependency order, plus the demo's embedded model assets.
+/// The VM hoists every `class`/`function` declaration, so this is just textual
+/// concatenation.
 pub fn module_js() -> String {
     format!(
-        "{SDK_MATH_JS}\n{SDK_CORE_JS}\n{SDK_LIGHTING_JS}\n{SDK_GEOMETRY_JS}\n{SDK_BINARY_JS}\n{SDK_GLTF_JS}\n{SDK_PHYSICS_JS}\n{SDK_RENDERER_JS}\n{SDK_ENGINE_JS}\n{SDK_API_JS}\n{DEMO_MODELS_JS}"
+        "{SDK_MATH_JS}\n{SDK_CORE_JS}\n{SDK_LIGHTING_JS}\n{SDK_GEOMETRY_JS}\n{SDK_BINARY_JS}\n{SDK_GLTF_JS}\n{SDK_PHYSICS_JS}\n{SDK_RENDERER_JS}\n{SDK_ENGINE_JS}\n{SDK_OVERLAY_JS}\n{SDK_API_JS}\n{DEMO_MODELS_JS}"
     )
 }
 

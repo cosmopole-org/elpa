@@ -73,6 +73,9 @@ class Game {
         this.camera = new PerspectiveCamera(60.0, 0.1, 1000.0);
         this.camera.setPosition(0.0, 2.5, 6.0).lookAt(0.0, 0.0, 0.0);
         this.renderer = new Renderer();
+        // The 2D HUD: floating, draggable panels composited over the 3D scene.
+        this.overlay = new Overlay();
+        this.uiCapture = 0.0;   // 1 while the HUD owns the active pointer gesture
         this.surface = { width: 1, height: 1, aspect: 1.0 };
         this.time = 0.0;        // seconds since start
         this.frame = 0;         // frames rendered
@@ -109,7 +112,11 @@ class Game {
 
     // ---- rendering ----------------------------------------------------------
     surfaceInfo() { let si = askHost("gpu.surfaceInfo", []); if (!isNull(si)) { this.surface = si; } return this.surface; }
-    renderFrame() { this.renderer.render(this.scene, this.camera, this.surfaceInfo()); }
+    renderFrame() { this.renderer.render(this.scene, this.camera, this.surfaceInfo(), this); }
+
+    // Add a floating HUD panel; see `Overlay.addPanel`. Returns the `UIPanel` so
+    // the app can chain `.label(...) / .bar(...) / .button(...)` onto it.
+    addPanel(opts) { return this.overlay.addPanel(opts); }
 
     // ---- lifecycle ----------------------------------------------------------
     start() { this.running = 1.0; this.renderFrame(); }
@@ -134,12 +141,26 @@ class Game {
         if (t == "pointerup") { this.pointerDown = 0.0; }
         if (t == "keydown") { this.keys[e.key] = 1.0; }
         if (t == "keyup") { this.keys[e.key] = 0.0; }
-        // Feed the camera rig (drag-rotate, wheel-zoom, secondary-drag-pan).
+
+        // The HUD gets first refusal on a pointer gesture. A press that lands on a
+        // panel (drag its title bar, tap a button) is *captured*, so the camera rig
+        // ignores the whole gesture — dragging a window must never orbit the scene.
+        // Hit-testing uses logical pixels (`e.x`/`e.y`), the HUD's layout space.
+        if (this.overlay != 0) {
+            if (t == "pointerdown") { this.uiCapture = this.overlay.pointerDown(e.x, e.y, this); }
+            if (t == "pointermove") { if (this.uiCapture > 0.5) { this.overlay.pointerMove(e.x, e.y); } }
+            if (t == "pointerup") { if (this.uiCapture > 0.5) { this.overlay.pointerUp(); this.uiCapture = 0.0; } }
+        }
+
+        // Feed the camera rig (drag-rotate, wheel-zoom, secondary-drag-pan) unless
+        // the HUD owns this gesture. The wheel still zooms regardless.
         if (this.controls != 0) {
-            let btn = 0; if (has(e, "button")) { btn = e.button; }
-            if (t == "pointerdown") { this.controls.pointerDown(e.nx, e.ny, btn); }
-            if (t == "pointermove") { this.controls.pointerMove(e.nx, e.ny); }
-            if (t == "pointerup") { this.controls.pointerUp(); }
+            if (this.uiCapture < 0.5) {
+                let btn = 0; if (has(e, "button")) { btn = e.button; }
+                if (t == "pointerdown") { this.controls.pointerDown(e.nx, e.ny, btn); }
+                if (t == "pointermove") { this.controls.pointerMove(e.nx, e.ny); }
+                if (t == "pointerup") { this.controls.pointerUp(); }
+            }
             if (t == "wheel") { this.controls.wheel(e.deltaY); }
         }
         if (this.eventFn != 0) { let fn = this.eventFn; fn(e, this); }

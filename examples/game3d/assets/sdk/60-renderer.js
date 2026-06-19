@@ -179,7 +179,7 @@ class Renderer {
     }
 
     // ---- frame --------------------------------------------------------------
-    render(scene, camera, si) {
+    render(scene, camera, si, game) {
         if (has(si, "colorFormat")) { this.colorFormat = si.colorFormat; }
         let w = num(si.width); let h = num(si.height);
         let aspect = w / h; if (has(si, "aspect")) { aspect = num(si.aspect); }
@@ -231,7 +231,24 @@ class Renderer {
                 clear_color: { r: bg[0], g: bg[1], b: bg[2], a: bg[3] } }],
             depth_stencil: { view: depthId, depth_load: "clear", depth_clear: 1.0, depth_store: true },
             commands: cmds };
-        askHost("gpu.submit", [{ resources: res, commands: [pass] }]);
+        let passes = [pass];
+
+        // Composite the 2D HUD over the 3D image: a second, depth-less pass that
+        // `load`s the scene and alpha-blends the floating panels on top. Built in
+        // logical pixels (the pointer-event space) so the HUD is DPI-correct.
+        if (!isNull(game)) {
+            if (game.overlay != 0) {
+                if (game.overlay.visible > 0.5) {
+                    let lw = w; let lh = h;
+                    if (has(si, "logicalWidth")) { lw = num(si.logicalWidth); }
+                    if (has(si, "logicalHeight")) { lh = num(si.logicalHeight); }
+                    let ov = game.overlay.build(game, lw, lh, this.colorFormat);
+                    if (ov != 0) { appendAll(res, ov.resources); push(passes, ov.pass); }
+                }
+            }
+        }
+
+        askHost("gpu.submit", [{ resources: res, commands: passes }]);
         return 0;
     }
 }
