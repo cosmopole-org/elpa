@@ -156,13 +156,21 @@ class Renderer {
         return out;
     }
     // The per-object uniform: model matrix, normal matrix, base colour, pbr, emissive.
+    // Cached per mesh and rebuilt only when the mesh's world matrix or material
+    // changed — so a static mesh skips the per-frame normal-matrix inverse and the
+    // array packing, the bulk of the per-object cost while the camera or HUD moves.
     modelUniform(mesh) {
-        let out = []; let mat = mesh.material; let packed = mat.pack();
+        let mat = mesh.material;
+        if (mesh.uData != 0) {
+            if (mesh.uVer == mesh.worldVersion) { if (mesh.uMat == mat.version) { return mesh.uData; } }
+        }
+        let out = []; let packed = mat.pack();
         appendAll(out, mesh.worldMatrix.e);
         appendAll(out, mesh.worldMatrix.normalMatrix().e);
         for (let i = 0; i < 4; i++) { push(out, packed[i]); }      // baseColor rgba
         for (let i = 4; i < 8; i++) { push(out, packed[i]); }      // metallic, roughness, emissiveIntensity, 0
         appendAll(out, mat.emissivePacked());
+        mesh.uData = out; mesh.uVer = mesh.worldVersion; mesh.uMat = mat.version;
         return out;
     }
 

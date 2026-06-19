@@ -252,6 +252,9 @@ class Material {
         this.emissive = [0.0, 0.0, 0.0];
         this.emissiveIntensity = 1.0;
         this.doubleSided = 0.0;
+        // Bumped whenever a property changes, so the renderer's per-mesh uniform
+        // cache knows to re-pack. Materials are usually built once and left alone.
+        this.version = 0;
         if (!isNull(opts)) { this.apply(opts); }
     }
     apply(opts) {
@@ -261,9 +264,10 @@ class Material {
         if (has(opts, "emissive")) { this.emissive = opts.emissive; }
         if (has(opts, "emissiveIntensity")) { this.emissiveIntensity = opts.emissiveIntensity; }
         if (has(opts, "doubleSided")) { this.doubleSided = opts.doubleSided; }
+        this.version = this.version + 1;
         return this;
     }
-    setColor(c) { this.color = c; return this; }
+    setColor(c) { this.color = c; this.version = this.version + 1; return this; }
     // Pack the 8 material floats the per-object uniform carries:
     //   baseColor rgba, then (metallic, roughness, emissiveIntensity, 0).
     pack() {
@@ -282,6 +286,11 @@ class Mesh extends Object3D {
         if (isNull(material)) { material = new Material(); }
         this.material = material;
         this.castShadow = 0.0;
+        // Per-mesh model-uniform cache (see Renderer.modelUniform): the packed
+        // matrices/material floats, valid while the world matrix and material are
+        // unchanged. `uVer`/`uMat` are the versions it was built at; -1 forces the
+        // first build.
+        this.uData = 0; this.uVer = -1; this.uMat = -1;
     }
     // The world-space AABB: the geometry's object box transformed by the world
     // matrix. Used by the physics/collision layer.
