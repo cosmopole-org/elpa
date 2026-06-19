@@ -23,6 +23,20 @@ function startGame() { G.start(); }
 function enableOrbit(opts) { return G.enableOrbit(opts); }
 function orbitControls() { return G.controls; }
 
+// ---- HUD overlay (floating, draggable panels) --------------------------------
+// `addPanel({ id, x, y, w, title, collapsed })` creates a floating window and
+// returns the `UIPanel`, so an app chains content onto it:
+//   addPanel({ title: "STATS", x: 16, y: 16, w: 210 })
+//     .label((g) => concat("FPS ", str(floor(g.fps))))
+//     .bar("HEALTH", 0.8, [0.4, 0.85, 0.4, 1.0])
+//     .button("RESET", (g) => { ... });
+// Rows take either constants or `fn(game)` callbacks for live read-outs. Panels
+// drag by their title bar (mouse or touch) and collapse via the title-bar grip.
+function overlay() { return G.overlay; }
+function addPanel(opts) { return G.addPanel(opts); }
+function panel(id) { return G.overlay.panelById(id); }
+function showOverlay(on) { if (on > 0.5) { G.overlay.visible = 1.0; } else { G.overlay.visible = 0.0; } }
+
 // ---- scene / cameras ---------------------------------------------------------
 function createScene() { return new Scene(); }
 function group() { let g = new Object3D(); g.nodeType = "group"; return g; }

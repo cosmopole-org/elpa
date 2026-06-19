@@ -28,7 +28,9 @@ callback and call `startGame()` — they never touch the GPU.
 | `40-binary` · `45-gltf` | Base64 + little-endian readers (incl. an arithmetic IEEE-754 `f32` decoder) and a full **glTF 2.0 / GLB loader** (accessors, bufferViews, nodes, PBR materials). |
 | `50-physics` | `Box3` / `Sphere` bounding volumes, a `Ray`, and a `Raycaster` for picking, line-of-sight and AABB collision. |
 | `60-renderer` | The forward Blinn-Phong renderer: the WGSL pipeline and the per-frame `gpu.submit` command-tree builder. |
-| `70-engine` · `80-api` | The `Game` runtime (loop, input, picking), an `OrbitController` turntable camera (drag-orbit / wheel-zoom / pan), and the `new`-free public constructors + host entry points. |
+| `70-engine` | The `Game` runtime (loop, input, picking) and an `OrbitController` turntable camera (drag-orbit / wheel-zoom / pan). |
+| `75-overlay` | The 2D **HUD**: floating, **draggable** (mouse + touch) `UIPanel` windows of labels, gauges and buttons, composited over the 3D scene in a second alpha-blended pass. A compact 3×5 bitmap font keeps it self-contained (no font atlas). |
+| `80-api` | The `new`-free public constructors + host entry points. |
 
 ## Hello, scene
 
@@ -70,6 +72,22 @@ Add a turntable camera (drag to orbit, scroll/pinch to zoom, right-drag to pan):
 enableOrbit({ target: v3(0, 1, 0), distance: 30, minDistance: 8, maxDistance: 65 });
 ```
 
+Float a draggable HUD panel over the scene (mouse **or** touch — drag the title
+bar to move it, tap the title-bar grip to collapse it):
+
+```javascript
+addPanel({ title: "STATS", x: 16, y: 16, w: 216 })
+    .label((g) => concat("FPS    ", str(floor(g.fps))))
+    .label((g) => concat("MESHES  ", str(g.renderer.stats.meshes)))
+    .bar("ZOOM", (g) => 0.6, [0.45, 0.78, 1.0, 1.0])      // a 0..1 gauge
+    .button("RESET VIEW", (g) => { resetView(); });        // a finger-sized button
+```
+
+Rows take constants or `fn(game)` callbacks for live read-outs; the HUD captures
+any gesture that lands on a panel, so dragging a window never orbits the scene
+behind it. Panels are positioned and sized in *logical* pixels, so they stay
+crisp and finger-friendly across desktop and high-DPI mobile.
+
 See [`assets/demo.js`](assets/demo.js) for a complete **low-poly island village**:
 a round grass island ringed by a sandy beach in an open sea, a cluster of
 cottages (walls, pyramid roofs, glowing windows, chimneys), scattered trees,
@@ -78,6 +96,12 @@ hopping villagers and drifting clouds — ~100 meshes built from a handful of
 shared geometries, lit by a warm sun and a cool sky fill, explored with the
 orbit camera. The scene is assembled through small builder functions
 (`makeTree`, `makeHouse`, `makeWindmill`, …).
+
+Floating over the village are four **draggable HUD panels** — live village stats
+(frame rate, mesh / draw counts, clock), camera controls (a zoom gauge with
+zoom-in/out and reset buttons), simulation toggles (pause, show/hide clouds) and
+a collapsible help card — each a window the player drags anywhere by its title
+bar with a mouse or a finger.
 
 Two pedestals in the square display gems **loaded at runtime through the glTF/GLB
 loader** rather than built from primitives: a faceted crystal from a base64

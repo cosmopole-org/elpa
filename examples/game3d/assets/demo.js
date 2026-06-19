@@ -21,6 +21,11 @@
 
 let WATER_Y = -0.55;
 
+// Live HUD / simulation state, shared between the panel callbacks and the update
+// loop: a smoothed frame rate, a pause flag and a clouds-visible flag the buttons
+// flip and the loop reads.
+let sim = { fps: 60.0, paused: 0.0, clouds: 1.0 };
+
 // ---- shared assets: cached geometries + materials, reused by every mesh ------
 function buildGeometries(A) {
     A.gBox = boxGeometry(1.0, 1.0, 1.0);
@@ -162,6 +167,64 @@ function makeCloud(A, x, y, z, s) {
     return g;
 }
 
+// ---- HUD: floating, draggable panels over the scene --------------------------
+// A little game UI composited on top of the 3D village: live read-outs (frame
+// rate, scene size, clock), camera controls and simulation toggles, each in its
+// own window the player can drag anywhere — by the title bar — with a mouse or a
+// finger, and collapse via the title-bar grip. Rows take `fn(game)` callbacks for
+// live values, so the panels track the running scene every frame.
+function camZoomFrac(g) {
+    let c = orbitControls(); if (c == 0) { return 0.0; }
+    return (c.distance - c.minDistance) / (c.maxDistance - c.minDistance);
+}
+function resetView() {
+    let c = orbitControls(); if (c == 0) { return 0; }
+    c.distance = 30.0; c.yaw = 0.7; c.pitch = 0.5; c.target = v3(0.0, 1.2, 0.0); c.apply();
+    return 0;
+}
+function setGroupVisible(g, on) {
+    g.visible = on;
+    for (let i = 0; i < len(g.children); i++) { g.children[i].visible = on; }
+    return 0;
+}
+function toggleClouds(clouds) {
+    if (sim.clouds > 0.5) { sim.clouds = 0.0; } else { sim.clouds = 1.0; }
+    for (let i = 0; i < len(clouds); i++) { setGroupVisible(clouds[i], sim.clouds); }
+    return 0;
+}
+function statusText() { if (sim.paused > 0.5) { return "PAUSED"; } return "RUNNING"; }
+function cloudsText() { if (sim.clouds > 0.5) { return "CLOUDS ON"; } return "CLOUDS OFF"; }
+
+function buildHud(clouds) {
+    // Live village stats.
+    addPanel({ id: "stats", title: "VILLAGE", x: 16.0, y: 16.0, w: 216.0 })
+        .label((g) => { return concat("FPS    ", str(floor(sim.fps))); })
+        .label((g) => { return concat("MESHES  ", str(g.renderer.stats.meshes)); })
+        .label((g) => { return concat("DRAWS   ", str(g.renderer.stats.drawCalls)); })
+        .label((g) => { return concat(concat("CLOCK   ", str(floor(g.time))), "S"); });
+
+    // Camera read-out + touch-friendly controls.
+    addPanel({ id: "camera", title: "CAMERA", x: 16.0, y: 188.0, w: 216.0 })
+        .bar("ZOOM", (g) => { return camZoomFrac(g); }, [0.45, 0.78, 1.0, 1.0])
+        .button("ZOOM IN", (g) => { orbitControls().zoomBy(0.85); })
+        .button("ZOOM OUT", (g) => { orbitControls().zoomBy(1.18); })
+        .button("RESET VIEW", (g) => { resetView(); });
+
+    // Simulation toggles.
+    addPanel({ id: "controls", title: "CONTROLS", x: 16.0, y: 408.0, w: 216.0 })
+        .button("PAUSE / RESUME", (g) => { if (sim.paused > 0.5) { sim.paused = 0.0; } else { sim.paused = 1.0; } })
+        .label((g) => { return concat("STATE   ", statusText()); })
+        .button("TOGGLE CLOUDS", (g) => { toggleClouds(clouds); })
+        .label((g) => { return cloudsText(); });
+
+    // A short how-to, collapsed by default to stay out of the way.
+    addPanel({ id: "help", title: "HELP", x: 16.0, y: 596.0, w: 216.0, collapsed: 1.0 })
+        .label("DRAG TITLE: MOVE PANEL")
+        .label("DRAG SCENE: ORBIT")
+        .label("WHEEL / PINCH: ZOOM");
+    return 0;
+}
+
 // ---- scene assembly (each section is its own scope) --------------------------
 function buildLighting(scene) {
     scene.add(directionalLight([1.0, 0.96, 0.85], 1.15, v3(-0.45, -1.0, -0.35))); // warm sun
@@ -236,7 +299,12 @@ useScene(scene);
 // A turntable camera rig (drag-orbit, wheel-zoom, right-drag-pan).
 enableOrbit({ target: v3(0.0, 1.2, 0.0), distance: 30.0, minDistance: 8.0, maxDistance: 65.0, yaw: 0.7, pitch: 0.5 });
 
+// Floating, draggable HUD panels composited over the scene.
+buildHud(clouds);
+
 onUpdate((dt, g) => {
+    sim.fps = sim.fps * 0.92 + (1.0 / max(dt, 0.0001)) * 0.08;  // smoothed frame rate
+    if (sim.paused > 0.5) { return 0; }        // "PAUSE" freezes the simulation
     let t = g.time;
     millHub.rotateZ(dt * 0.7);                 // the windmill sails turn
     shrine.gem.rotateY(dt * 0.9);              // the loaded GLB crystal spins
