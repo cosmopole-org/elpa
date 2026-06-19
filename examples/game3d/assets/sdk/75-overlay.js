@@ -18,6 +18,13 @@
 // The pass is given no `id`, so it re-records every frame the surface repaints
 // (exactly when the 3D scene or a panel changed); when nothing moves, its vertex
 // buffer is byte-identical and the engine's content cache skips the whole frame.
+//
+// The geometry is cached on the CPU too: each frame the overlay fingerprints its
+// visible content (dims, panel positions/state, and the resolved text/gauge
+// values) and only rebuilds the vertex soup when that signature changes. So while
+// the scene rotates with a static HUD, the per-frame overlay cost is just the
+// cheap signature — not a full re-tessellation of every glyph quad. (The bitmap
+// font run-length-merges adjacent lit cells per row to keep the soup small.)
 
 // The 2D overlay shader: a pass-through clip-space position with a per-vertex
 // RGBA colour, alpha-blended over the scene. Positions arrive already in NDC
@@ -89,16 +96,24 @@ class UIBatch {
     // Proportional width of `str` at pixel-cell size `s` (4 cells / glyph: 3 + gap).
     textWidth(str, s) { return len(str) * 4.0 * s; }
     // Lay `str` out from the bitmap font with its top-left at (x, y); each "on"
-    // cell becomes an `s`×`s` quad. Returns the advanced x (for chaining).
+    // cell becomes an `s`×`s` quad, with consecutive lit cells in a row merged
+    // into a single quad (run-length) to keep the vertex count down. Returns the
+    // advanced x (for chaining).
     text(str, x, y, s, c) {
         let up = upper(str); let n = len(up); let cx = x;
         for (let i = 0; i < n; i++) {
             let ch = charAt(up, i); let g = UI_GLYPHS[" "];
             if (has(UI_GLYPHS, ch)) { g = UI_GLYPHS[ch]; }
             for (let r = 0; r < 5; r++) {
+                let run = 0; let start = 0;
                 for (let col = 0; col < 3; col++) {
-                    if (charAt(g, r * 3 + col) == "1") { this.rect(cx + col * s, y + r * s, s, s, c); }
+                    if (charAt(g, r * 3 + col) == "1") {
+                        if (run < 0.5) { run = 1.0; start = col; } else { run = run + 1.0; }
+                    } else {
+                        if (run > 0.5) { this.rect(cx + start * s, y + r * s, run * s, s, c); run = 0; }
+                    }
                 }
+                if (run > 0.5) { this.rect(cx + start * s, y + r * s, run * s, s, c); }
             }
             cx = cx + 4.0 * s;
         }
@@ -179,6 +194,10 @@ class Overlay {
         this.visible = 1.0;
         this.W = 1280.0; this.H = 720.0;   // last build dims (for drag clamping)
         this.active = 0;                    // panel currently captured by a drag
+        // Geometry cache: the HUD rebuilds its vertex soup only when its visible
+        // content changes (a cheap per-frame signature), not every frame — so a
+        // static HUD costs nothing to draw while the 3D scene rotates beneath it.
+        this.cacheSig = "?"; this.cacheVerts = 0; this.cacheCount = 0;
         this.theme = {
             body: [0.07, 0.09, 0.15, 0.84],
             title: [0.16, 0.40, 0.70, 0.96],
@@ -277,27 +296,65 @@ class Overlay {
         return captured;
     }
 
+    // A cheap fingerprint of everything that affects the HUD's geometry this
+    // frame: the dims, and per visible panel its id, position, collapse/drag state
+    // and the *resolved* content of each row (dynamic `fn(game)` values are
+    // evaluated here, once, and stashed on the row for the paint pass). When the
+    // signature is unchanged the cached vertex soup is reused verbatim — the
+    // expensive geometry build is skipped entirely.
+    buildSignature(game, w, h) {
+        let parts = [];
+        push(parts, str(floor(w))); push(parts, str(floor(h)));
+        for (let i = 0; i < len(this.panels); i++) {
+            let p = this.panels[i];
+            if (p.visible > 0.5) {
+                push(parts, p.id);
+                push(parts, str(floor(p.x))); push(parts, str(floor(p.y)));
+                push(parts, str(floor(p.collapsed))); push(parts, str(floor(p.dragging)));
+                if (p.collapsed < 0.5) {
+                    for (let r = 0; r < len(p.rows); r++) {
+                        let row = p.rows[r];
+                        if (row.type == "label") { row.rtext = p.rowText(row, game); push(parts, row.rtext); }
+                        else if (row.type == "bar") { row.rval = p.barValue(row, game); push(parts, concat(row.label, str(floor(row.rval * 1000.0)))); }
+                        else if (row.type == "button") { push(parts, row.label); }
+                    }
+                }
+            }
+        }
+        return join(parts, "|");
+    }
+
     // ---- build the HUD render pass ------------------------------------------
     // Returns { resources, pass } to splice into the frame the 3D renderer submits,
     // or 0 when there is nothing to draw.
     build(game, w, h, colorFormat) {
         this.W = w; this.H = h;
         if (this.visible < 0.5) { return 0; }
-        let b = new UIBatch(); let drew = 0.0;
+        // Keep every panel on-screen first (a desktop layout must not strand a
+        // window off a small phone viewport) — this feeds into the signature.
         for (let i = 0; i < len(this.panels); i++) {
             let p = this.panels[i];
             if (p.visible > 0.5) {
-                // Keep every panel on-screen, so a layout authored for a desktop
-                // never strands a window off a small phone viewport.
                 p.x = clamp(p.x, 4.0, max(4.0, w - p.w - 4.0));
                 p.y = clamp(p.y, 4.0, max(4.0, h - p.titleH - 4.0));
-                this.drawPanel(b, p, game); drew = 1.0;
             }
         }
-        if (drew < 0.5) { return 0; }
-        if (b.vertexCount() < 1) { return 0; }
 
-        let verts = b.finish(w, h);
+        // Rebuild the vertex soup only when the visible HUD actually changed.
+        let sig = this.buildSignature(game, w, h);
+        if (sig != this.cacheSig) {
+            let b = new UIBatch(); let drew = 0.0;
+            for (let i = 0; i < len(this.panels); i++) {
+                let p = this.panels[i];
+                if (p.visible > 0.5) { this.drawPanel(b, p, game); drew = 1.0; }
+            }
+            this.cacheSig = sig; this.cacheCount = b.vertexCount();
+            if (drew > 0.5) { this.cacheVerts = b.finish(w, h); } else { this.cacheVerts = 0; }
+        }
+        if (this.cacheVerts == 0) { return 0; }
+        if (this.cacheCount < 1) { return 0; }
+
+        let verts = this.cacheVerts;
         let res = [
             { kind: "shader", id: "g3d.ui.shader", wgsl: UI_WGSL },
             this.pipelineDesc(colorFormat),
@@ -305,7 +362,7 @@ class Overlay {
         let cmds = [
             { cmd: "setPipeline", pipeline: "g3d.ui.pipe" },
             { cmd: "setVertexBuffer", slot: 0, buffer: "g3d.ui.vbo", offset: 0 },
-            { cmd: "draw", vertex_count: b.vertexCount(), instance_count: 1, first_vertex: 0, first_instance: 0 }];
+            { cmd: "draw", vertex_count: this.cacheCount, instance_count: 1, first_vertex: 0, first_instance: 0 }];
         // No `id`: a HUD pass re-records whenever the surface repaints, and the
         // engine still skips it when the vertex bytes are unchanged frame to frame.
         let pass = { op: "renderPass",
@@ -359,19 +416,20 @@ class Overlay {
     }
     drawRow(b, p, row, x, y, w, h, game) {
         let th = this.theme;
+        // Dynamic values were resolved in `buildSignature` and stashed on the row,
+        // so the paint pass never re-evaluates the `fn(game)` callbacks.
         if (row.type == "label") {
-            b.text(p.rowText(row, game), x, y + (h - 5.0 * p.fontS) / 2.0, p.fontS, th.text);
+            b.text(row.rtext, x, y + (h - 5.0 * p.fontS) / 2.0, p.fontS, th.text);
             return 0;
         }
         if (row.type == "bar") {
             b.text(row.label, x, y, p.fontS, th.dim);
-            let valTxt = str(floor(p.barValue(row, game) * 100.0));
-            let vt = concat(valTxt, "%"); let vw = b.textWidth(vt, p.fontS);
+            let vt = concat(str(floor(row.rval * 100.0)), "%"); let vw = b.textWidth(vt, p.fontS);
             b.text(vt, x + w - vw, y, p.fontS, th.text);
             let by = y + p.barLabelH;
             b.rect(x, by, w, p.barH, th.track);
             let col = th.button; if (has(row, "color")) { col = row.color; }
-            b.rect(x, by, w * p.barValue(row, game), p.barH, col);
+            b.rect(x, by, w * row.rval, p.barH, col);
             return 0;
         }
         if (row.type == "button") {

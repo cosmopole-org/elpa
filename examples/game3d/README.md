@@ -120,6 +120,13 @@ path runs on the live GPU in the web/native hosts, not only in the headless test
   keyed by geometry id (built once, then re-referenced — never re-tessellated);
   only the small per-frame uniforms (camera, transforms, lights) are refilled in
   place. Elpa's resource cache turns static geometry into zero per-frame GPU work.
+* **The HUD is cached, not re-tessellated.** The overlay fingerprints its visible
+  content each frame (dims, panel positions/state, resolved text/gauge values) and
+  only rebuilds its vertex soup when that signature changes — so a static HUD adds
+  ~no per-frame CPU while the scene rotates beneath it (`tests/bench.rs` measures
+  interpreter steps/frame: the HUD's steady-state overhead is ~1%, down from ~4×
+  when it rebuilt every frame). The bitmap font run-length-merges lit cells to keep
+  the soup small.
 * **No bitwise ops, no `&&`/`||`/`?:`** — the engine is written in the JS subset
   Elpa's in-VM front-end supports (nested `if` + numeric flags, like the Material
   kit). The glTF `f32` decoder reconstructs IEEE-754 singles with pure arithmetic.
@@ -127,7 +134,7 @@ path runs on the live GPU in the web/native hosts, not only in the headless test
 ## Build & test
 
 ```bash
-cargo test  -p elpa-game3d                     # headless end-to-end + WGSL validation
+cargo test  -p elpa-game3d                     # headless end-to-end + WGSL validation + HUD frame-cost bench
 cargo run   -p elpa-game3d --bin build_bytecode # (re)compile the JS to assets/demo.bc
 ```
 
