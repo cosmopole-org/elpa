@@ -19,6 +19,9 @@ function onUpdate(fn) { G.onUpdate(fn); }
 function onInput(fn) { G.onInput(fn); }
 function onResized(fn) { G.onResized(fn); }
 function startGame() { G.start(); }
+// Attach a turntable camera rig (drag-rotate, wheel-zoom, secondary-drag-pan).
+function enableOrbit(opts) { return G.enableOrbit(opts); }
+function orbitControls() { return G.controls; }
 
 // ---- scene / cameras ---------------------------------------------------------
 function createScene() { return new Scene(); }
@@ -30,12 +33,16 @@ function orthographicCamera(halfHeight, near, far) { return new OrthographicCame
 function boxGeometry(w, h, d) { return BoxGeometry(w, h, d); }
 function sphereGeometry(r, stacks, sectors) { return SphereGeometry(r, stacks, sectors); }
 function planeGeometry(size, segments) { return PlaneGeometry(size, segments); }
+function cylinderGeometry(rTop, rBottom, height, seg) { return CylinderGeometry(rTop, rBottom, height, seg); }
+function coneGeometry(radius, height, seg) { return ConeGeometry(radius, height, seg); }
 function geometry(positions, normals, uvs, indices) { return new Geometry(positions, normals, uvs, indices); }
 function material(opts) { return new Material(opts); }
 function mesh(geo, mat) { return new Mesh(geo, mat); }
 function boxMesh(w, h, d, opts) { return new Mesh(BoxGeometry(w, h, d), new Material(opts)); }
 function sphereMesh(r, opts) { return new Mesh(SphereGeometry(r, 16, 24), new Material(opts)); }
 function planeMesh(size, opts) { return new Mesh(PlaneGeometry(size, 1), new Material(opts)); }
+function cylinderMesh(rTop, rBottom, height, seg, opts) { return new Mesh(CylinderGeometry(rTop, rBottom, height, seg), new Material(opts)); }
+function coneMesh(radius, height, seg, opts) { return new Mesh(ConeGeometry(radius, height, seg), new Material(opts)); }
 
 // ---- lights ------------------------------------------------------------------
 function directionalLight(color, intensity, dir) { return new DirectionalLight(color, intensity, dir); }

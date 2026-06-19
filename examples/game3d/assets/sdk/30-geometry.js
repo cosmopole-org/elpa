@@ -20,6 +20,11 @@ function nextMaterialId() { __mat_seq = __mat_seq + 1; return __mat_seq; }
 let VERTEX_STRIDE = 32;
 let VERTEX_FLOATS = 8;
 
+// Append helpers — the VM's `push` builtin takes a single value, so these keep
+// the primitive builders readable when emitting xyz / uv tuples.
+function push3(a, x, y, z) { push(a, x); push(a, y); push(a, z); }
+function push2(a, u, v) { push(a, u); push(a, v); }
+
 // ----------------------------------------------------------------- Geometry ----
 // `positions`/`normals` are flat xyz arrays (length 3·N); `uvs` a flat xy array
 // (length 2·N); `indices` a flat triangle-index array. Pass `0` for normals to
@@ -184,6 +189,55 @@ function PlaneGeometry(size, segments) {
         }
     }
     return new Geometry(pos, nrm, uv, idx);
+}
+
+// A cylinder / truncated cone aligned to +Y: `rTop` and `rBottom` are the cap
+// radii (set `rTop = 0` for a cone), `height` the full height, `seg` the radial
+// segment count (use small counts — 4 makes a pyramid, 6–8 a low-poly trunk).
+// Side normals are tilted by the cone slope; flat caps are added when their
+// radius is non-zero. Winding is CCW-outward to match the back-face-cull pipeline.
+function CylinderGeometry(rTop, rBottom, height, seg) {
+    if (isNull(rTop)) { rTop = 0.5; }
+    if (isNull(rBottom)) { rBottom = 0.5; }
+    if (isNull(height)) { height = 1.0; }
+    if (isNull(seg)) { seg = 16; }
+    let pos = []; let nrm = []; let uv = []; let idx = [];
+    let hh = height * 0.5; let slope = (rBottom - rTop) / height;
+    // Side: a top and bottom vertex per radial step (2 verts each).
+    for (let i = 0; i <= seg; i++) {
+        let a = TAU() * i / seg; let ca = cos(a); let sa = sin(a);
+        let nl = sqrt(ca * ca + slope * slope + sa * sa); if (nl < EPSILON) { nl = 1.0; }
+        push3(pos, ca * rTop, hh, sa * rTop); push3(nrm, ca / nl, slope / nl, sa / nl); push2(uv, i / seg, 0.0);
+        push3(pos, ca * rBottom, -hh, sa * rBottom); push3(nrm, ca / nl, slope / nl, sa / nl); push2(uv, i / seg, 1.0);
+    }
+    for (let i = 0; i < seg; i++) {
+        let a = 2 * i; let b = 2 * i + 1; let d = 2 * (i + 1); let c = 2 * (i + 1) + 1;
+        push3(idx, a, d, b); push3(idx, d, c, b);
+    }
+    // Top cap (skipped for a cone, rTop == 0).
+    if (rTop > EPSILON) {
+        let center = len(pos) / 3;
+        push3(pos, 0.0, hh, 0.0); push3(nrm, 0.0, 1.0, 0.0); push2(uv, 0.5, 0.5);
+        let ring = len(pos) / 3;
+        for (let i = 0; i <= seg; i++) { let a = TAU() * i / seg; push3(pos, cos(a) * rTop, hh, sin(a) * rTop); push3(nrm, 0.0, 1.0, 0.0); push2(uv, 0.5 + cos(a) * 0.5, 0.5 + sin(a) * 0.5); }
+        for (let i = 0; i < seg; i++) { push3(idx, center, ring + i + 1, ring + i); }
+    }
+    // Bottom cap.
+    if (rBottom > EPSILON) {
+        let center = len(pos) / 3;
+        push3(pos, 0.0, -hh, 0.0); push3(nrm, 0.0, -1.0, 0.0); push2(uv, 0.5, 0.5);
+        let ring = len(pos) / 3;
+        for (let i = 0; i <= seg; i++) { let a = TAU() * i / seg; push3(pos, cos(a) * rBottom, -hh, sin(a) * rBottom); push3(nrm, 0.0, -1.0, 0.0); push2(uv, 0.5 + cos(a) * 0.5, 0.5 + sin(a) * 0.5); }
+        for (let i = 0; i < seg; i++) { push3(idx, center, ring + i, ring + i + 1); }
+    }
+    return new Geometry(pos, nrm, uv, idx);
+}
+
+// A cone of base `radius` and `height` (a cylinder with a zero-radius top). With
+// `seg = 4` it is a square pyramid — the low-poly roof primitive.
+function ConeGeometry(radius, height, seg) {
+    if (isNull(radius)) { radius = 0.5; } if (isNull(height)) { height = 1.0; } if (isNull(seg)) { seg = 16; }
+    return CylinderGeometry(0.0, radius, height, seg);
 }
 
 // ----------------------------------------------------------------- Material ----

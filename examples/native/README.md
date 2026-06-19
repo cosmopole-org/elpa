@@ -31,7 +31,9 @@ cargo run --release            # build & run on the host OS
 ### Run the 3D game demo instead
 
 The same host can run the **Game3D engine demo** ([`examples/game3d`](../game3d)) —
-a lit, animated 3D scene from the object-oriented `elpa-game3d` SDK — by enabling
+a low-poly **island village** (terrain, sea, cottages, trees, a turning windmill,
+boats, villagers and clouds) from the object-oriented `elpa-game3d` SDK, with a
+turntable camera (drag to orbit, scroll to zoom, right-drag to pan) — by enabling
 the `game3d` feature, which embeds `game3d/assets/demo.bc` instead of the Material
 gallery:
 

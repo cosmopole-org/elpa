@@ -49,6 +49,24 @@ fn scene_uniform(app: &Elpa<HeadlessBackend>) -> Vec<f32> {
         .expect("scene uniform present")
 }
 
+/// Every per-object uniform this frame (each mesh's model + material), in id
+/// order — the bytes that change when meshes move even if the camera is still.
+fn model_uniforms(app: &Elpa<HeadlessBackend>) -> Vec<f32> {
+    let frame = app.last_frame().expect("frame");
+    let mut named: Vec<(String, Vec<f32>)> = frame
+        .resources
+        .iter()
+        .filter_map(|r| match r {
+            ResourceDesc::Buffer(b) if b.id.starts_with("g3d.model.") => {
+                b.data_f32.clone().map(|d| (b.id.clone(), d))
+            }
+            _ => None,
+        })
+        .collect();
+    named.sort_by(|a, b| a.0.cmp(&b.0));
+    named.into_iter().flat_map(|(_, d)| d).collect()
+}
+
 // ------------------------------------------------------------------ tests ------
 
 #[test]
@@ -88,13 +106,14 @@ fn demo_starts_and_draws_a_depth_tested_pass() {
     let rp = render_pass(&app);
     assert!(rp.depth_stencil.is_some(), "the 3D pass is depth-tested");
 
-    // One indexed draw per visible mesh: ground, cube, sphere, glow marker = 4.
+    // One indexed draw per visible mesh — the island village has ~100 (houses,
+    // trees, the windmill, boats, villagers, clouds, terrain).
     let draws: Vec<&RenderCommand> = rp
         .commands
         .iter()
         .filter(|c| matches!(c, RenderCommand::DrawIndexed { .. }))
         .collect();
-    assert_eq!(draws.len(), 4, "one indexed draw per mesh in the demo scene");
+    assert!(draws.len() > 60, "a populated scene: one indexed draw per mesh (got {})", draws.len());
 
     // The scene binds group 0 (camera + lights) and there is a depth texture.
     assert!(frame.resources.iter().any(|r| matches!(r, ResourceDesc::Texture(t) if t.id.starts_with("g3d.depth."))));
@@ -103,19 +122,50 @@ fn demo_starts_and_draws_a_depth_tested_pass() {
 
 #[test]
 fn animation_moves_the_scene() {
-    // The camera orbits and the cube spins each tick, so the camera/transform
-    // uniforms must change frame to frame.
+    // The windmill sails turn, clouds drift, boats bob and villagers hop each
+    // tick, so the per-object (model) uniforms must change frame to frame even
+    // though the orbit camera is still.
     let mut app = instance_for(&elpa_game3d::program());
     app.start();
-    let before = scene_uniform(&app);
+    let before = model_uniforms(&app);
 
     let mut moved = false;
     for _ in 0..6 {
         app.animate(16.0);
-        moved |= scene_uniform(&app) != before;
+        moved |= model_uniforms(&app) != before;
     }
-    assert!(moved, "animating moved the camera / scene");
+    assert!(moved, "animating moved the scene's objects");
     assert!(app.trap_reason().is_none(), "no trap while animating");
+}
+
+#[test]
+fn orbit_drag_rotates_the_camera() {
+    // Dragging the pointer must rotate the turntable camera, changing the view
+    // matrix in the scene uniform.
+    let mut app = instance_for(&elpa_game3d::program());
+    app.start();
+    let before = scene_uniform(&app);
+
+    app.send_event(&InputEvent::PointerDown { x: 640.0, y: 360.0, button: 0 });
+    app.send_event(&InputEvent::PointerMove { x: 900.0, y: 420.0 });
+    let after = scene_uniform(&app);
+
+    assert!(after != before, "dragging orbited the camera (view matrix changed)");
+    assert!(app.trap_reason().is_none(), "no trap while orbiting");
+}
+
+#[test]
+fn wheel_zoom_moves_the_camera() {
+    // The wheel zooms the orbit rig in/out, moving the camera position.
+    let mut app = instance_for(&elpa_game3d::program());
+    app.start();
+    let before = scene_uniform(&app);
+
+    app.send_event(&InputEvent::Wheel { x: 640.0, y: 360.0, delta_y: -240.0 });
+    let after = scene_uniform(&app);
+
+    assert!(after != before, "the wheel zoomed the camera");
+    assert!(app.trap_reason().is_none(), "no trap while zooming");
 }
 
 #[test]
