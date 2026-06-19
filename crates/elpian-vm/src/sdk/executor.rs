@@ -4361,6 +4361,38 @@ impl Executor {
                         let branch_true_end = regs[2].as_i64() as usize;
                         let branch_after_start = regs[3].as_i64() as usize;
                         if condition {
+                            // A loop re-evaluates its `LoopStmt` unit while still
+                            // *inside* the previous iteration's body scope: the body's
+                            // final instruction jumps back to the loop unit (see the
+                            // compiler's `loopStmt` emission), so the spent `loopBody`
+                            // scope is still on top here. Reclaim it before opening a
+                            // fresh one, so only ever **one** body scope is live and an
+                            // N-iteration loop stays O(N) — otherwise one empty scope
+                            // leaks per iteration, every variable lookup then walks an
+                            // ever-deeper chain (`find_val_globally`/`update_val_globally`),
+                            // and the loop degrades to O(N^2) time and O(N) memory
+                            // (reclaimed only when the whole function returns). Match by
+                            // tag **and** the body-start it was opened at, so nested
+                            // loops reclaim only their own bodies and the loop's first
+                            // entry (top scope is the enclosing frame, not a matching
+                            // `loopBody`) is left untouched. Closures created in the
+                            // body keep their captured environment alive through their
+                            // own `Rc`, so popping it from the active scope stack does
+                            // not disturb per-iteration captures. The exit path
+                            // (condition false) deliberately does **not** pre-pop: the
+                            // teardown cascade below reclaims the final body scope.
+                            let reentered_body = self
+                                .ctx
+                                .memory
+                                .last()
+                                .map(|s| {
+                                    let s = s.borrow();
+                                    s.tag == "loopBody" && s.frozen_start == branch_true_start
+                                })
+                                .unwrap_or(false);
+                            if reentered_body {
+                                self.pop_scope_governed();
+                            }
                             self.ctx
                                 .memory
                                 .last()
