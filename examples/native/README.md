@@ -45,6 +45,26 @@ cargo apk run --release --features game3d    # Android
 Regenerate the bytecode after editing the SDK with
 `cargo run -p elpa-game3d --bin build_bytecode`.
 
+### Run the Liquid Glass calculator instead
+
+The same host can run the **Liquid Glass calculator**
+([`examples/liquidglass`](../liquidglass)) — a feature-rich scientific calculator
+built on the `elpa-liquidglass` SDK: an in-VM expression engine (tokenizer +
+shunting-yard parser + RPN evaluator) wired to a responsive glass keypad with a
+BASIC/SCIENTIFIC switch, DEG/RAD + theme chips, memory keys and a tap-to-recall
+history — by enabling the `calculator` feature, which embeds
+`liquidglass/assets/calculator.bc` instead of the Material gallery:
+
+```bash
+cargo run --release --features calculator        # desktop
+cargo apk run --release --features calculator    # Android
+```
+
+Regenerate the bytecode after editing the SDK or the app with
+`cargo run -p elpa-liquidglass --bin build_bytecode`. The on-demand
+[`Build APK`](../../.github/workflows/android-apk.yml) workflow can also package
+it (pick `calculator`), committing `elpa-calculator.apk` to the repo root.
+
 A window opens with the Material demo. Click/tap controls, drag the slider, use
 the mouse wheel where supported, or press `d`, `Space`, `r`, `ArrowLeft`, and
 `ArrowRight` to exercise the demo keyboard handlers. Resizing reconfigures the
