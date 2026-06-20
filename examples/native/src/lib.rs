@@ -98,20 +98,27 @@ fn safe_area_insets(w: u32, h: u32) -> Insets {
 /// Material const to `demo.bc` / `graphics.bc` for the other Material apps.)
 /// Run with `cargo run --features liquidglass` to embed the **Liquid Glass UI
 /// kit** demo instead — Apple's iOS-26 glass material (a refractable wallpaper +
-/// glass chrome rendered in two GPU passes) from the `elpa-liquidglass` SDK.
-#[cfg(feature = "liquidglass")]
+/// glass chrome rendered in two GPU passes) from the `elpa-liquidglass` SDK. Run
+/// with `cargo run --features calculator` to embed the **Liquid Glass
+/// calculator** — a feature-rich scientific calculator (an in-VM expression
+/// engine + a responsive glass keypad) built on that same SDK.
+#[cfg(feature = "calculator")]
+const APP_BYTECODE: &[u8] = include_bytes!("../../liquidglass/assets/calculator.bc");
+#[cfg(all(feature = "liquidglass", not(feature = "calculator")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../liquidglass/assets/demo.bc");
-#[cfg(all(feature = "game3d", not(feature = "liquidglass")))]
+#[cfg(all(feature = "game3d", not(feature = "liquidglass"), not(feature = "calculator")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../game3d/assets/demo.bc");
-#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass")))]
+#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass"), not(feature = "calculator")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../material/assets/gallery.bc");
 
 /// The winit window title for the embedded app.
-#[cfg(feature = "liquidglass")]
+#[cfg(feature = "calculator")]
+const WINDOW_TITLE: &str = "Elpa — Liquid Glass calculator";
+#[cfg(all(feature = "liquidglass", not(feature = "calculator")))]
 const WINDOW_TITLE: &str = "Elpa — Liquid Glass demo";
-#[cfg(all(feature = "game3d", not(feature = "liquidglass")))]
+#[cfg(all(feature = "game3d", not(feature = "liquidglass"), not(feature = "calculator")))]
 const WINDOW_TITLE: &str = "Elpa — Game3D demo";
-#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass")))]
+#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass"), not(feature = "calculator")))]
 const WINDOW_TITLE: &str = "Elpa — Material demo";
 
 /// Everything that exists only while we hold a surface. On Android this is

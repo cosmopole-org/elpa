@@ -52,8 +52,21 @@ pub fn module_js() -> String {
 /// The interactive demo application, as JavaScript source. Uses [`module_js`].
 pub const DEMO_JS: &str = include_str!("../assets/demo.js");
 
-/// The full program a host runs: the SDK linked ahead of the app, in one VM.
-/// Pass the result to [`Elpa::new_from_js`](elpa::Elpa::new_from_js).
+/// The feature-rich calculator application, as JavaScript source. A second app
+/// built on the same SDK: an in-VM expression engine (tokenizer + shunting-yard
+/// parser + RPN evaluator over the standard library) wired to a responsive glass
+/// keypad with a BASIC/SCIENTIFIC switch, DEG/RAD + theme chips, memory keys and
+/// a tap-to-recall history. Uses [`module_js`].
+pub const CALCULATOR_JS: &str = include_str!("../assets/calculator.js");
+
+/// The full demo program a host runs: the SDK linked ahead of the showcase app,
+/// in one VM. Pass the result to [`Elpa::new_from_js`](elpa::Elpa::new_from_js).
 pub fn program() -> String {
     format!("{}\n{DEMO_JS}", module_js())
+}
+
+/// The full calculator program: the SDK linked ahead of the calculator app, in
+/// one VM. Pass the result to [`Elpa::new_from_js`](elpa::Elpa::new_from_js).
+pub fn calculator_program() -> String {
+    format!("{}\n{CALCULATOR_JS}", module_js())
 }

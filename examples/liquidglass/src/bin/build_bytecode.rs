@@ -16,7 +16,10 @@ use std::path::Path;
 use elpian_vm::api::compile_js_to_bytecode;
 
 fn programs() -> Vec<(&'static str, String)> {
-    vec![("demo.bc", elpa_liquidglass::program())]
+    vec![
+        ("demo.bc", elpa_liquidglass::program()),
+        ("calculator.bc", elpa_liquidglass::calculator_program()),
+    ]
 }
 
 fn main() {

@@ -57,12 +57,17 @@ type App = Elpa<WgpuBackend<'static>>;
 /// Build with `trunk build --features liquidglass` (or `--features liquidglass`
 /// on the wasm build) to embed the **Liquid Glass UI kit** demo instead — Apple's
 /// iOS-26 glass material (a refractable wallpaper + glass chrome rendered in two
-/// GPU passes), driven by the object-oriented `elpa-liquidglass` SDK.
-#[cfg(feature = "liquidglass")]
+/// GPU passes), driven by the object-oriented `elpa-liquidglass` SDK. Build with
+/// `trunk build --features calculator` to embed the **Liquid Glass calculator**
+/// instead — a feature-rich scientific calculator (an in-VM expression engine +
+/// a responsive glass keypad) built on that same SDK.
+#[cfg(feature = "calculator")]
+const APP_BYTECODE: &[u8] = include_bytes!("../../liquidglass/assets/calculator.bc");
+#[cfg(all(feature = "liquidglass", not(feature = "calculator")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../liquidglass/assets/demo.bc");
-#[cfg(all(feature = "game3d", not(feature = "liquidglass")))]
+#[cfg(all(feature = "game3d", not(feature = "liquidglass"), not(feature = "calculator")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../game3d/assets/demo.bc");
-#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass")))]
+#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass"), not(feature = "calculator")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../material/assets/gallery.bc");
 
 #[wasm_bindgen(start)]
