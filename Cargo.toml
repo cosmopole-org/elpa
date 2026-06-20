@@ -9,6 +9,7 @@ members = [
     "examples/sdk",
     "examples/material",
     "examples/game3d",
+    "examples/liquidglass",
 ]
 
 # The web example pulls in wgpu + web-sys and only targets wasm; keep it out of

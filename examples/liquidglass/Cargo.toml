@@ -1,0 +1,26 @@
+[package]
+name = "elpa-liquidglass"
+version = "0.1.0"
+edition = "2021"
+description = "A Liquid Glass (Apple iOS-26 style) UI-kit SDK delivered as JavaScript (assets/*.js) that Elpa compiles and runs directly on its VM. Renders the whole UI through one instanced pipeline in two GPU passes — a reduced-res backdrop capture plus a surface pass whose glass lenses refract it (SDF-normal refraction, edge chromatic aberration, multi-tap blur, directional specular, translucent tint). `lib` embeds the JS for host examples; an Elpa instance is built from it with Elpa::new_from_js."
+
+[lib]
+name = "elpa_liquidglass"
+
+[dependencies]
+# The kit ships as JavaScript source strings only; the library itself needs no
+# deps. The `build_bytecode` binary lowers the program to VM bytecode via the
+# VM's compiler front-end — a light, GPU-free dependency.
+elpian-vm = { path = "../../crates/elpian-vm" }
+
+[[bin]]
+name = "build_bytecode"
+path = "src/bin/build_bytecode.rs"
+
+[dev-dependencies]
+# Drive the JS UI kit end to end through a real (headless) Elpa instance + VM,
+# and lower the kit's JS to AST so its embedded WGSL can be validated.
+elpa = { path = "../../crates/elpa" }
+# Validate the kit's WGSL the same way wgpu does.
+naga = { version = "29", features = ["wgsl-in"] }
+serde_json = { workspace = true }
