@@ -54,10 +54,16 @@ type App = Elpa<WgpuBackend<'static>>;
 /// embed the **Game3D engine demo** instead — a lit, animated 3D scene driven by
 /// the object-oriented `elpa-game3d` SDK. Swap the Material const to
 /// `demo.bc` / `graphics.bc` for the other Material apps.
-#[cfg(not(feature = "game3d"))]
-const APP_BYTECODE: &[u8] = include_bytes!("../../material/assets/gallery.bc");
-#[cfg(feature = "game3d")]
+/// Build with `trunk build --features liquidglass` (or `--features liquidglass`
+/// on the wasm build) to embed the **Liquid Glass UI kit** demo instead — Apple's
+/// iOS-26 glass material (a refractable wallpaper + glass chrome rendered in two
+/// GPU passes), driven by the object-oriented `elpa-liquidglass` SDK.
+#[cfg(feature = "liquidglass")]
+const APP_BYTECODE: &[u8] = include_bytes!("../../liquidglass/assets/demo.bc");
+#[cfg(all(feature = "game3d", not(feature = "liquidglass")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../game3d/assets/demo.bc");
+#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass")))]
+const APP_BYTECODE: &[u8] = include_bytes!("../../material/assets/gallery.bc");
 
 #[wasm_bindgen(start)]
 pub fn start() {
