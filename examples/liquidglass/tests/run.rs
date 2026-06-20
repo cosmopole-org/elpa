@@ -41,6 +41,32 @@ fn kit_shader_is_valid_wgsl() {
     }
 }
 
+#[test]
+fn scene_texture_is_created_before_the_bind_group_that_uses_it() {
+    // Regression: the renderer creates resources in array order and resolves a
+    // bind group's textureView against already-created views, so the offscreen
+    // scene texture MUST precede bind group B (which samples it). The headless
+    // backend doesn't enforce this, but a real wgpu backend panics (black screen)
+    // if the order is wrong — so assert it here.
+    let mut app = instance();
+    app.start();
+    let frame = app.last_frame().expect("a frame");
+    let scene_idx = frame
+        .resources
+        .iter()
+        .position(|r| r.id().starts_with("elpa.lg.scene."))
+        .expect("scene texture present");
+    let bgb_idx = frame
+        .resources
+        .iter()
+        .position(|r| r.id() == "elpa.lg.bgB")
+        .expect("bind group B present");
+    assert!(
+        scene_idx < bgb_idx,
+        "scene texture ({scene_idx}) must be created before bind group B ({bgb_idx})"
+    );
+}
+
 fn instance() -> Elpa<HeadlessBackend> {
     Elpa::new_from_js(
         HeadlessBackend::default(),

@@ -133,11 +133,17 @@ class Glass {
         for (let i = 0; i < n; i++) { if (this.inst[i * 20 + 16] == KIND_GLASS) { return i; } }
         return -1;
     }
-    baseResources(sceneTex) {
+    baseResources(sceneTex, sw, sh) {
         let m = this.metrics;
         let res = concat(glassPipelineResources(), this.font.atlasTexRes());
         push(res, bufF32("elpa.lg.globals", ["UNIFORM", "COPY_DST"], [m.vw, m.vh, 0.0, 0.0]));
         push(res, bufF32("elpa.lg.inst", ["VERTEX", "COPY_DST"], this.inst));
+        // The offscreen scene texture must be *created before* the bind group that
+        // references it (the renderer builds resources in array order and looks the
+        // texture up while creating the bind group), so push it here first.
+        if (sceneTex != 0) {
+            push(res, { kind: "texture", id: sceneTex, size: { width: sw, height: sh }, format: SURFACE_FMT, usage: ["RENDER_ATTACHMENT", "TEXTURE_BINDING"] });
+        }
         // Bind group A: no live backdrop (atlas stands in; the glass branch that
         // would sample it never runs in the capture pass).
         push(res, { kind: "bindGroup", id: "elpa.lg.bgA", layout: "elpa.lg.bgl", entries: [
@@ -161,7 +167,7 @@ class Glass {
         let firstGlass = this.firstGlassInstance();
         if (firstGlass < 0) {
             // No glass this frame: one straight surface pass.
-            let res = this.baseResources(0);
+            let res = this.baseResources(0, 0, 0);
             let pass = { op: "renderPass", id: "elpa.lg.pass",
                 color_attachments: [{ view: { kind: "surface" }, load: "clear", clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
                 commands: [
@@ -174,8 +180,7 @@ class Glass {
         }
         let sw = ceil(m.vw / BD_SCALE); let sh = ceil(m.vh / BD_SCALE); if (sw < 1) { sw = 1; } if (sh < 1) { sh = 1; }
         let sceneTex = concat(concat(concat("elpa.lg.scene.", str(sw)), "x"), str(sh));
-        let res = this.baseResources(sceneTex);
-        push(res, { kind: "texture", id: sceneTex, size: { width: sw, height: sh }, format: SURFACE_FMT, usage: ["RENDER_ATTACHMENT", "TEXTURE_BINDING"] });
+        let res = this.baseResources(sceneTex, sw, sh);
         let uploads = this.font.atlasUploadCmds();
         // Pass A: capture the backdrop (instances before the first glass lens).
         let scenePass = { op: "renderPass", id: "elpa.lg.scenePass",
