@@ -19,6 +19,7 @@ on:
           - material
           - game3d
           - liquidglass
+          - calculator
         default: material
 
 permissions:
@@ -96,6 +97,7 @@ jobs:
           FEATURES=""
           if [ "${{ inputs.app }}" = "game3d" ]; then FEATURES="--features game3d"; fi
           if [ "${{ inputs.app }}" = "liquidglass" ]; then FEATURES="--features liquidglass"; fi
+          if [ "${{ inputs.app }}" = "calculator" ]; then FEATURES="--features calculator"; fi
           # `--lib` packages the Android cdylib (this crate also has a desktop bin).
           cargo apk build --release --lib $FEATURES
 
@@ -113,6 +115,7 @@ jobs:
           DEST=elpa.apk
           if [ "${{ inputs.app }}" = "game3d" ]; then DEST=elpa-game3d.apk; fi
           if [ "${{ inputs.app }}" = "liquidglass" ]; then DEST=elpa-liquidglass.apk; fi
+          if [ "${{ inputs.app }}" = "calculator" ]; then DEST=elpa-calculator.apk; fi
           cp examples/native/target/release/apk/elpa_native_example.apk "./$DEST"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

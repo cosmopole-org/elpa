@@ -48,11 +48,31 @@ Pointer/resize events flow into the engine unchanged (the demo casts a pick ray
 on tap). Regenerate the bytecode after editing the SDK with
 `cargo run -p elpa-game3d --bin build_bytecode`.
 
-The **GitHub Pages deploy builds both apps automatically** on every push: the
-Game3D demo at the site root (the default build uses `--features game3d`) and
-the Material gallery under `https://<owner>.github.io/<repo>/material/` — so the
-3D scene is what the site shows by default, with no manual step (see
-[`.github/workflows/deploy-pages.yml`](../../.github/workflows/deploy-pages.yml)).
+### Run the Liquid Glass calculator instead
+
+The same host can run the **Liquid Glass calculator**
+([`examples/liquidglass`](../liquidglass)) — a feature-rich scientific calculator
+built on the `elpa-liquidglass` SDK: an in-VM expression engine (tokenizer +
+shunting-yard parser + RPN evaluator) wired to a responsive glass keypad with a
+BASIC/SCIENTIFIC switch, DEG/RAD + theme chips, memory keys and a tap-to-recall
+history. Build with the `calculator` feature, which embeds
+`liquidglass/assets/calculator.bc`:
+
+```bash
+trunk build --release --features calculator
+# or, with wasm-pack:
+wasm-pack build --release -- --features calculator
+```
+
+Regenerate the bytecode after editing the SDK or the app with
+`cargo run -p elpa-liquidglass --bin build_bytecode`.
+
+The **GitHub Pages deploy builds every app automatically** on every push (see
+[`.github/workflows/deploy-pages.yml`](../../.github/workflows/deploy-pages.yml)):
+the Liquid Glass UI kit demo at the site root, and the **Liquid Glass calculator
+under `https://<owner>.github.io/<repo>/calculator/`**, the Game3D demo under
+`/game3d/` and the Material gallery under `/material/` — so each app is live with
+no manual step.
 
 ## What it shows
 
