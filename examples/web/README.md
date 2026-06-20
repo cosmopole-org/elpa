@@ -69,10 +69,10 @@ Regenerate the bytecode after editing the SDK or the app with
 
 The **GitHub Pages deploy builds every app automatically** on every push (see
 [`.github/workflows/deploy-pages.yml`](../../.github/workflows/deploy-pages.yml)):
-the Liquid Glass UI kit demo at the site root, and the **Liquid Glass calculator
-under `https://<owner>.github.io/<repo>/calculator/`**, the Game3D demo under
-`/game3d/` and the Material gallery under `/material/` — so each app is live with
-no manual step.
+the **Liquid Glass calculator at the site root**
+(`https://<owner>.github.io/<repo>/`), the Liquid Glass UI kit demo under
+`/glass/`, the Game3D demo under `/game3d/` and the Material gallery under
+`/material/` — so each app is live with no manual step.
 
 ## What it shows
 

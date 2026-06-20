@@ -57,20 +57,20 @@ jobs:
           cargo run -p elpa-game3d --bin build_bytecode
           cargo run -p elpa-liquidglass --bin build_bytecode
 
-      # Four apps share one Pages site: the Liquid Glass UI kit demo at the site
-      # root (`--features liquidglass`), the Liquid Glass calculator under
-      # `/calculator/`, the Game3D engine demo under `/game3d/`, and the Material
+      # Four apps share one Pages site: the Liquid Glass **calculator** at the
+      # site root (`--features calculator`), the Liquid Glass UI kit demo under
+      # `/glass/`, the Game3D engine demo under `/game3d/`, and the Material
       # gallery under `/material/`, each with the matching `--public-url` so its
       # asset URLs resolve. Build the root first (it writes the default `dist/`),
       # then the others into their own subdirs; each subsequent build only manages
       # its own dist, so they coexist in one upload.
-      - name: Build web example (Liquid Glass, site root)
+      - name: Build web example (Liquid Glass calculator, site root)
         working-directory: examples/web
-        run: trunk build --release --features liquidglass --public-url "/${{ github.event.repository.name }}/"
+        run: trunk build --release --features calculator --public-url "/${{ github.event.repository.name }}/"
 
-      - name: Build web example (Liquid Glass calculator, /calculator/)
+      - name: Build web example (Liquid Glass UI kit, /glass/)
         working-directory: examples/web
-        run: trunk build --release --features calculator --public-url "/${{ github.event.repository.name }}/calculator/" --dist dist/calculator
+        run: trunk build --release --features liquidglass --public-url "/${{ github.event.repository.name }}/glass/" --dist dist/glass
 
       - name: Build web example (Game3D, /game3d/)
         working-directory: examples/web
