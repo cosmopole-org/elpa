@@ -273,6 +273,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "elpa-liquidglass"
+version = "0.1.0"
+dependencies = [
+ "elpa",
+ "elpian-vm",
+ "naga",
+ "serde_json",
+]
+
+[[package]]
 name = "elpa-material"
 version = "0.1.0"
 dependencies = [

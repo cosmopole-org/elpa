@@ -96,16 +96,23 @@ fn safe_area_insets(w: u32, h: u32) -> Insets {
 /// `--features game3d` to embed the **Game3D engine demo** instead — a lit,
 /// animated 3D scene driven by the object-oriented `elpa-game3d` SDK. (Swap the
 /// Material const to `demo.bc` / `graphics.bc` for the other Material apps.)
-#[cfg(not(feature = "game3d"))]
-const APP_BYTECODE: &[u8] = include_bytes!("../../material/assets/gallery.bc");
-#[cfg(feature = "game3d")]
+/// Run with `cargo run --features liquidglass` to embed the **Liquid Glass UI
+/// kit** demo instead — Apple's iOS-26 glass material (a refractable wallpaper +
+/// glass chrome rendered in two GPU passes) from the `elpa-liquidglass` SDK.
+#[cfg(feature = "liquidglass")]
+const APP_BYTECODE: &[u8] = include_bytes!("../../liquidglass/assets/demo.bc");
+#[cfg(all(feature = "game3d", not(feature = "liquidglass")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../game3d/assets/demo.bc");
+#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass")))]
+const APP_BYTECODE: &[u8] = include_bytes!("../../material/assets/gallery.bc");
 
 /// The winit window title for the embedded app.
-#[cfg(not(feature = "game3d"))]
-const WINDOW_TITLE: &str = "Elpa — Material demo";
-#[cfg(feature = "game3d")]
+#[cfg(feature = "liquidglass")]
+const WINDOW_TITLE: &str = "Elpa — Liquid Glass demo";
+#[cfg(all(feature = "game3d", not(feature = "liquidglass")))]
 const WINDOW_TITLE: &str = "Elpa — Game3D demo";
+#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass")))]
+const WINDOW_TITLE: &str = "Elpa — Material demo";
 
 /// Everything that exists only while we hold a surface. On Android this is
 /// recreated on each `resumed` and torn down on each `suspended`.

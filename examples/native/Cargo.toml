@@ -20,6 +20,10 @@ default = []
 # `elpa-game3d` SDK) instead of the Material gallery. Build/run with
 # `cargo run --features game3d`.
 game3d = []
+# Embed the Liquid Glass UI kit demo (Apple iOS-26 glass material from the
+# object-oriented `elpa-liquidglass` SDK) instead. Build/run with
+# `cargo run --features liquidglass`.
+liquidglass = []
 
 [dependencies]
 elpa = { path = "../../crates/elpa", features = ["wgpu"] }
