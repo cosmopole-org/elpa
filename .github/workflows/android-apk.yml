@@ -18,6 +18,7 @@ on:
         options:
           - material
           - game3d
+          - liquidglass
         default: material
 
 permissions:
@@ -73,6 +74,7 @@ jobs:
         run: |
           cargo run -p elpa-material --bin build_bytecode
           cargo run -p elpa-game3d --bin build_bytecode
+          cargo run -p elpa-liquidglass --bin build_bytecode
 
       # A throwaway keystore generated per run. cargo-apk reads the path and
       # password from these env vars (no secrets committed to the repo).
@@ -93,6 +95,7 @@ jobs:
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/${NDK_VERSION}"
           FEATURES=""
           if [ "${{ inputs.app }}" = "game3d" ]; then FEATURES="--features game3d"; fi
+          if [ "${{ inputs.app }}" = "liquidglass" ]; then FEATURES="--features liquidglass"; fi
           # `--lib` packages the Android cdylib (this crate also has a desktop bin).
           cargo apk build --release --lib $FEATURES
 
@@ -109,6 +112,7 @@ jobs:
           # builds don't clobber each other at the repo root.
           DEST=elpa.apk
           if [ "${{ inputs.app }}" = "game3d" ]; then DEST=elpa-game3d.apk; fi
+          if [ "${{ inputs.app }}" = "liquidglass" ]; then DEST=elpa-liquidglass.apk; fi
           cp examples/native/target/release/apk/elpa_native_example.apk "./$DEST"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

@@ -45,26 +45,31 @@ jobs:
       - name: Install Trunk
         run: cargo install --locked trunk
 
-      # Compile the Material app's JavaScript to VM bytecode *now*, at deploy
-      # time, into examples/material/assets/*.bc. The web example embeds that
-      # bytecode (include_bytes!) and loads it with Elpa::new_from_bytecode, so
-      # the browser never runs the JS/AST front-end — the compiler phase has
-      # already happened here in the build. Both apps are compiled; the web crate
-      # embeds whichever its `game3d` feature selects.
+      # Compile each app's JavaScript to VM bytecode *now*, at deploy time, into
+      # examples/*/assets/*.bc. The web example embeds that bytecode
+      # (include_bytes!) and loads it with Elpa::new_from_bytecode, so the browser
+      # never runs the JS/AST front-end — the compiler phase has already happened
+      # here in the build. All apps are compiled; the web crate embeds whichever
+      # its feature selects.
       - name: Compile apps to bytecode
         run: |
           cargo run -p elpa-material --bin build_bytecode
           cargo run -p elpa-game3d --bin build_bytecode
+          cargo run -p elpa-liquidglass --bin build_bytecode
 
-      # Two apps share one Pages site: the Game3D engine demo at the site root
-      # (the default build now uses `--features game3d`) and the Material gallery
-      # under `/<repo>/material/`, each with the matching `--public-url` so its
-      # asset URLs resolve. Build Game3D first (it writes the default `dist/`),
-      # then Material into the `dist/material` subdir; the second build only
-      # manages its own dist, so the two coexist in one upload.
-      - name: Build web example (Game3D, site root)
+      # Three apps share one Pages site: the Liquid Glass UI kit demo at the site
+      # root (`--features liquidglass`), the Game3D engine demo under `/game3d/`,
+      # and the Material gallery under `/material/`, each with the matching
+      # `--public-url` so its asset URLs resolve. Build the root first (it writes
+      # the default `dist/`), then the others into their own subdirs; each
+      # subsequent build only manages its own dist, so they coexist in one upload.
+      - name: Build web example (Liquid Glass, site root)
         working-directory: examples/web
-        run: trunk build --release --features game3d --public-url "/${{ github.event.repository.name }}/"
+        run: trunk build --release --features liquidglass --public-url "/${{ github.event.repository.name }}/"
+
+      - name: Build web example (Game3D, /game3d/)
+        working-directory: examples/web
+        run: trunk build --release --features game3d --public-url "/${{ github.event.repository.name }}/game3d/" --dist dist/game3d
 
       - name: Build web example (Material, /material/)
         working-directory: examples/web
