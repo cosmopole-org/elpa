@@ -71,6 +71,31 @@ The SDK is built from ES6 `class`es, concatenated in dependency order by `lib.rs
 | `assets/sdk/40-runtime.js` | `ComponentNode` + the `Glass` runtime: mount, partial update, the per-frame animation clock, the event loop, and the **two-pass `gpu.submit` frame builder**. |
 | `assets/sdk/50-api.js` | The single `Glass` instance, the public widget constructors, `defineComponent`/`runApp`, the theme / responsive / font controls and the capability-gated platform-service wrappers. |
 | `assets/demo.js` | The showcase app: a glass `Scaffold` (app bar, body of glass cards, a floating glass `NavigationBar`, an accent `Fab`, a `BottomSheet`) wired to state. |
+| `assets/calculator.js` | The **calculator app**: a self-contained expression engine (tokenizer + shunting-yard parser + RPN evaluator over the VM standard library — precedence, right-assoc power, unary minus, parentheses, `sin`/`cos`/`tan`/`ln`/`log`/`sqrt`/`exp`/`abs`, `PI`/`E`, factorial, percent) plus a number formatter, wired to a responsive glass keypad (`Row`+`Expanded` even-fill keys), a BASIC/SCIENTIFIC switch, DEG/RAD + theme chips, memory keys (`MC`/`MR`/`M+`/`M-`) and a tap-to-recall history. The app never touches the GPU. |
+
+## A second app: the calculator
+
+The kit ships a second application on the same SDK — a feature-rich scientific
+calculator. It is a clean illustration that an Elpa app is *just* JavaScript:
+the entire arithmetic core (lexer, a shunting-yard parser with operator
+precedence and a Reverse-Polish evaluator) is plain VM code over the standard
+math library, with **no `eval` and no host calls**, and the UI is composed from
+the same glass widgets as the showcase. It is responsive (larger keys + type on a
+phone, a denser centred column on a wide window) and scrolls if a small screen
+can't fit the scientific keypad.
+
+Build its bytecode and run it in the host examples:
+
+```bash
+cargo run  -p elpa-liquidglass --bin build_bytecode   # writes assets/demo.bc + assets/calculator.bc
+cargo test -p elpa-liquidglass --test calculator       # drives the calculator on a headless Elpa
+```
+
+```bash
+# In the host examples (each loads examples/liquidglass/assets/calculator.bc):
+cargo run --manifest-path examples/native/Cargo.toml --features calculator   # desktop window
+trunk build --features calculator                                            # web (from examples/web)
+```
 
 ## Writing an app
 

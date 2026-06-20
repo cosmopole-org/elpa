@@ -18,6 +18,10 @@ game3d = []
 # object-oriented `elpa-liquidglass` SDK) instead. Build with
 # `trunk build --features liquidglass`.
 liquidglass = []
+# Embed the Liquid Glass calculator (a feature-rich scientific calculator built
+# on the `elpa-liquidglass` SDK) instead. Build with
+# `trunk build --features calculator`.
+calculator = []
 
 [dependencies]
 elpa = { path = "../../crates/elpa", features = ["wgpu"] }

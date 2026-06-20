@@ -24,6 +24,10 @@ game3d = []
 # object-oriented `elpa-liquidglass` SDK) instead. Build/run with
 # `cargo run --features liquidglass`.
 liquidglass = []
+# Embed the Liquid Glass calculator (a feature-rich scientific calculator built
+# on the `elpa-liquidglass` SDK) instead. Build/run with
+# `cargo run --features calculator`.
+calculator = []
 
 [dependencies]
 elpa = { path = "../../crates/elpa", features = ["wgpu"] }
