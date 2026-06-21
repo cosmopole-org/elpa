@@ -360,7 +360,7 @@ class ScaffoldWidget extends Widget {
         // replaces the default vivid gradient.
         if (has(node, "background")) { if (!isNull(node.background)) { node.background.paint(app, m.vw / 2.0, m.vh / 2.0); push(this._self, 0); } }
         else { pnt.gradLinear(m.vw / 2.0, m.vh / 2.0, m.vw / 2.0, m.vh / 2.0, 0.0, th.wallpaper(), 0.0, 0.0, 0.0, 1.0); }
-        let aH = m.u * 10.0 * m.dens; let aHTotal = aH + m.saT; let barH = m.u * 11.0 * m.dens;
+        let aH = m.u * 10.0 * m.dens; let aHTotal = aH + m.saT; let barH = m.u * 13.0 * m.dens;
         let bodyCx = m.saL + (m.vw - m.saL - m.saR) / 2.0;
         let hasBar = 0.0; if (has(node, "bottomBar")) { if (!isNull(node.bottomBar)) { hasBar = 1.0; } }
         let hasFab = 0.0; if (has(node, "fab")) { if (!isNull(node.fab)) { hasFab = 1.0; } }
@@ -383,7 +383,7 @@ class ScaffoldWidget extends Widget {
         if (has(node, "appBar")) { if (!isNull(node.appBar)) { node.appBar._fw = m.vw; node.appBar.paint(app, m.vw / 2.0, aHTotal / 2.0); node.appBar._fw = -1.0; push(outKids, node.appBar); } }
         if (has(node, "bottomBar")) { if (!isNull(node.bottomBar)) {
             let bn = node.bottomBar; bn._fw = m.vw - m.saL - m.saR;
-            bn.paint(app, bodyCx, m.vh - m.saB - m.u * 5.5 * m.dens); bn._fw = -1.0; push(outKids, bn);
+            bn.paint(app, bodyCx, m.vh - m.saB - m.u * 6.5 * m.dens); bn._fw = -1.0; push(outKids, bn);
         } }
         if (hasFab > 0.5) { node.fab.paint(app, fabX, fabY); push(outKids, node.fab); }
         if (has(node, "sheet")) { if (!isNull(node.sheet)) { node.sheet.paint(app, m.vw / 2.0, m.vh / 2.0); push(outKids, node.sheet); } }

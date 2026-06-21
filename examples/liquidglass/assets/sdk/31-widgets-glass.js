@@ -206,11 +206,11 @@ class GlassFabWidget extends Widget {
 
 // ---------------------------------------------------------------- Switch ------
 class SwitchWidget extends Widget {
-    measureIntrinsic(app) { let m = app.metrics; return { w: m.du() * 9.0, h: m.du() * 5.0 }; }
+    measureIntrinsic(app) { let m = app.metrics; return { w: m.du() * 11.0, h: m.du() * 6.4 }; }
     paint(app, cx, cy) {
         this._cx = cx; this._cy = cy;
         let m = app.metrics; let th = app.theme; let pnt = app.painter; let p = this.p; this.beginLeaf(app);
-        let w = m.du() * 9.0; let h = m.du() * 5.0; let hw = w / 2.0; let hh = h / 2.0; let r = hh;
+        let w = m.du() * 11.0; let h = m.du() * 6.4; let hw = w / 2.0; let hh = h / 2.0; let r = hh;
         let v = 0.0; if (has(p, "value")) { v = p.value; }
         let a = app.clock.ease(concat("sw:", idOf(p)), v);
         let vel = v - a;
@@ -227,19 +227,19 @@ class SwitchWidget extends Widget {
 
 // ---------------------------------------------------------------- Slider ------
 class SliderWidget extends Widget {
-    measureIntrinsic(app) { let m = app.metrics; let w = m.u * 40.0; if (has(this.p, "width")) { w = this.p.width * m.u; } return { w: w, h: m.du() * 4.6 }; }
+    measureIntrinsic(app) { let m = app.metrics; let w = m.u * 40.0; if (has(this.p, "width")) { w = this.p.width * m.u; } return { w: w, h: m.du() * 5.4 }; }
     paint(app, cx, cy) {
         this._cx = cx; this._cy = cy;
         let m = app.metrics; let th = app.theme; let pnt = app.painter; let p = this.p; this.beginLeaf(app);
         let mz = this.measure(app); let w = mz.w; let hw = w / 2.0;
         let v = 0.5; if (has(p, "value")) { v = p.value; }
-        let trackH = m.u * 1.1; let left = cx - hw + m.u * 1.6; let right = cx + hw - m.u * 1.6; let span = right - left;
+        let trackH = m.u * 1.4; let left = cx - hw + m.u * 1.8; let right = cx + hw - m.u * 1.8; let span = right - left;
         // Glass track + accent-tinted-glass active portion.
         pnt.glass((left + right) / 2.0, cy, span / 2.0 + trackH, trackH, trackH, m.u * 0.1, 0.0, th.glassThin(), th.rim(0.7), m.u * 2.0, 0.3, m.u * 1.0);
         let tx = left + v * span;
         pnt.glass((left + tx) / 2.0, cy, (tx - left) / 2.0, trackH, trackH, m.u * 0.0, 0.0, accentGlass(th, 0.85), th.rim(0.5), m.u * 2.0, 0.3, m.u * 0.9);
         // Liquid-Glass thumb: a refractive drop with a bright specular rim.
-        let thr = m.du() * 1.9;
+        let thr = m.du() * 2.3;
         pnt.shadow(tx, cy, thr, thr, thr, m.u * 0.1, m.u * 0.3, m.u * 1.2, [0.0, 0.0, 0.0, 0.25]);
         paintLiquidIndicator(app, tx, cy, thr, thr, thr, 0.0, brightGlass(th, 0.96), 0.0);
         if (has(p, "onChanged")) {
@@ -251,7 +251,7 @@ class SliderWidget extends Widget {
 
 // ---------------------------------------------------------------- Chip --------
 class ChipWidget extends Widget {
-    measureIntrinsic(app) { let m = app.metrics; let cell = m.cell("label"); let tw = app.font.textW(this.p.label, cell); return { w: tw + m.du() * 4.0, h: m.du() * 4.0 }; }
+    measureIntrinsic(app) { let m = app.metrics; let cell = m.cell("label"); let tw = app.font.textW(this.p.label, cell); return { w: tw + m.du() * 5.0, h: m.du() * 4.8 }; }
     paint(app, cx, cy) {
         this._cx = cx; this._cy = cy;
         let m = app.metrics; let th = app.theme; let pnt = app.painter; let p = this.p; this.beginLeaf(app);
@@ -272,7 +272,7 @@ class ChipWidget extends Widget {
 
 // ----------------------------------------------------- SegmentedButton --------
 class SegmentedButtonWidget extends Widget {
-    measureIntrinsic(app) { let m = app.metrics; let segs = this.p.segments; let w = m.du() * 7.0 * len(segs); if (has(this.p, "width")) { w = this.p.width * m.u; } return { w: w, h: m.du() * 4.8 }; }
+    measureIntrinsic(app) { let m = app.metrics; let segs = this.p.segments; let w = m.du() * 7.5 * len(segs); if (has(this.p, "width")) { w = this.p.width * m.u; } return { w: w, h: m.du() * 5.6 }; }
     paint(app, cx, cy) {
         this._cx = cx; this._cy = cy;
         let m = app.metrics; let th = app.theme; let pnt = app.painter; let p = this.p; this.beginLeaf(app);
@@ -298,7 +298,7 @@ class SegmentedButtonWidget extends Widget {
 
 // ---------------------------------------------------------- NavigationBar -----
 class NavigationBarWidget extends Widget {
-    measureIntrinsic(app) { let m = app.metrics; let w = m.vw; if (this._fw >= 0.0) { w = this._fw; } return { w: w, h: m.u * 11.0 * m.dens }; }
+    measureIntrinsic(app) { let m = app.metrics; let w = m.vw; if (this._fw >= 0.0) { w = this._fw; } return { w: w, h: m.u * 13.0 * m.dens }; }
     paint(app, cx, cy) {
         this._cx = cx; this._cy = cy;
         let m = app.metrics; let th = app.theme; let pnt = app.painter; let p = this.p; this.beginSelf(app);
@@ -307,19 +307,20 @@ class NavigationBarWidget extends Widget {
         let sel0 = 0; if (has(p, "selected")) { sel0 = p.selected; }
         let a = app.clock.ease(concat("nav:", idOf(p)), num(sel0));
         let vel = num(sel0) - a;
-        // Floating glass pill bar.
-        let r = hh - m.u * 1.2;
-        pnt.glass(cx, cy, hw - m.u * 1.2, hh - m.u * 1.2, r, m.u * 0.16, 0.0, th.glass(1.2), th.rim(0.9), m.u * 4.0, 0.45, m.u * 2.6);
+        // Floating glass pill bar — a slim horizontal inset keeps it nearly
+        // full-width, a small vertical inset lets it float above the edge.
+        let pillHw = hw - m.u * 0.8; let pillHh = hh - m.u * 1.2; let r = pillHh;
+        pnt.glass(cx, cy, pillHw, pillHh, r, m.u * 0.16, 0.0, th.glass(1.2), th.rim(0.9), m.u * 4.0, 0.45, m.u * 2.6);
         let left = cx - hw; let hx = left + segW / 2.0 + a * segW;
         // Liquid-Glass selection drop sliding under the active tab — a refractive
         // accent gel that stretches toward the destination tab and settles round.
-        let indW = m.du() * 3.4; let indH = m.du() * 3.0;
-        paintLiquidIndicator(app, hx, cy - m.u * 0.6, indW, indH, indH, vel, accentGlass(th, 0.5), 0.0);
+        let indW = m.du() * 4.2; let indH = m.du() * 3.6;
+        paintLiquidIndicator(app, hx, cy - m.u * 1.0, indW, indH, indH, vel, accentGlass(th, 0.5), 0.0);
         for (let i = 0; i < n; i++) {
             let sx = left + segW * i + segW / 2.0;
             let col = th.inkSoft(0.85); if (i == sel0) { col = th.acc(1.0); }
-            app.icons.draw(pnt, items[i].icon, sx, cy - m.u * 0.8, m.du() * 1.5, col);
-            if (has(items[i], "label")) { app.font.text(pnt, items[i].label, sx, cy + m.du() * 2.2, m.cell("micro"), col); }
+            app.icons.draw(pnt, items[i].icon, sx, cy - m.u * 1.2, m.du() * 1.8, col);
+            if (has(items[i], "label")) { app.font.text(pnt, items[i].label, sx, cy + m.du() * 2.8, m.cell("micro"), col); }
             if (has(p, "onSelect")) { let idx = i; pnt.addTap(sx, cy, segW / 2.0, hh, concat(concat("nav:", idOf(p)), str(idx)), () => { p.onSelect(idx); }); }
         }
         this._kids = []; this.compose();
@@ -328,7 +329,7 @@ class NavigationBarWidget extends Widget {
 
 // ---------------------------------------------------------------- Tabs --------
 class TabsWidget extends Widget {
-    measureIntrinsic(app) { let m = app.metrics; let w = m.u * 50.0; if (has(this.p, "width")) { w = this.p.width * m.u; } return { w: w, h: m.du() * 5.2 }; }
+    measureIntrinsic(app) { let m = app.metrics; let w = m.u * 50.0; if (has(this.p, "width")) { w = this.p.width * m.u; } return { w: w, h: m.du() * 6.0 }; }
     paint(app, cx, cy) {
         this._cx = cx; this._cy = cy;
         let m = app.metrics; let th = app.theme; let pnt = app.painter; let p = this.p; this.beginLeaf(app);
