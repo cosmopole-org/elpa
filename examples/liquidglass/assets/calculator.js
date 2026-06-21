@@ -329,16 +329,23 @@ function onCalcKey(k) {
 // ============================================================================
 //  Widget builders
 // ============================================================================
-// One keypad key — a glass `KeyButton` (frosted / accent / equals variant with a
-// tactile press-scale + depth) wrapped in `Expanded` so a row shares the width
-// evenly. Memory keys reuse the soft "util" style.
-function kbtn(label, kind, onTap) {
-    let tsize = LTS; let weight = "semibold";
-    if (kind == "fn") { tsize = LFS; }
-    if (kind == "mem") { tsize = LFS; kind = "util"; }
-    if (kind == "eq") { weight = "bold"; }
-    return Expanded({ flex: 1.0, child: KeyButton({ id: label, label: label, kind: kind,
-        height: LBH, size: tsize, weight: weight, onTap: onTap }) });
+// One keypad key, wrapped in `Expanded` so a row shares the width evenly.
+//
+// `role` is the calculator's own vocabulary; this helper is the single place it
+// is translated into the SDK's generic glass-styling props — the kit itself knows
+// nothing about operators, digits, functions or memory keys.
+//   num  frosted glass + ink label        op   accent lens + on-accent label
+//   util thin glass + soft label          eq   stronger accent lens + top gloss
+//   fn   thin glass + accent label        mem  thin glass + soft label (reuses util)
+function kbtn(label, role, onTap) {
+    let key = { id: label, label: label, height: LBH, size: LTS, weight: "semibold", onTap: onTap };
+    if (role == "num") { key.fill = "solid"; }
+    else { if (role == "op") { key.fill = "accent"; key.fillOpacity = 0.72; key.ink = "onAccent"; key.refract = 4.5; key.specular = 0.85; key.pressGlow = 0.2; }
+    else { if (role == "eq") { key.fill = "accent"; key.fillOpacity = 0.8; key.ink = "onAccent"; key.refract = 5.0; key.specular = 0.95; key.pressGlow = 0.22; key.gloss = 1.0; key.weight = "bold"; }
+    else { if (role == "fn") { key.fill = "thin"; key.ink = "accent"; key.size = LFS; }
+    else { if (role == "mem") { key.fill = "thin"; key.ink = "soft"; key.size = LFS; }
+    else { key.fill = "thin"; key.ink = "soft"; } } } } }
+    return Expanded({ flex: 1.0, child: KeyButton(key) });
 }
 
 // A full-width keypad row of evenly-sized keys.

@@ -133,13 +133,20 @@ class GlassButtonWidget extends Widget {
     paint(app, cx, cy) { this._cx = cx; this._cy = cy; this.beginLeaf(app); paintPillButton(app, this.p, cx, cy, "glass"); }
 }
 
-// A grid key: a glass (or accent / equals) rounded button that fills the cell it
-// is given (`_fw`/`_fh` from `Expanded`/`GridView`), with a tactile press-scale,
-// a depth shadow (an accent glow for the accent variants) and a centred label. It
-// is the building block for keypads, dial pads and tile grids. `kind`:
-//   "num"  frosted glass + ink label          "op"  solid accent + on-accent label
-//   "fn"   thin glass + accent label          "eq"  solid accent + accent glow
-//   "util" thin glass + soft label
+// A grid key: a glass rounded button that fills the cell it is given (`_fw`/`_fh`
+// from `Expanded`/`GridView`), with a tactile press-scale, a depth shadow and a
+// centred label. It is the building block for keypads, dial pads and tile grids.
+//
+// The look is entirely prop-driven — the kit carries no notion of "operator",
+// "digit" or any other app role. Styling props (all optional):
+//   fill       "thin" (default) | "solid" | "accent" | a literal [r,g,b,a] tint
+//   fillOpacity opacity of the "accent" fill (default 0.72)
+//   refract    lens refraction strength, in units (default 4.0)
+//   specular   lens specular-rim strength (default 0.6)
+//   gloss      0..1 bright top-cap highlight (default 0 — none)
+//   pressGlow  white press-flash strength (default 0.14)
+//   ink        label colour role: "ink" (default) | "soft" | "accent" | "onAccent"
+//   radius / height / width / size / weight   geometry + label as elsewhere
 class KeyButtonWidget extends Widget {
     measureIntrinsic(app) {
         let m = app.metrics;
@@ -152,35 +159,30 @@ class KeyButtonWidget extends Widget {
         let m = app.metrics; let th = app.theme; let pnt = app.painter; let p = this.p;
         let mz = this.measure(app); let hw0 = mz.w / 2.0; let hh0 = mz.h / 2.0;
         let r0 = hh0 * 0.62; if (has(p, "radius")) { r0 = p.radius * m.u; }
-        let kind = "num"; if (has(p, "kind")) { kind = p.kind; }
         let pr = app.clock.pressVal(idOf(p));
         let sc = 1.0 - pr * 0.06; let hw = hw0 * sc; let hh = hh0 * sc; let r = r0 * sc;
 
-        if (kind == "op") {
-            pnt.shadow(cx, cy, hw, hh, r, m.u * 0.0, m.u * 0.5, m.u * 3.4, [th.accCh(0), th.accCh(1), th.accCh(2), 0.2]);
-            pnt.glass(cx, cy, hw, hh, r, m.u * 0.14, 0.0, accentGlass(th, 0.72), th.rim(1.0), m.u * 4.5, 0.85, m.u * 1.6);
-            if (pr > 0.01) { pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, [1.0, 1.0, 1.0, pr * 0.2], CLEAR); }
-        } else { if (kind == "eq") {
-            pnt.shadow(cx, cy, hw, hh, r, m.u * 0.0, m.u * 0.7, m.u * 4.6, [th.accCh(0), th.accCh(1), th.accCh(2), 0.28]);
-            pnt.glass(cx, cy, hw, hh, r, m.u * 0.14, 0.0, accentGlass(th, 0.8), th.rim(1.0), m.u * 5.0, 0.95, m.u * 1.6);
-            pnt.rect(cx, cy - hh * 0.52, hw * 0.9, hh * 0.34, r, 0.0, 0.0, [1.0, 1.0, 1.0, 0.16], CLEAR);
-            if (pr > 0.01) { pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, [1.0, 1.0, 1.0, pr * 0.22], CLEAR); }
-        } else {
-            pnt.shadow(cx, cy, hw, hh, r, m.u * 0.18, m.u * 0.5, m.u * 2.0, [0.0, 0.0, 0.05, 0.22]);
-            let tint = th.glassThin(); if (kind == "num") { tint = th.glass(0.95); }
-            pnt.glass(cx, cy, hw, hh, r, m.u * 0.16, 0.0, tint, th.rim(1.0), m.u * 4.0, 0.6, m.u * 1.8);
-            if (pr > 0.01) { pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, [1.0, 1.0, 1.0, pr * 0.14], CLEAR); }
-        } }
+        // Resolve the tint from `fill` (a named glass role or a literal colour).
+        let fill = "thin"; if (has(p, "fill")) { fill = p.fill; }
+        let tint = th.glassThin();
+        if (fill == "solid") { tint = th.glass(0.95); }
+        if (fill == "accent") { let fo = 0.72; if (has(p, "fillOpacity")) { fo = p.fillOpacity; } tint = accentGlass(th, fo); }
+        if (typeOf(fill) == "array") { tint = fill; }
+        // Lens character + interaction feedback, each overridable per key.
+        let refr = 4.0; if (has(p, "refract")) { refr = p.refract; }
+        let spec = 0.6; if (has(p, "specular")) { spec = p.specular; }
+        let glow = 0.14; if (has(p, "pressGlow")) { glow = p.pressGlow; }
+        let gloss = 0.0; if (has(p, "gloss")) { gloss = p.gloss; }
+
+        pnt.shadow(cx, cy, hw, hh, r, m.u * 0.18, m.u * 0.5, m.u * 2.0, [0.0, 0.0, 0.05, 0.22]);
+        pnt.glass(cx, cy, hw, hh, r, m.u * 0.15, 0.0, tint, th.rim(1.0), m.u * refr, spec, m.u * 1.7);
+        if (gloss > 0.01) { pnt.rect(cx, cy - hh * 0.52, hw * 0.9, hh * 0.34, r, 0.0, 0.0, [1.0, 1.0, 1.0, 0.16 * gloss], CLEAR); }
+        if (pr > 0.01) { pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, [1.0, 1.0, 1.0, pr * glow], CLEAR); }
 
         let label = ""; if (has(p, "label")) { label = p.label; }
         let cell = m.cell("title"); if (has(p, "size")) { cell = m.cellOf(p); }
         let thick = m.weightThick(p);
-        let col = th.ink(1.0);
-        if (kind == "op") { col = th.onAcc(1.0); }
-        if (kind == "eq") { col = th.onAcc(1.0); }
-        if (kind == "fn") { col = th.acc(1.0); }
-        if (kind == "util") { col = th.inkSoft(0.95); }
-        if (has(p, "ink")) { col = th.inkColor(p.ink); }
+        let col = th.ink(1.0); if (has(p, "ink")) { col = th.inkColor(p.ink); }
         app.font.paintCentered(pnt, label, cx, cy, cell, col, thick, 0);
 
         if (has(p, "onTap")) { pnt.addTap(cx, cy, hw0, hh0, idOf(p), p.onTap); }
