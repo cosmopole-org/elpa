@@ -15,18 +15,21 @@ name = "elpa-native-example"
 path = "src/main.rs"
 
 [features]
+# No features → the **Liquid Glass calculator** (the default app). Select another
+# app with exactly one of the features below.
 default = []
+# Embed the Material Design 3 gallery instead of the calculator. Build/run with
+# `cargo run --features material`.
+material = []
 # Embed the Game3D engine demo (a lit, animated 3D scene from the object-oriented
-# `elpa-game3d` SDK) instead of the Material gallery. Build/run with
-# `cargo run --features game3d`.
+# `elpa-game3d` SDK) instead. Build/run with `cargo run --features game3d`.
 game3d = []
-# Embed the Liquid Glass UI kit demo (Apple iOS-26 glass material from the
-# object-oriented `elpa-liquidglass` SDK) instead. Build/run with
+# Embed the Liquid Glass UI kit *showcase* demo (Apple iOS-26 glass material from
+# the object-oriented `elpa-liquidglass` SDK) instead. Build/run with
 # `cargo run --features liquidglass`.
 liquidglass = []
-# Embed the Liquid Glass calculator (a feature-rich scientific calculator built
-# on the `elpa-liquidglass` SDK) instead. Build/run with
-# `cargo run --features calculator`.
+# Accepted for symmetry with the web example / CI; the calculator is already the
+# default, so this selects the same app explicitly.
 calculator = []
 
 [dependencies]
@@ -64,7 +67,9 @@ min_sdk_version = 24
 target_sdk_version = 30
 
 [package.metadata.android.application]
-label = "Elpa Material"
+# Neutral label: the default APK packages the Liquid Glass calculator, but the
+# same crate also builds the Material / showcase / Game3D apps behind features.
+label = "Elpa"
 
 # Network access. The Elpa host grants the sandbox the `network` toggle and a
 # blocking fetcher (see `src/lib.rs`), but on Android an app also needs the

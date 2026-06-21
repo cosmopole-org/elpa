@@ -1,9 +1,10 @@
 name: Build APK
 
 # Builds the Android APK on demand only (manual run). The `android` job then
-# commits the signed release APK to the root of the repository: the Material app
-# as `elpa.apk`, the Game3D engine demo as `elpa-game3d.apk` (chosen by the `app`
-# input, default `material`).
+# commits the signed release APK to the root of the repository: the Liquid Glass
+# calculator as `elpa-calculator.apk` (the default), the Material app as
+# `elpa.apk`, the Game3D engine demo as `elpa-game3d.apk`, the Liquid Glass
+# showcase as `elpa-liquidglass.apk` (chosen by the `app` input).
 #
 # Run it from the GitHub UI (Actions → "Build APK" → "Run workflow", pick the
 # app) or via the API/CLI
@@ -16,11 +17,11 @@ on:
         description: "Which app to package into the APK"
         type: choice
         options:
+          - calculator
           - material
           - game3d
           - liquidglass
-          - calculator
-        default: material
+        default: calculator
 
 permissions:
   contents: write # the android job pushes the built APK back to the repo
@@ -94,10 +95,12 @@ jobs:
           CARGO_APK_RELEASE_KEYSTORE_PASSWORD: android
         run: |
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/${NDK_VERSION}"
+          # No features → the calculator (the native default). Each named app
+          # selects its feature explicitly.
           FEATURES=""
+          if [ "${{ inputs.app }}" = "material" ]; then FEATURES="--features material"; fi
           if [ "${{ inputs.app }}" = "game3d" ]; then FEATURES="--features game3d"; fi
           if [ "${{ inputs.app }}" = "liquidglass" ]; then FEATURES="--features liquidglass"; fi
-          if [ "${{ inputs.app }}" = "calculator" ]; then FEATURES="--features calculator"; fi
           # `--lib` packages the Android cdylib (this crate also has a desktop bin).
           cargo apk build --release --lib $FEATURES
 
@@ -116,6 +119,7 @@ jobs:
           if [ "${{ inputs.app }}" = "game3d" ]; then DEST=elpa-game3d.apk; fi
           if [ "${{ inputs.app }}" = "liquidglass" ]; then DEST=elpa-liquidglass.apk; fi
           if [ "${{ inputs.app }}" = "calculator" ]; then DEST=elpa-calculator.apk; fi
+          if [ "${{ inputs.app }}" = "material" ]; then DEST=elpa.apk; fi
           cp examples/native/target/release/apk/elpa_native_example.apk "./$DEST"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
