@@ -30,6 +30,8 @@ pub enum OperationTypes {
     ArrExpr,
     CondBrch,
     CastOprt,
+    Logical,
+    Conditional,
     Dummy,
 }
 
@@ -81,6 +83,10 @@ pub enum ExecStates {
     CondBranchFinished,
     CastOprtStarted,
     CastOprtFinished,
+    LogicalExtractOp1,
+    LogicalExtractOp2,
+    CondExprExtractCond,
+    CondExprExtractValue,
     Dummy,
 }
 
@@ -1063,6 +1069,89 @@ impl Operation for CastOp {
                 typ: 7,
                 data: Payload::from(self.target_type.clone()),
             },
+        ]
+    }
+}
+
+/// Short-circuiting `&&` / `||`. The left operand is evaluated first; the right
+/// is only evaluated when the result is not already decided (`&&` with a truthy
+/// left, `||` with a falsy left). On short-circuit the dispatch loop reuses the
+/// left value as the result and jumps the program counter to `op2_end`, skipping
+/// the right operand's units entirely. No double evaluation, exact JS semantics.
+struct LogicalOp {
+    typ: OperationTypes,
+    state: ExecStates,
+    is_or: bool,
+    op2_end: usize,
+}
+
+impl LogicalOp {
+    pub fn new(is_or: bool, op2_end: usize) -> Self {
+        LogicalOp {
+            typ: OperationTypes::Logical,
+            state: ExecStates::LogicalExtractOp1,
+            is_or,
+            op2_end,
+        }
+    }
+}
+
+impl Operation for LogicalOp {
+    fn get_state(&self) -> ExecStates {
+        self.state
+    }
+    fn get_type(&self) -> OperationTypes {
+        self.typ
+    }
+    fn set_state(&mut self, state: ExecStates, _data: StateData) {
+        // Operands are consumed straight from `main_reg` in the dispatch loop; the
+        // op only tracks which operand is awaited and carries its skip target.
+        self.state = state;
+    }
+    fn get_data(&self) -> Vec<Val> {
+        vec![
+            Val { typ: 6, data: Payload::from(self.is_or) },
+            Val { typ: 3, data: Payload::from(self.op2_end as i64) },
+        ]
+    }
+}
+
+/// The conditional (ternary) operator `c ? a : b`. The condition is evaluated
+/// first; the dispatch loop then either lets execution fall into the consequent
+/// or jumps to `alt_start`, and after the taken branch's value is produced jumps
+/// to `end` so the other branch's units are skipped.
+struct ConditionalOp {
+    typ: OperationTypes,
+    state: ExecStates,
+    alt_start: usize,
+    end: usize,
+}
+
+impl ConditionalOp {
+    pub fn new(alt_start: usize, end: usize) -> Self {
+        ConditionalOp {
+            typ: OperationTypes::Conditional,
+            state: ExecStates::CondExprExtractCond,
+            alt_start,
+            end,
+        }
+    }
+}
+
+impl Operation for ConditionalOp {
+    fn get_state(&self) -> ExecStates {
+        self.state
+    }
+    fn get_type(&self) -> OperationTypes {
+        self.typ
+    }
+    fn set_state(&mut self, state: ExecStates, _data: StateData) {
+        self.state = state;
+    }
+    fn get_data(&self) -> Vec<Val> {
+        vec![
+            Val { typ: 3, data: Payload::from(self.alt_start as i64) },
+            Val { typ: 3, data: Payload::from(self.end as i64) },
         ]
     }
 }
@@ -4062,6 +4151,73 @@ impl Executor {
                                     == ExecStates::CastOprtFinished;
                             continue;
                         }
+                    } else if op_type == OperationTypes::Logical {
+                        let state = self.registers.last().unwrap().get_state();
+                        if state == ExecStates::LogicalExtractOp1 {
+                            // The left operand just evaluated. Decide whether the
+                            // result is settled (`&&` falsy / `||` truthy → reuse it
+                            // and skip the right operand) or the right operand must
+                            // be evaluated (`&&` truthy / `||` falsy).
+                            let data = self.registers.last().unwrap().get_data();
+                            let is_or = data[0].as_bool();
+                            let op2_end = data[1].as_i64() as usize;
+                            let left = main_reg.take().unwrap();
+                            let evaluate_right = if is_or { !left.truthy() } else { left.truthy() };
+                            if evaluate_right {
+                                self.registers
+                                    .last_mut()
+                                    .unwrap()
+                                    .set_state(ExecStates::LogicalExtractOp2, StateData::Empty);
+                                main_reg = None;
+                                is_reg_state_final = false;
+                                // Fall through into the right operand's units.
+                                continue;
+                            } else {
+                                self.registers.pop();
+                                self.pointer = op2_end; // skip the right operand
+                                main_reg = Some(left);
+                                is_reg_state_final = false;
+                                continue;
+                            }
+                        } else if state == ExecStates::LogicalExtractOp2 {
+                            // The right operand just evaluated and is the result.
+                            let right = main_reg.take().unwrap();
+                            self.registers.pop();
+                            main_reg = Some(right);
+                            is_reg_state_final = false;
+                            continue;
+                        }
+                    } else if op_type == OperationTypes::Conditional {
+                        let state = self.registers.last().unwrap().get_state();
+                        if state == ExecStates::CondExprExtractCond {
+                            // The condition just evaluated. A truthy condition lets
+                            // execution fall into the consequent (which immediately
+                            // follows); otherwise jump to the alternate.
+                            let data = self.registers.last().unwrap().get_data();
+                            let alt_start = data[0].as_i64() as usize;
+                            let cond = main_reg.take().unwrap();
+                            if !cond.truthy() {
+                                self.pointer = alt_start;
+                            }
+                            self.registers
+                                .last_mut()
+                                .unwrap()
+                                .set_state(ExecStates::CondExprExtractValue, StateData::Empty);
+                            main_reg = None;
+                            is_reg_state_final = false;
+                            continue;
+                        } else if state == ExecStates::CondExprExtractValue {
+                            // The taken branch's value is the result; skip past the
+                            // other branch.
+                            let data = self.registers.last().unwrap().get_data();
+                            let end = data[1].as_i64() as usize;
+                            let val = main_reg.take().unwrap();
+                            self.registers.pop();
+                            self.pointer = end;
+                            main_reg = Some(val);
+                            is_reg_state_final = false;
+                            continue;
+                        }
                     }
                 } else {
                     main_reg = None;
@@ -4865,7 +5021,9 @@ impl Executor {
                                     });
                                 }
                             }
-                        } else if target_type == "f64" {
+                        } else if target_type == "f64" || target_type == "number" {
+                            // `number` is the JavaScript numeric type, aliased onto
+                            // the f64 representation.
                             match data.typ {
                                 1 => {
                                     main_reg = Some(Val {
@@ -5137,6 +5295,14 @@ impl Executor {
                 UnitKind::Not => {
                     self.registers.push(Box::new(NotValue::new()));
                 }
+                // short-circuiting logical && / ||
+                UnitKind::Logical { is_or, op2_end } => {
+                    self.registers.push(Box::new(LogicalOp::new(is_or, op2_end)));
+                }
+                // conditional / ternary expression
+                UnitKind::Conditional { alt_start, end } => {
+                    self.registers.push(Box::new(ConditionalOp::new(alt_start, end)));
+                }
                 // cast operation (target type folded into the unit)
                 UnitKind::Cast { target_type } => {
                     self.registers.push(Box::new(CastOp::new(target_type.to_string())));
@@ -5218,6 +5384,45 @@ impl Executor {
                 // jump command
                 UnitKind::Jump(dest) => {
                     self.pointer = dest;
+                }
+                // `continue` — unwind any control-flow scopes (if/switch bodies)
+                // opened since the loop body, then re-run the loop head. The loop
+                // body's last unit is the compiler's back-jump to the condition, so
+                // jumping there re-evaluates it (and, for `for`, runs the update,
+                // which the desugaring places at the head on the `continue` path).
+                UnitKind::Continue => {
+                    loop {
+                        let tag = self.ctx.memory.last().unwrap().borrow().tag.clone();
+                        if tag == "loopBody" {
+                            let body_end = self.ctx.memory.last().unwrap().borrow().frozen_end;
+                            self.end_at = body_end;
+                            self.pointer = body_end - 1; // the back-jump unit
+                            break;
+                        }
+                        // `continue` not inside a loop (e.g. a stray statement, or
+                        // only switch/function scopes around it): nothing to do.
+                        if tag == "funcBody" || self.ctx.memory.len() == 1 {
+                            break;
+                        }
+                        self.pop_scope_governed();
+                    }
+                }
+                // `break` — unwind to the nearest enclosing loop or switch body and
+                // fall through its end so the normal teardown resumes after it.
+                UnitKind::Break => {
+                    loop {
+                        let tag = self.ctx.memory.last().unwrap().borrow().tag.clone();
+                        if tag == "loopBody" || tag == "switchBody" {
+                            let body_end = self.ctx.memory.last().unwrap().borrow().frozen_end;
+                            self.end_at = body_end;
+                            self.pointer = body_end;
+                            break;
+                        }
+                        if tag == "funcBody" || self.ctx.memory.len() == 1 {
+                            break;
+                        }
+                        self.pop_scope_governed();
+                    }
                 }
                 // conditional branch (targets folded into the unit)
                 UnitKind::CondBranch { true_branch, false_branch } => {
