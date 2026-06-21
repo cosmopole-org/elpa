@@ -106,7 +106,7 @@ and, in particular, **avoids** constructs the VM does not implement, which were
 established empirically while building it: `&&`/`||`/ternary (use nested `if`),
 `continue` (use guarded `if`/`else`), `super.method()` (use a `this.baseX()`
 delegate + the `premount` hook), and static class methods (use top-level
-functions). `typeOf` returns `"i64"`/`"f64"`/`"f32"` for numbers (not
-`"number"`), so numeric checks use the `isNum` helper. Implicit constructors do
+functions). `typeOf` reports every numeric representation (i16…f64) as
+`"number"`, so numeric checks go through the `isNum` helper. Implicit constructors do
 not forward arguments, so every `Box` subclass declares
 `constructor(tag, props) { super(tag, props); }`.

@@ -343,6 +343,6 @@ let HEX_VAL = { "0": 0, "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7,
     "8": 8, "9": 9, a: 10, b: 11, c: 12, d: 13, e: 14, f: 15,
     A: 10, B: 11, C: 12, D: 13, E: 14, F: 15 };
 
-// Numeric type test: the VM types integers as "i64" and reals as "f64"/"f32",
-// so `typeOf(x) == "number"` is never true - use this instead.
-function isNum(v) { let t = typeOf(v); if (t == "f64") { return 1.0; } if (t == "i64") { return 1.0; } if (t == "f32") { return 1.0; } return 0.0; }
+// Numeric type test: the VM reports every numeric representation (i16..f64) as
+// "number" from `typeOf`, so this returns 1.0 for any number, 0.0 otherwise.
+function isNum(v) { if (typeOf(v) == "number") { return 1.0; } return 0.0; }
