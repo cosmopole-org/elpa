@@ -1,0 +1,24 @@
+[package]
+name = "elpa-websdk"
+version = "0.1.0"
+edition = "2021"
+description = "An HTML + CSS web SDK delivered as JavaScript (assets/sdk/*.js) that Elpa compiles and runs directly on its VM. Implements the CSS box model, block/inline flow, flexbox, grid, positioning, the full <color>/<length> value grammar, borders/radius/shadows/gradients/transforms/transitions, and the HTML element catalog as object-oriented class components - rendering the whole page through one instanced SDF pipeline so it stays high-FPS. `lib` embeds the JS for host examples; an Elpa instance is built from it with Elpa::new_from_js."
+
+[lib]
+name = "elpa_websdk"
+
+[dependencies]
+# The kit ships as JavaScript source strings only. The build_bytecode binary
+# lowers the program to VM bytecode via the VM's compiler front-end.
+elpian-vm = { path = "../../crates/elpian-vm" }
+
+[[bin]]
+name = "build_bytecode"
+path = "src/bin/build_bytecode.rs"
+
+[dev-dependencies]
+# Drive the JS web SDK end to end through a real (headless) Elpa instance + VM,
+# and lower the kit's JS to AST so its embedded WGSL can be validated.
+elpa = { path = "../../crates/elpa" }
+naga = { version = "29", features = ["wgsl-in"] }
+serde_json = { workspace = true }

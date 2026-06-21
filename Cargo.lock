@@ -346,6 +346,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "elpa-websdk"
+version = "0.1.0"
+dependencies = [
+ "elpa",
+ "elpian-vm",
+ "naga",
+ "serde_json",
+]
+
+[[package]]
 name = "elpian-vm"
 version = "0.1.0"
 dependencies = [
