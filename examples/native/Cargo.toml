@@ -31,6 +31,10 @@ liquidglass = []
 # Accepted for symmetry with the web example / CI; the calculator is already the
 # default, so this selects the same app explicitly.
 calculator = []
+# Embed the Web SDK showcase page (the HTML element model + CSS engine from the
+# object-oriented `elpa-websdk` kit, rendered through one instanced SDF pipeline)
+# instead. Build/run with `cargo run --features websdk`.
+websdk = []
 
 [dependencies]
 elpa = { path = "../../crates/elpa", features = ["wgpu"] }

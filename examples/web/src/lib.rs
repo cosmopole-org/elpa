@@ -60,14 +60,20 @@ type App = Elpa<WgpuBackend<'static>>;
 /// GPU passes), driven by the object-oriented `elpa-liquidglass` SDK. Build with
 /// `trunk build --features calculator` to embed the **Liquid Glass calculator**
 /// instead — a feature-rich scientific calculator (an in-VM expression engine +
-/// a responsive glass keypad) built on that same SDK.
-#[cfg(feature = "calculator")]
+/// a responsive glass keypad) built on that same SDK. Build with
+/// `trunk build --features websdk` to embed the **Web SDK** showcase page
+/// instead — the HTML element model + CSS engine from the object-oriented
+/// `elpa-websdk` kit, painting the whole document through one instanced SDF
+/// pipeline.
+#[cfg(feature = "websdk")]
+const APP_BYTECODE: &[u8] = include_bytes!("../../websdk/assets/demo.bc");
+#[cfg(all(feature = "calculator", not(feature = "websdk")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../liquidglass/assets/calculator.bc");
-#[cfg(all(feature = "liquidglass", not(feature = "calculator")))]
+#[cfg(all(feature = "liquidglass", not(feature = "calculator"), not(feature = "websdk")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../liquidglass/assets/demo.bc");
-#[cfg(all(feature = "game3d", not(feature = "liquidglass"), not(feature = "calculator")))]
+#[cfg(all(feature = "game3d", not(feature = "liquidglass"), not(feature = "calculator"), not(feature = "websdk")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../game3d/assets/demo.bc");
-#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass"), not(feature = "calculator")))]
+#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass"), not(feature = "calculator"), not(feature = "websdk")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../material/assets/gallery.bc");
 
 #[wasm_bindgen(start)]
