@@ -213,13 +213,14 @@ class SwitchWidget extends Widget {
         let w = m.du() * 9.0; let h = m.du() * 5.0; let hw = w / 2.0; let hh = h / 2.0; let r = hh;
         let v = 0.0; if (has(p, "value")) { v = p.value; }
         let a = app.clock.ease(concat("sw:", idOf(p)), v);
-        // Track: glass off, accent on.
+        let vel = v - a;
+        // Track: a glass channel that fills with accent-tinted glass as it turns on.
         pnt.glass(cx, cy, hw, hh, r, m.u * 0.14, 0.0, th.glassThin(), th.rim(0.8), m.u * 3.0, 0.4, m.u * 1.4);
-        if (a > 0.01) { pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, th.acc(a), CLEAR); }
-        // Thumb slides.
+        if (a > 0.01) { pnt.glass(cx, cy, hw, hh, r, m.u * 0.0, 0.0, accentGlass(th, 0.78 * a), th.rim(0.6), m.u * 3.0, 0.4, m.u * 1.2); }
+        // Thumb: a Liquid-Glass drop that stretches along its slide and settles.
         let tr = hh - m.u * 0.7; let tx = cx - hw + r + a * (w - r * 2.0);
         pnt.shadow(tx, cy, tr, tr, tr, m.u * 0.1, m.u * 0.3, m.u * 1.2, [0.0, 0.0, 0.0, 0.25]);
-        pnt.rect(tx, cy, tr, tr, tr, 0.0, 0.0, WHITE, CLEAR);
+        paintLiquidIndicator(app, tx, cy, tr, tr, tr, vel * 1.6, brightGlass(th, 0.96), 0.0);
         if (has(p, "onTap")) { pnt.addTap(cx, cy, hw, hh, concat("sw:", idOf(p)), p.onTap); }
     }
 }
@@ -233,14 +234,14 @@ class SliderWidget extends Widget {
         let mz = this.measure(app); let w = mz.w; let hw = w / 2.0;
         let v = 0.5; if (has(p, "value")) { v = p.value; }
         let trackH = m.u * 1.1; let left = cx - hw + m.u * 1.6; let right = cx + hw - m.u * 1.6; let span = right - left;
-        // Glass track + accent active portion.
+        // Glass track + accent-tinted-glass active portion.
         pnt.glass((left + right) / 2.0, cy, span / 2.0 + trackH, trackH, trackH, m.u * 0.1, 0.0, th.glassThin(), th.rim(0.7), m.u * 2.0, 0.3, m.u * 1.0);
         let tx = left + v * span;
-        pnt.rect((left + tx) / 2.0, cy, (tx - left) / 2.0, trackH, trackH, 0.0, 0.0, th.acc(1.0), CLEAR);
-        // Glass thumb.
+        pnt.glass((left + tx) / 2.0, cy, (tx - left) / 2.0, trackH, trackH, m.u * 0.0, 0.0, accentGlass(th, 0.85), th.rim(0.5), m.u * 2.0, 0.3, m.u * 0.9);
+        // Liquid-Glass thumb: a refractive drop with a bright specular rim.
         let thr = m.du() * 1.9;
         pnt.shadow(tx, cy, thr, thr, thr, m.u * 0.1, m.u * 0.3, m.u * 1.2, [0.0, 0.0, 0.0, 0.25]);
-        pnt.rect(tx, cy, thr, thr, thr, 0.0, 0.0, WHITE, CLEAR);
+        paintLiquidIndicator(app, tx, cy, thr, thr, thr, 0.0, brightGlass(th, 0.96), 0.0);
         if (has(p, "onChanged")) {
             pnt.addDrag(cx, cy, hw, mz.h / 2.0, p.onChanged, left, span);
             app.registerWheel(p.onChanged, v);
@@ -257,8 +258,12 @@ class ChipWidget extends Widget {
         let mz = this.measure(app); let hw = mz.w / 2.0; let hh = mz.h / 2.0; let r = hh;
         let v = 0.0; if (has(p, "value")) { v = p.value; }
         let a = app.clock.ease(concat("chip:", idOf(p)), v);
-        pnt.glass(cx, cy, hw, hh, r, m.u * 0.14, 0.0, th.glassThin(), th.rim(0.9), m.u * 3.0, 0.5, m.u * 1.4);
-        if (a > 0.01) { pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, th.acc(a * 0.9), CLEAR); }
+        let pr = app.clock.pressVal(concat("chip:", idOf(p)));
+        let sc = 1.0 - pr * 0.05; let chw = hw * sc; let chh = hh * sc; let cr = r * sc;
+        pnt.glass(cx, cy, chw, chh, cr, m.u * 0.14, 0.0, th.glassThin(), th.rim(0.9), m.u * 3.0, 0.5, m.u * 1.4);
+        // Selected: the chip fills with accent-tinted glass (a refractive lens),
+        // not a flat colour — the whole chip becomes liquid glass.
+        if (a > 0.01) { pnt.glass(cx, cy, chw, chh, cr, m.u * 0.0, 0.0, accentGlass(th, 0.82 * a), th.rim(0.7), m.u * 3.0, 0.5, m.u * 1.2); }
         let col = th.ink(1.0); if (a > 0.5) { col = th.onAcc(1.0); }
         app.font.text(pnt, p.label, cx, cy, m.cell("label"), col);
         if (has(p, "onTap")) { pnt.addTap(cx, cy, hw, hh, concat("chip:", idOf(p)), p.onTap); }
@@ -275,11 +280,13 @@ class SegmentedButtonWidget extends Widget {
         let segs = p.segments; let n = len(segs); let segW = mz.w / n;
         let sel0 = 0; if (has(p, "selected")) { sel0 = p.selected; }
         let a = app.clock.ease(concat("seg:", idOf(p)), num(sel0));
+        let vel = num(sel0) - a;
         // Glass container.
         pnt.glass(cx, cy, hw, hh, r, m.u * 0.14, 0.0, th.glassThin(), th.rim(0.8), m.u * 3.0, 0.4, m.u * 1.6);
-        // Sliding accent highlight.
+        // Liquid-Glass selection drop: a refractive accent gel that flows segment
+        // to segment, stretching toward the new one and settling.
         let left = cx - hw; let hx = left + segW / 2.0 + a * segW;
-        pnt.rect(hx, cy, segW / 2.0 - m.u * 0.4, hh - m.u * 0.4, r - m.u * 0.4, 0.0, 0.0, th.acc(0.92), CLEAR);
+        paintLiquidIndicator(app, hx, cy, segW / 2.0 - m.u * 0.4, hh - m.u * 0.4, r - m.u * 0.4, vel, accentGlass(th, 0.82), 0.0);
         for (let i = 0; i < n; i++) {
             let sx = left + segW * i + segW / 2.0;
             let col = th.ink(0.95); if (i == sel0) { col = th.onAcc(1.0); }
@@ -299,13 +306,15 @@ class NavigationBarWidget extends Widget {
         let items = p.items; let n = len(items); let segW = mz.w / n;
         let sel0 = 0; if (has(p, "selected")) { sel0 = p.selected; }
         let a = app.clock.ease(concat("nav:", idOf(p)), num(sel0));
+        let vel = num(sel0) - a;
         // Floating glass pill bar.
         let r = hh - m.u * 1.2;
         pnt.glass(cx, cy, hw - m.u * 1.2, hh - m.u * 1.2, r, m.u * 0.16, 0.0, th.glass(1.2), th.rim(0.9), m.u * 4.0, 0.45, m.u * 2.6);
         let left = cx - hw; let hx = left + segW / 2.0 + a * segW;
-        // Selected indicator (glass highlight).
-        let indR = m.du() * 2.6;
-        pnt.rect(hx, cy - m.u * 0.6, indR, indR * 0.7, indR * 0.7, 0.0, 0.0, th.acc(0.22), CLEAR);
+        // Liquid-Glass selection drop sliding under the active tab — a refractive
+        // accent gel that stretches toward the destination tab and settles round.
+        let indW = m.du() * 3.4; let indH = m.du() * 3.0;
+        paintLiquidIndicator(app, hx, cy - m.u * 0.6, indW, indH, indH, vel, accentGlass(th, 0.5), 0.0);
         for (let i = 0; i < n; i++) {
             let sx = left + segW * i + segW / 2.0;
             let col = th.inkSoft(0.85); if (i == sel0) { col = th.acc(1.0); }
@@ -327,9 +336,11 @@ class TabsWidget extends Widget {
         let tabs = p.tabs; let n = len(tabs); let segW = mz.w / n;
         let sel0 = 0; if (has(p, "selected")) { sel0 = p.selected; }
         let a = app.clock.ease(concat("tab:", idOf(p)), num(sel0));
+        let vel = num(sel0) - a;
         pnt.glass(cx, cy, hw, hh, r, m.u * 0.12, 0.0, th.glassThin(), th.rim(0.7), m.u * 2.5, 0.35, m.u * 1.4);
         let left = cx - hw; let hx = left + segW / 2.0 + a * segW;
-        pnt.rect(hx, cy, segW / 2.0 - m.u * 0.4, hh - m.u * 0.4, r - m.u * 0.4, 0.0, 0.0, WHITE, CLEAR);
+        // A bright Liquid-Glass drop flowing between tabs.
+        paintLiquidIndicator(app, hx, cy, segW / 2.0 - m.u * 0.4, hh - m.u * 0.4, r - m.u * 0.4, vel, brightGlass(th, 0.9), 0.0);
         for (let i = 0; i < n; i++) {
             let sx = left + segW * i + segW / 2.0;
             let col = th.ink(0.9); if (i == sel0) { col = [0.1, 0.11, 0.14, 1.0]; }
@@ -401,7 +412,7 @@ class ProgressWidget extends Widget {
         let a = app.clock.ease(concat("pg:", idOf(p)), v);
         pnt.glass(cx, cy, hw, hh, hh, 0.0, 0.0, th.glassThin(), th.rim(0.5), m.u * 1.5, 0.2, m.u * 0.8);
         let left = cx - hw;
-        pnt.rect(left + a * mz.w / 2.0, cy, a * hw, hh, hh, 0.0, 0.0, th.acc(1.0), CLEAR);
+        if (a > 0.01) { pnt.glass(left + a * hw, cy, a * hw, hh, hh, 0.0, 0.0, accentGlass(th, 0.9), th.rim(0.5), m.u * 1.5, 0.3, m.u * 0.7); }
     }
 }
 

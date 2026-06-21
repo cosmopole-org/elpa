@@ -429,3 +429,29 @@ function paintGlassPanel(app, cx, cy, hw, hh, r, mode) {
     pnt.glass(cx, cy, hw, hh, r, m.u * 0.18, 0.0, tint, th.rim(1.0), refr, spec, blur);
     return 0;
 }
+
+// A Liquid-Glass selection indicator — the signature iOS-26 behaviour: a
+// *refractive glass drop* (not a flat fill) that **squashes and stretches along
+// its travel** so a moving selection reads as a gel flowing between states, then
+// settles round. `vel` is how far it still has to slide (in cells, 0 at rest);
+// `tint` is the glass tint over the refracted backdrop (accent for a primary
+// selection, a bright neutral for tabs); `axis` 0 = horizontal slide, 1 =
+// vertical. A faint accent glow + a strong specular rim sell the liquid lens.
+function paintLiquidIndicator(app, cx, cy, hw, hh, r, vel, tint, axis) {
+    let m = app.metrics; let th = app.theme; let pnt = app.painter;
+    let s = abs(vel); if (s > 1.0) { s = 1.0; }
+    let iw = hw; let ih = hh;
+    if (axis < 0.5) { iw = hw * (1.0 + s * 0.42); ih = hh * (1.0 - s * 0.16); }
+    else { ih = hh * (1.0 + s * 0.42); iw = hw * (1.0 - s * 0.16); }
+    let ir = r; let mn = iw; if (ih < mn) { mn = ih; } if (ir > mn) { ir = mn; }
+    pnt.shadow(cx, cy, iw, ih, ir, m.u * 0.1, m.u * 0.3, m.u * 1.6, [th.accCh(0), th.accCh(1), th.accCh(2), 0.22]);
+    pnt.glass(cx, cy, iw, ih, ir, m.u * 0.16, 0.0, tint, th.rim(1.0), m.u * 5.5, 0.9, m.u * 1.6);
+    return 0;
+}
+
+// The accent glass tint for a primary Liquid-Glass selection drop.
+function accentGlass(th, a) { return [th.accCh(0), th.accCh(1), th.accCh(2), a]; }
+
+// A bright neutral glass tint for a Liquid-Glass thumb / drop (Switch, Slider,
+// Tabs) — a clear refractive lens with a faint cool body.
+function brightGlass(th, a) { return [th.mix(1.0, 0.92), th.mix(1.0, 0.94), th.mix(1.0, 1.0), a]; }

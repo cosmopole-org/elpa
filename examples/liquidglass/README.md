@@ -56,6 +56,20 @@ Every instance carries a `kind` (`SOLID` / `GLYPH` / `GLASS` / `SHADOW`) the
 fragment shader branches on, so background gradients, glass, opaque accents and
 text all ride **the same pipeline and the same two draws**.
 
+### Fluid selection (the iOS-26 "Liquid Glass" behaviour)
+
+Following Apple's Liquid Glass language, a **selection is itself a refractive glass
+drop, not a flat fill** — and it is *fluid*: when the selection moves (a tab,
+segment, switch or slider), the drop **squashes and stretches along its travel**
+like a gel flowing to the new state, then settles round. The shared
+`paintLiquidIndicator` helper renders this — a refractive lens (lensing +
+specular) whose width/height are modulated by how far it still has to slide
+(`vel = target − eased`), driving the **Switch** thumb, **Slider** thumb, the
+**SegmentedButton** / **Tabs** highlight and the **NavigationBar** tab indicator.
+Tracks, chips and progress fills are accent-*tinted glass* rather than opaque
+accent, so every part of a control is liquid glass. It is still all `GLASS`
+instances on the one pipeline — the fluidity is a per-frame size tweak, free.
+
 ## Architecture (object-oriented, single-responsibility modules)
 
 The SDK is built from ES6 `class`es, concatenated in dependency order by `lib.rs`
