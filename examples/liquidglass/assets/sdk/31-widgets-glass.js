@@ -157,11 +157,11 @@ class KeyButtonWidget extends Widget {
         let sc = 1.0 - pr * 0.06; let hw = hw0 * sc; let hh = hh0 * sc; let r = r0 * sc;
 
         if (kind == "op") {
-            pnt.shadow(cx, cy, hw, hh, r, m.u * 0.0, m.u * 0.5, m.u * 3.4, [th.accCh(0), th.accCh(1), th.accCh(2), 0.2]);
+            pnt.shadow(cx, cy, hw, hh, r, m.u * 0.18, m.u * 0.5, m.u * 2.0, [0.0, 0.0, 0.05, 0.22]);
             pnt.glass(cx, cy, hw, hh, r, m.u * 0.14, 0.0, accentGlass(th, 0.72), th.rim(1.0), m.u * 4.5, 0.85, m.u * 1.6);
             if (pr > 0.01) { pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, [1.0, 1.0, 1.0, pr * 0.2], CLEAR); }
         } else { if (kind == "eq") {
-            pnt.shadow(cx, cy, hw, hh, r, m.u * 0.0, m.u * 0.7, m.u * 4.6, [th.accCh(0), th.accCh(1), th.accCh(2), 0.28]);
+            pnt.shadow(cx, cy, hw, hh, r, m.u * 0.18, m.u * 0.5, m.u * 2.0, [0.0, 0.0, 0.05, 0.22]);
             pnt.glass(cx, cy, hw, hh, r, m.u * 0.14, 0.0, accentGlass(th, 0.8), th.rim(1.0), m.u * 5.0, 0.95, m.u * 1.6);
             pnt.rect(cx, cy - hh * 0.52, hw * 0.9, hh * 0.34, r, 0.0, 0.0, [1.0, 1.0, 1.0, 0.16], CLEAR);
             if (pr > 0.01) { pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, [1.0, 1.0, 1.0, pr * 0.22], CLEAR); }
