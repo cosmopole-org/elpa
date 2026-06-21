@@ -22,6 +22,10 @@ liquidglass = []
 # on the `elpa-liquidglass` SDK) instead. Build with
 # `trunk build --features calculator`.
 calculator = []
+# Embed the Web SDK showcase page (the HTML element model + CSS engine from the
+# object-oriented `elpa-websdk` kit, rendered through one instanced SDF pipeline)
+# instead. Build with `trunk build --features websdk`.
+websdk = []
 
 [dependencies]
 elpa = { path = "../../crates/elpa", features = ["wgpu"] }
