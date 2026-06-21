@@ -63,6 +63,14 @@ pub enum UnitKind {
     Call { argc: u32 },
     /// `0xfc` — boolean `!`.
     Not,
+    /// `0xef` — short-circuiting logical `&&` (`is_or` false) / `||` (`is_or`
+    /// true). The left operand follows immediately; `op2_end` is the unit index
+    /// just past the right operand, so the executor can skip it on short-circuit.
+    Logical { is_or: bool, op2_end: usize },
+    /// `0xee` — conditional/ternary `c ? a : b`. The condition follows
+    /// immediately, then the consequent and alternate. `alt_start` is the unit
+    /// index of the alternate; `end` is one past the whole expression.
+    Conditional { alt_start: usize, end: usize },
     /// `0xfd` — `cast` of the following value expression to `target_type`.
     Cast { target_type: Rc<str> },
     /// `0xf0..=0xfb` — an arithmetic / comparison operator, normalised to the
@@ -101,6 +109,10 @@ pub enum UnitKind {
     },
     /// `0x15` — unconditional jump to a unit index.
     Jump(usize),
+    /// `0x17` — `continue` (re-run the enclosing loop head).
+    Continue,
+    /// `0x18` — `break` (exit the enclosing loop or switch).
+    Break,
     /// `0x08` — object-literal head (type id + property count).
     ObjHead { typ: i64, props_len: i32 },
     /// `0x09` — array-literal head (element count).
@@ -320,6 +332,30 @@ impl<'a> Decoder<'a> {
                 self.emit(pos, UnitKind::Not);
                 self.decode_value(pos + 1)
             }
+            0xef => {
+                // Logical: opcode, flag (1 byte), op1, op2. The skip target
+                // (`op2_end`) is the unit index just past `op2`; since units are
+                // emitted in order, that is simply `units.len()` once `op2` is
+                // decoded — a unit index already, needing no relocation.
+                let idx = self.emit(pos, UnitKind::Logical { is_or: false, op2_end: 0 });
+                let is_or = self.bytes[pos + 1] == 1;
+                let after_op1 = self.decode_value(pos + 2);
+                let after_op2 = self.decode_value(after_op1);
+                self.units[idx] = UnitKind::Logical { is_or, op2_end: self.units.len() };
+                after_op2
+            }
+            0xee => {
+                // Conditional: opcode, cond, consequent, alternate. `alt_start` is
+                // the unit index where the alternate begins (units emitted so far,
+                // just after the consequent); `end` is one past the alternate.
+                let idx = self.emit(pos, UnitKind::Conditional { alt_start: 0, end: 0 });
+                let after_cond = self.decode_value(pos + 1);
+                let after_conseq = self.decode_value(after_cond);
+                let alt_start = self.units.len();
+                let after_alt = self.decode_value(after_conseq);
+                self.units[idx] = UnitKind::Conditional { alt_start, end: self.units.len() };
+                after_alt
+            }
             0xfd => {
                 // Cast: opcode, value expression, then the target-type string —
                 // which is folded straight into the unit (no trailing immediate).
@@ -408,9 +444,21 @@ impl<'a> Decoder<'a> {
                 p
             }
             0x0d => self.decode_call(pos),
+            // A bare expression statement whose value is discarded: a
+            // short-circuit (`0xef`) or conditional (`0xee`). Decode the whole
+            // expression so its (possibly side-effecting) units run as a unit.
+            0xef | 0xee => self.decode_value(pos),
             0x14 => {
                 self.emit(pos, UnitKind::Return);
                 self.decode_value(pos + 1)
+            }
+            0x17 => {
+                self.emit(pos, UnitKind::Continue);
+                pos + 1
+            }
+            0x18 => {
+                self.emit(pos, UnitKind::Break);
+                pos + 1
             }
             0x10 => self.decode_if_chain(pos),
             0x11 => {

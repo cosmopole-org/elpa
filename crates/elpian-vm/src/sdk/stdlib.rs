@@ -215,7 +215,7 @@ pub const BUILTINS: &[&str] = &[
     "endsWith", "padStart", "padEnd", "ord", "chr",
     // oop
     "class", "extend", "new", "method", "field", "setField", "isInstance", "className",
-    "parentMethod", "classOf",
+    "parentMethod", "classOf", "superMethod",
     // closures
     "cell", "cellGet", "cellSet",
 ];
@@ -350,7 +350,14 @@ pub fn invoke(name: &str, args: &[Val]) -> Result<Val, String> {
         // ---- foundation: reflection / conversion ---------------------------
         "typeOf" => {
             arity(name, args, 1)?;
-            Ok(vstr(type_name(&args[0]).to_string()))
+            // JavaScript has a single `number` type; the VM's distinct numeric
+            // representations (i16..f64) all report as `number`, with `number`
+            // itself aliased onto f64.
+            let t = match args[0].typ {
+                1..=5 => "number",
+                _ => type_name(&args[0]),
+            };
+            Ok(vstr(t.to_string()))
         }
         "isNull" => {
             arity(name, args, 1)?;
@@ -784,6 +791,7 @@ pub fn invoke(name: &str, args: &[Val]) -> Result<Val, String> {
         "new" => oop_new(args),
         "method" => oop_method(args),
         "parentMethod" => oop_parent_method(args),
+        "superMethod" => super_method(args),
         "field" => {
             arity(name, args, 2)?;
             let o = expect_object(name, &args[0])?;
@@ -1074,6 +1082,37 @@ fn oop_parent_method(args: &[Val]) -> Result<Val, String> {
         Some(p) if p.typ == 8 => Ok(lookup_method(&p, &mname).unwrap_or_else(vnull)),
         _ => Ok(vnull()),
     }
+}
+
+/// `superMethod(proto, name, receiver)` — used by the JS front-end's `super.m()`
+/// lowering. Walks `proto` and its `__parent` chain (the prototype links a
+/// `class` desugaring builds) for the method `name`, and returns it *bound* to
+/// `receiver` so the inherited body sees the right `this`. Returns null if the
+/// method is not found anywhere on the chain.
+fn super_method(args: &[Val]) -> Result<Val, String> {
+    arity("superMethod", args, 3)?;
+    let mut proto = args[0].clone();
+    let name = expect_string("superMethod", &args[1])?;
+    let receiver = args[2].clone();
+    while proto.typ == 8 {
+        let (entry, parent) = {
+            let p = proto.as_object();
+            let b = p.borrow();
+            (b.data.data.get(&name).cloned(), b.data.data.get("__parent").cloned())
+        };
+        if let Some(m) = entry {
+            if m.typ == 10 {
+                let bound = m.as_func().borrow().bind(receiver);
+                return Ok(Val { typ: 10, data: Payload::from(Rc::new(RefCell::new(bound))) });
+            }
+            return Ok(m);
+        }
+        match parent {
+            Some(p) => proto = p,
+            None => break,
+        }
+    }
+    Ok(vnull())
 }
 
 fn lookup_method(class: &Val, name: &str) -> Option<Val> {

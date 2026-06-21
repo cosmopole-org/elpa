@@ -1,4 +1,8 @@
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 
 use serde_json::{json, Value};
 
@@ -116,6 +120,25 @@ fn serialize_expr(val: serde_json::Value) -> Vec<u8> {
         "not" => {
             result.push(0xfc);
             result.append(&mut serialize_expr(val["data"]["value"].clone()));
+        }
+        "logical" => {
+            // Short-circuit `&&` / `||`. Layout: [0xef][flag][op1][op2], where
+            // `flag` is 0 for `&&` and 1 for `||`. The "skip the right operand"
+            // target is recovered at decode time as a unit index (the unit just
+            // past `op2`), so no byte offsets are baked here.
+            let is_or = val["data"]["operation"].as_str().unwrap() == "||";
+            result.push(0xef);
+            result.push(if is_or { 1 } else { 0 });
+            result.append(&mut serialize_expr(val["data"]["operand1"].clone()));
+            result.append(&mut serialize_expr(val["data"]["operand2"].clone()));
+        }
+        "ternary" => {
+            // `c ? a : b`. Layout: [0xee][cond][consequent][alternate]. The
+            // branch boundaries are recovered as unit indices at decode time.
+            result.push(0xee);
+            result.append(&mut serialize_expr(val["data"]["condition"].clone()));
+            result.append(&mut serialize_expr(val["data"]["consequent"].clone()));
+            result.append(&mut serialize_expr(val["data"]["alternate"].clone()));
         }
         "arithmetic" => {
             match val["data"]["operation"].as_str().unwrap() {
@@ -330,9 +353,14 @@ fn collect_used(node: &Value, used: &mut std::collections::BTreeSet<String>) {
             collect_used(&node["data"]["callee"], used);
             if let Some(args) = node["data"]["args"].as_array() { for a in args { collect_used(a, used); } }
         }
-        "arithmetic" => {
+        "arithmetic" | "logical" => {
             collect_used(&node["data"]["operand1"], used);
             collect_used(&node["data"]["operand2"], used);
+        }
+        "ternary" => {
+            collect_used(&node["data"]["condition"], used);
+            collect_used(&node["data"]["consequent"], used);
+            collect_used(&node["data"]["alternate"], used);
         }
         "not" | "cast" => collect_used(&node["data"]["value"], used),
         "definition" => collect_used(&node["data"]["rightSide"], used),
@@ -457,6 +485,18 @@ pub fn compile_ast(program: serde_json::Value, start_point: usize) -> Vec<u8> {
             "returnOperation" => {
                 result.push(0x14);
                 result.append(&mut serialize_expr(operation["data"]["value"].clone()).to_vec());
+            }
+            "continueStmt" => {
+                result.push(0x17);
+            }
+            "breakStmt" => {
+                result.push(0x18);
+            }
+            // A bare short-circuit / conditional expression statement (e.g.
+            // `ready && start()`): evaluate it for its side effects; the produced
+            // value is discarded like any other expression-statement result.
+            "logical" | "ternary" => {
+                result.append(&mut serialize_expr(operation.clone()));
             }
             "ifStmt" => {
                 let (mut compiled_code, baps) =
@@ -1754,6 +1794,18 @@ fn js_negate(v: Value) -> Value {
     }
     js_arith("-", js_int(0), v)
 }
+/// Short-circuiting `&&` / `||`. Modelled as a dedicated node (not an arithmetic
+/// op) so the bytecode can evaluate the right operand lazily — `a && b` only
+/// touches `b` when `a` is truthy, `a || b` only when `a` is falsy — exactly as
+/// JavaScript requires (and as guard idioms like `obj && obj.x` depend on).
+fn js_logical(op: &str, a: Value, b: Value) -> Value {
+    json!({ "type": "logical", "data": { "operation": op, "operand1": a, "operand2": b } })
+}
+/// The conditional (ternary) operator `c ? a : b`. Like `&&`/`||` it is lazy:
+/// only the taken branch is evaluated.
+fn js_ternary(c: Value, a: Value, b: Value) -> Value {
+    json!({ "type": "ternary", "data": { "condition": c, "consequent": a, "alternate": b } })
+}
 
 struct JsParser {
     toks: Vec<JsTok>,
@@ -1764,11 +1816,30 @@ struct JsParser {
     lifted: Vec<Value>,
     /// Counter for unique synthetic closure names (`__anon_N`).
     anon_counter: usize,
+    /// While parsing a class method body, the parent class name (if the class
+    /// `extends` one) so `super.m(...)` can resolve to the parent's method.
+    class_parent: Option<String>,
+    /// Class names that declared at least one `static` member, with the per-class
+    /// holder object `__static_<Name>`. A `C.member` access where `C` is such a
+    /// class is rewritten to read off that holder (see [`JsParser::parse_postfix`]).
+    class_statics: HashSet<String>,
+    /// The constructor parameter list recorded for each class, so a derived class
+    /// with no explicit constructor can synthesise one that forwards those args to
+    /// `super` (JS's implicit-constructor behaviour).
+    class_ctor_params: HashMap<String, Vec<String>>,
 }
 
 impl JsParser {
     fn new(toks: Vec<JsTok>) -> Self {
-        JsParser { toks, pos: 0, lifted: Vec::new(), anon_counter: 0 }
+        JsParser {
+            toks,
+            pos: 0,
+            lifted: Vec::new(),
+            anon_counter: 0,
+            class_parent: None,
+            class_statics: HashSet::new(),
+            class_ctor_params: HashMap::new(),
+        }
     }
     fn peek(&self) -> &JsTok {
         &self.toks[self.pos]
@@ -1878,11 +1949,15 @@ impl JsParser {
             self.eat_punct(";");
             return vec![json!({ "type": "returnOperation", "data": { "value": val } })];
         }
-        if self.at_ident("break") || self.at_ident("continue") {
-            // No break/continue opcode in the bytecode; accept and drop.
+        if self.at_ident("break") {
             self.advance();
             self.eat_punct(";");
-            return vec![];
+            return vec![json!({ "type": "breakStmt", "data": {} })];
+        }
+        if self.at_ident("continue") {
+            self.advance();
+            self.eat_punct(";");
+            return vec![json!({ "type": "continueStmt", "data": {} })];
         }
         if self.at_punct("{") {
             // A bare block: inline its statements (the VM has one flat scope).
@@ -1974,16 +2049,24 @@ impl JsParser {
 
         let mut ctor_params: Vec<String> = vec![];
         let mut ctor_body: Vec<Value> = vec![];
+        let mut had_ctor = false;
         let mut methods: Vec<(String, Vec<String>, Vec<Value>)> = vec![];
         let mut fields: Vec<(String, Value)> = vec![];
+        // `static` members belong to the class itself, not its instances.
+        let mut static_methods: Vec<(String, Vec<String>, Vec<Value>)> = vec![];
+        let mut static_fields: Vec<(String, Value)> = vec![];
+
+        // Method bodies may use `super.m(...)`; record the parent for the duration
+        // of the class body so `parse_postfix` can resolve it (saving/restoring any
+        // outer class context to support nested class definitions).
+        let prev_parent = self.class_parent.take();
+        self.class_parent = parent.clone();
 
         while !self.at_punct("}") && !self.at_eof() {
             if self.eat_punct(";") {
                 continue;
             }
-            // `static` members are attached to the instance like any other (the
-            // VM has no class object to hang them on); accept the keyword.
-            let _is_static = self.eat_ident("static");
+            let is_static = self.eat_ident("static");
             let member = self.expect_ident_name();
             if self.at_punct("(") {
                 let params = self.parse_paren_params();
@@ -1991,6 +2074,9 @@ impl JsParser {
                 if member == "constructor" {
                     ctor_params = params;
                     ctor_body = body;
+                    had_ctor = true;
+                } else if is_static {
+                    static_methods.push((member, params, body));
                 } else {
                     methods.push((member, params, body));
                 }
@@ -1998,10 +2084,28 @@ impl JsParser {
                 // Class field: `name = expr;` or bare `name;` (defaults to 0).
                 let val = if self.eat_punct("=") { self.parse_expr() } else { js_int(0) };
                 self.eat_punct(";");
-                fields.push((member, val));
+                if is_static {
+                    static_fields.push((member, val));
+                } else {
+                    fields.push((member, val));
+                }
             }
         }
         self.expect_punct("}");
+        self.class_parent = prev_parent;
+
+        // A derived class with no explicit constructor implicitly forwards its
+        // arguments to `super` (`constructor(...args) { super(...args); }`). The VM
+        // front-end has no rest params, so adopt the parent constructor's parameter
+        // list (recorded when the parent was parsed) and forward those by name.
+        if !had_ctor {
+            if let Some(p) = &parent {
+                if let Some(pp) = self.class_ctor_params.get(p) {
+                    ctor_params = pp.clone();
+                }
+            }
+        }
+        self.class_ctor_params.insert(name.clone(), ctor_params.clone());
 
         // Drain field-initialiser / super-arg closures lifted during member
         // parsing; they belong at the head of the installer body.
@@ -2022,6 +2126,13 @@ impl JsParser {
             } else {
                 ctor_rest.push(stmt);
             }
+        }
+        // An implicit constructor forwards its (parent-derived) parameters to
+        // `super`, so a subclass that omits the constructor still initialises the
+        // base correctly.
+        if !had_ctor && parent.is_some() {
+            super_args = ctor_params.iter().map(|p| js_ident(p)).collect();
+            had_super = true;
         }
 
         let mut out: Vec<Value> = vec![];
@@ -2094,6 +2205,34 @@ impl JsParser {
         out.push(json!({ "type": "functionDefinition", "data": {
             "name": name, "params": ctor_params, "body": ctor_body_out } }));
 
+        // 5. Static members live on the class itself. There is no class object in
+        //    the VM (the class name is the constructor function), so collect them
+        //    into a companion holder `__static_<Class>`; a `C.member` access where
+        //    `C` is a class with statics is rewritten to read off that holder (see
+        //    `parse_postfix`). Static methods are shared top-level functions, like
+        //    instance methods.
+        if !static_methods.is_empty() || !static_fields.is_empty() {
+            let mut static_map = serde_json::Map::new();
+            // Inherit the parent's static holder so `Child.staticOfParent` resolves.
+            if let Some(p) = &parent {
+                if self.class_statics.contains(p) {
+                    static_map.insert("__parent".to_string(), js_ident(&format!("__static_{}", p)));
+                }
+            }
+            for (mname, params, body) in static_methods.into_iter() {
+                let fname = format!("__sm_{}__{}", name, mname);
+                out.push(json!({ "type": "functionDefinition", "data": {
+                    "name": fname, "params": params, "body": body } }));
+                static_map.insert(mname, js_ident(&fname));
+            }
+            for (fname, val) in static_fields.into_iter() {
+                static_map.insert(fname, val);
+            }
+            out.push(js_def(&format!("__static_{}", name),
+                json!({ "type": "object", "data": { "value": Value::Object(static_map) } })));
+            self.class_statics.insert(name.clone());
+        }
+
         out
     }
 
@@ -2148,10 +2287,81 @@ impl JsParser {
             self.parse_simple()
         };
         self.expect_punct(")");
-        let mut body = self.parse_block_or_single();
-        body.extend(update);
-        out.push(json!({ "type": "loopStmt", "data": { "condition": cond, "body": body } }));
+        let body = self.parse_block_or_single();
+
+        if !Self::body_has_continue(&body) {
+            // Fast path: no `continue` in the body, so appending the update step
+            // to the end of each iteration is both correct and cheap.
+            let mut loop_body = body;
+            loop_body.extend(update);
+            out.push(json!({ "type": "loopStmt", "data": { "condition": cond, "body": loop_body } }));
+            return out;
+        }
+
+        // `continue` jumps to the loop head, which would skip an update appended at
+        // the tail. Run the update at the *top* of every iteration instead (guarded
+        // so the first iteration skips it), then test the condition with `break`.
+        // This makes `for (...; ...; update) { ...; continue; }` run `update` on the
+        // `continue` path, matching JavaScript.
+        self.anon_counter += 1;
+        let started = format!("__for_started_{}", self.anon_counter);
+        let mut loop_body: Vec<Value> = vec![];
+        // if (started) { update } else { started = true }
+        loop_body.push(json!({ "type": "ifStmt", "data": {
+            "condition": js_ident(&started),
+            "body": update,
+            "elseStmt": { "data": { "body": [
+                js_assign(js_ident(&started), json!({ "type": "bool", "data": { "value": true } })).unwrap()
+            ] } }
+        } }));
+        // if (!(cond)) { break; }
+        loop_body.push(json!({ "type": "ifStmt", "data": {
+            "condition": json!({ "type": "not", "data": { "value": cond } }),
+            "body": [ json!({ "type": "breakStmt", "data": {} }) ]
+        } }));
+        loop_body.extend(body);
+        out.push(js_def(&started, json!({ "type": "bool", "data": { "value": false } })));
+        out.push(json!({ "type": "loopStmt", "data": {
+            "condition": json!({ "type": "bool", "data": { "value": true } }),
+            "body": loop_body
+        } }));
         out
+    }
+
+    /// Whether a (already-lowered) statement list contains a `continue` that
+    /// targets *this* loop — i.e. one not nested inside another loop (which owns
+    /// its own `continue`) or a function body.
+    fn body_has_continue(body: &[Value]) -> bool {
+        body.iter().any(Self::stmt_has_continue)
+    }
+    fn stmt_has_continue(stmt: &Value) -> bool {
+        match stmt["type"].as_str().unwrap_or("") {
+            "continueStmt" => true,
+            // Nested loops / functions bind their own `continue`; do not descend.
+            "loopStmt" | "functionDefinition" => false,
+            "ifStmt" => {
+                let d = &stmt["data"];
+                if d["body"].as_array().map(|b| Self::body_has_continue(b)).unwrap_or(false) {
+                    return true;
+                }
+                if d.get("elseifStmt").map(Self::stmt_has_continue).unwrap_or(false) {
+                    return true;
+                }
+                d.get("elseStmt")
+                    .and_then(|e| e["data"]["body"].as_array())
+                    .map(|b| Self::body_has_continue(b))
+                    .unwrap_or(false)
+            }
+            "switchStmt" => stmt["data"]["cases"]
+                .as_array()
+                .map(|cs| {
+                    cs.iter().any(|c| {
+                        c["body"]["body"].as_array().map(|b| Self::body_has_continue(b)).unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false),
+            _ => false,
+        }
     }
 
     fn parse_switch(&mut self) -> Value {
@@ -2249,18 +2459,55 @@ impl JsParser {
                     .collect();
             }
         }
-        // A bare expression only carries meaning to the bytecode when it is a
-        // call (e.g. `log(x)`); otherwise it has no operation to emit.
-        if target["type"] == "functionCall" {
-            return vec![target];
+        // A bare expression carries meaning to the bytecode when it can have a
+        // side effect: a call (`log(x)`), or a short-circuit / conditional whose
+        // taken branch may call (`ready && start()`, `cond ? a() : b()`).
+        match target["type"].as_str().unwrap_or("") {
+            "functionCall" | "logical" | "ternary" => vec![target],
+            _ => vec![],
         }
-        vec![]
     }
 
     // ---- Expressions (precedence climbing) ----------------------------------
 
     fn parse_expr(&mut self) -> Value {
-        self.parse_binary(0)
+        self.parse_ternary()
+    }
+
+    /// The conditional operator sits below everything else and is
+    /// right-associative: `a ? b : c ? d : e` parses as `a ? b : (c ? d : e)`.
+    fn parse_ternary(&mut self) -> Value {
+        let cond = self.parse_logical_or();
+        if self.eat_punct("?") {
+            let consequent = self.parse_ternary();
+            self.expect_punct(":");
+            let alternate = self.parse_ternary();
+            return js_ternary(cond, consequent, alternate);
+        }
+        cond
+    }
+
+    /// `||` — lower precedence than `&&`; left-associative.
+    fn parse_logical_or(&mut self) -> Value {
+        let mut left = self.parse_logical_and();
+        while self.at_punct("||") {
+            self.advance();
+            let right = self.parse_logical_and();
+            left = js_logical("||", left, right);
+        }
+        left
+    }
+
+    /// `&&` — binds tighter than `||`, looser than comparison/arithmetic (which
+    /// `parse_binary` handles); left-associative.
+    fn parse_logical_and(&mut self) -> Value {
+        let mut left = self.parse_binary(0);
+        while self.at_punct("&&") {
+            self.advance();
+            let right = self.parse_binary(0);
+            left = js_logical("&&", left, right);
+        }
+        left
     }
 
     /// Map a punctuator to `(precedence, elpian operator, right-associative)`.
@@ -2336,6 +2583,33 @@ impl JsParser {
         loop {
             if self.eat_punct(".") {
                 let name = self.expect_ident_name();
+                // `super.m` — resolve `m` on the parent prototype and bind it to the
+                // current `this`, so `super.m(args)` dispatches to the overridden
+                // base method with the right receiver.
+                if e["type"] == "identifier" && e["data"]["name"] == "super" {
+                    let parent = self.class_parent.clone().unwrap_or_default();
+                    e = json!({ "type": "functionCall", "data": {
+                        "callee": js_ident("superMethod"),
+                        "args": [
+                            js_ident(&format!("__proto_{}", parent)),
+                            js_string(&name),
+                            js_ident("this"),
+                        ],
+                    } });
+                    continue;
+                }
+                // `Class.staticMember` — read off the class's static holder rather
+                // than treating the constructor function as an object.
+                if e["type"] == "identifier"
+                    && e["data"]["name"].as_str().map(|n| self.class_statics.contains(n)).unwrap_or(false)
+                {
+                    let cname = e["data"]["name"].as_str().unwrap().to_string();
+                    e = json!({ "type": "indexer", "data": {
+                        "target": js_ident(&format!("__static_{}", cname)),
+                        "index": js_string(&name),
+                    } });
+                    continue;
+                }
                 e = json!({ "type": "indexer", "data": { "target": e, "index": js_string(&name) } });
             } else if self.at_punct("[") {
                 self.advance();

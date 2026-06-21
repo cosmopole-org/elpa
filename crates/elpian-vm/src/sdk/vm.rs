@@ -242,7 +242,8 @@ impl VM {
                         return Val::new(4, Payload::from(v as f32));
                     }
                 }
-                "f64" => {
+                "f64" | "number" => {
+                    // `number` is the JS numeric type, aliased onto f64.
                     if let Some(v) = data_value.as_f64() {
                         return Val::new(5, Payload::from(v));
                     }
