@@ -81,7 +81,13 @@ fn vs(@builtin(vertex_index) vi: u32, in: In) -> Out {
         vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0));
     let isGlyph = in.gp.x > 0.5 && in.gp.x < 1.5;
     let half = in.a.zw;
-    let local = corners[vi] * half;
+    // Shadows feather their coverage OUTSIDE the SDF box (the feather width rides
+    // in b.w). Grow the geometry quad by that feather so the soft edge has room to
+    // fade to zero; otherwise the quad clips the falloff into a hard rectangular
+    // halo — most visible on the wide-blur accent keys.
+    var ext = half;
+    if (in.gp.x > 2.5) { ext = half + vec2<f32>(in.b.w, in.b.w); }
+    let local = corners[vi] * ext;
     var rot = in.b.z;
     if (isGlyph) { rot = 0.0; }
     let cr = cos(rot);
