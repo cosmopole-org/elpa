@@ -80,6 +80,7 @@ function Card(p) { return new GlassCardWidget(p); }
 function Text(t, opt) { if (isNull(opt)) { opt = {}; } if (opt == 0) { opt = {}; } return new TextWidget(t, opt); }
 function Icon(p) { return new IconWidget(p); }
 function IconButton(p) { if (!has(p, "id")) { if (has(p, "icon")) { p.id = p.icon; } else { p.id = "iconBtn"; } } return new IconButtonWidget(p); }
+function KeyButton(p) { if (!has(p, "id")) { if (has(p, "label")) { p.id = p.label; } else { p.id = "key"; } } return new KeyButtonWidget(p); }
 function AppBar(p) { return new AppBarWidget(p); }
 function FilledButton(p) { if (!has(p, "id")) { p.id = p.label; } return new FilledButtonWidget(p); }
 function OutlinedButton(p) { if (!has(p, "id")) { p.id = p.label; } return new OutlinedButtonWidget(p); }

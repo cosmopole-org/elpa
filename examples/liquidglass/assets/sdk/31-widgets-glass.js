@@ -132,6 +132,60 @@ class GlassButtonWidget extends Widget {
     paint(app, cx, cy) { this._cx = cx; this._cy = cy; this.beginLeaf(app); paintPillButton(app, this.p, cx, cy, "glass"); }
 }
 
+// A grid key: a glass (or accent / equals) rounded button that fills the cell it
+// is given (`_fw`/`_fh` from `Expanded`/`GridView`), with a tactile press-scale,
+// a depth shadow (an accent glow for the accent variants) and a centred label. It
+// is the building block for keypads, dial pads and tile grids. `kind`:
+//   "num"  frosted glass + ink label          "op"  solid accent + on-accent label
+//   "fn"   thin glass + accent label          "eq"  solid accent + accent glow
+//   "util" thin glass + soft label
+class KeyButtonWidget extends Widget {
+    measureIntrinsic(app) {
+        let m = app.metrics;
+        let h = m.du() * 4.6; if (has(this.p, "height")) { h = this.p.height * m.u; }
+        let w = m.du() * 8.0; if (has(this.p, "width")) { w = this.p.width * m.u; }
+        return { w: w, h: h };
+    }
+    paint(app, cx, cy) {
+        this._cx = cx; this._cy = cy; this.beginLeaf(app);
+        let m = app.metrics; let th = app.theme; let pnt = app.painter; let p = this.p;
+        let mz = this.measure(app); let hw0 = mz.w / 2.0; let hh0 = mz.h / 2.0;
+        let r0 = hh0 * 0.62; if (has(p, "radius")) { r0 = p.radius * m.u; }
+        let kind = "num"; if (has(p, "kind")) { kind = p.kind; }
+        let pr = app.clock.pressVal(idOf(p));
+        let sc = 1.0 - pr * 0.06; let hw = hw0 * sc; let hh = hh0 * sc; let r = r0 * sc;
+
+        if (kind == "op") {
+            pnt.shadow(cx, cy, hw, hh, r, m.u * 0.2, m.u * 0.7, m.u * 2.4, [th.accCh(0) * 0.55, th.accCh(1) * 0.55, th.accCh(2) * 0.55, 0.45]);
+            pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, th.acc(1.0), CLEAR);
+            if (pr > 0.01) { pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, [1.0, 1.0, 1.0, pr * 0.2], CLEAR); }
+        } else { if (kind == "eq") {
+            pnt.shadow(cx, cy, hw, hh, r, m.u * 0.3, m.u * 0.9, m.u * 3.6, [th.accCh(0), th.accCh(1), th.accCh(2), 0.55]);
+            pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, th.acc(1.0), CLEAR);
+            pnt.rect(cx, cy - hh * 0.52, hw * 0.9, hh * 0.34, r, 0.0, 0.0, [1.0, 1.0, 1.0, 0.16], CLEAR);
+            if (pr > 0.01) { pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, [1.0, 1.0, 1.0, pr * 0.22], CLEAR); }
+        } else {
+            pnt.shadow(cx, cy, hw, hh, r, m.u * 0.18, m.u * 0.5, m.u * 2.0, [0.0, 0.0, 0.05, 0.22]);
+            let tint = th.glassThin(); if (kind == "num") { tint = th.glass(0.95); }
+            pnt.glass(cx, cy, hw, hh, r, m.u * 0.16, 0.0, tint, th.rim(1.0), m.u * 4.0, 0.6, m.u * 1.8);
+            if (pr > 0.01) { pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, [1.0, 1.0, 1.0, pr * 0.14], CLEAR); }
+        } }
+
+        let label = ""; if (has(p, "label")) { label = p.label; }
+        let cell = m.cell("title"); if (has(p, "size")) { cell = m.cellOf(p); }
+        let thick = m.weightThick(p);
+        let col = th.ink(1.0);
+        if (kind == "op") { col = th.onAcc(1.0); }
+        if (kind == "eq") { col = th.onAcc(1.0); }
+        if (kind == "fn") { col = th.acc(1.0); }
+        if (kind == "util") { col = th.inkSoft(0.95); }
+        if (has(p, "ink")) { col = th.inkColor(p.ink); }
+        app.font.paintCentered(pnt, label, cx, cy, cell, col, thick, 0);
+
+        if (has(p, "onTap")) { pnt.addTap(cx, cy, hw0, hh0, idOf(p), p.onTap); }
+    }
+}
+
 // A round glass floating action button.
 class GlassFabWidget extends Widget {
     measureIntrinsic(app) { let s = app.metrics.du() * 8.4; return { w: s, h: s }; }

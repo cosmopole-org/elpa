@@ -273,7 +273,7 @@ let history = [];       // [{ e, r }] most-recent-last
 let gUpdate = () => {};
 
 // Responsive layout sizes, refreshed each build from the size class.
-let LW = 70.0; let LBH = 11.0; let LTS = "title"; let LFS = "label";
+let LW = 70.0; let LBH = 12.0; let LTS = "title"; let LFS = "label"; let KEY_GAP = 1.8;
 let DISP_W = 62.0; let SMALL_MAX = 18.0; let BIG_MAX = 15.0; let HIST_MAX = 34.0;
 
 // ============================================================================
@@ -329,24 +329,20 @@ function onCalcKey(k) {
 // ============================================================================
 //  Widget builders
 // ============================================================================
-// One keypad key: a glass (or accent-filled) rounded box with a centred label,
-// wrapped in `Expanded` so a row of them shares the width evenly.
+// One keypad key — a glass `KeyButton` (frosted / accent / equals variant with a
+// tactile press-scale + depth) wrapped in `Expanded` so a row shares the width
+// evenly. Memory keys reuse the soft "util" style.
 function kbtn(label, kind, onTap) {
-    let inkRole = "ink"; let weight = "medium"; let tsize = LTS; let filled = 0.0;
-    if (kind == "op") { inkRole = "accent"; weight = "bold"; }
-    if (kind == "fn") { inkRole = "accent"; weight = "medium"; tsize = LFS; }
-    if (kind == "util") { inkRole = "soft"; weight = "medium"; }
-    if (kind == "mem") { inkRole = "soft"; weight = "medium"; tsize = LFS; }
-    if (kind == "eq") { inkRole = "onAccent"; weight = "bold"; filled = 1.0; }
-    let txt = Text(label, { size: tsize, weight: weight, ink: inkRole });
-    let box = 0;
-    if (filled > 0.5) { box = Container({ id: label, height: LBH, radius: 3.0, color: "primary", onTap: onTap, child: txt }); }
-    else { box = Container({ id: label, height: LBH, radius: 3.0, glass: 1.0, onTap: onTap, child: txt }); }
-    return Expanded({ flex: 1.0, child: box });
+    let tsize = LTS; let weight = "semibold";
+    if (kind == "fn") { tsize = LFS; }
+    if (kind == "mem") { tsize = LFS; kind = "util"; }
+    if (kind == "eq") { weight = "bold"; }
+    return Expanded({ flex: 1.0, child: KeyButton({ id: label, label: label, kind: kind,
+        height: LBH, size: tsize, weight: weight, onTap: onTap }) });
 }
 
 // A full-width keypad row of evenly-sized keys.
-function krow(children) { return Row({ width: LW, gap: 1.6, children: children }); }
+function krow(children) { return Row({ width: LW, gap: KEY_GAP, children: children }); }
 
 let Calc = defineComponent(function (props, update) {
     gUpdate = update;
@@ -357,16 +353,16 @@ let Calc = defineComponent(function (props, update) {
     // A `GlassCard` pads its child by 8 units × the size-class spacing factor
     // (`m.sp`: 1.0 expanded, 1.2 medium, 1.4 compact), so subtract that from the
     // inner width to make the display card line up flush with the keypad rows.
-    LW = 58.0; LBH = 9.0; SMALL_MAX = 22.0; BIG_MAX = 16.0; HIST_MAX = 40.0; DISP_W = LW - 8.0;
-    if (med > 0.5) { LW = 70.0; LBH = 11.0; DISP_W = LW - 9.6; }
-    if (cmp > 0.5) { LW = 86.0; LBH = 13.0; SMALL_MAX = 14.0; BIG_MAX = 11.0; HIST_MAX = 24.0; DISP_W = LW - 11.2; }
+    LW = 58.0; LBH = 10.0; KEY_GAP = 1.8; SMALL_MAX = 22.0; BIG_MAX = 16.0; HIST_MAX = 40.0; DISP_W = LW - 8.0;
+    if (med > 0.5) { LW = 70.0; LBH = 12.0; DISP_W = LW - 9.6; }
+    if (cmp > 0.5) { LW = 86.0; LBH = 14.0; KEY_GAP = 2.0; SMALL_MAX = 14.0; BIG_MAX = 11.0; HIST_MAX = 24.0; DISP_W = LW - 11.2; }
 
     // ---- display strings (live running result) -------------------------------
     let smallRaw = "0"; if (len(expr) > 0) { smallRaw = expr; }
-    let bigRaw = result;
+    let bigRaw = result; let liveAccent = 0.0;
     if (justEval < 0.5) {
         let pv = evaluate(expr, deg);
-        if (pv.ok > 0.5) { if (len(expr) > 0) { bigRaw = fmt(pv.val); } else { bigRaw = "0"; } }
+        if (pv.ok > 0.5) { if (len(expr) > 0) { bigRaw = fmt(pv.val); liveAccent = 1.0; } else { bigRaw = "0"; } }
         else { bigRaw = smallRaw; }
     }
     let degLabel = "RAD"; if (deg > 0.5) { degLabel = "DEG"; }
@@ -374,13 +370,15 @@ let Calc = defineComponent(function (props, update) {
     let statusL = degLabel; if (memory != 0.0) { statusL = concat(degLabel, "  M"); }
     let statusR = "BASIC"; if (sci > 0.5) { statusR = "SCI"; }
 
-    let display = GlassCard({ thick: 1.0, child: Column({ width: DISP_W, cross: "end", gap: 1.4, children: [
+    let bigInk = "ink"; if (liveAccent > 0.5) { bigInk = "accent"; }
+    let display = GlassCard({ thick: 1.0, radius: 5.0, child: Column({ width: DISP_W, cross: "end", gap: 1.1, children: [
         Row({ width: DISP_W, main: "between", children: [
-            Text(statusL, { size: "caption", ink: "soft", weight: "medium" }),
-            Text(statusR, { size: "caption", ink: "accent", weight: "semibold" }),
+            Text(statusL, { size: "caption", ink: "soft", weight: "semibold" }),
+            Text(statusR, { size: "caption", ink: "accent", weight: "bold" }),
         ] }),
+        Divider({ width: DISP_W }),
         Text(clipTail(smallRaw, SMALL_MAX), { size: "title", ink: "soft", weight: "medium" }),
-        Text(clipTail(bigRaw, BIG_MAX), { size: "headline", weight: "bold" }),
+        Text(clipTail(bigRaw, BIG_MAX), { size: "headline", weight: "bold", ink: bigInk }),
     ] }) });
 
     // ---- mode + chips --------------------------------------------------------
@@ -457,7 +455,7 @@ let Calc = defineComponent(function (props, update) {
         appBar: AppBar({ title: "CALCULATOR",
             onMenu: () => { dark = 1.0 - dark; update(); },
             actionIcon: "settings", onAction: () => { accent = accent + 1; if (accent > 3) { accent = 0; } update(); } }),
-        body: ListView({ id: "calc", glass: 0.0, width: LW, gap: 1.6, children: kids }),
+        body: ListView({ id: "calc", glass: 0.0, width: LW, gap: KEY_GAP, children: kids }),
     });
 });
 
