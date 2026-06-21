@@ -92,34 +92,32 @@ fn safe_area_insets(w: u32, h: u32) -> Insets {
 /// into the VM via `Elpa::new_from_bytecode` (no JS/AST front-end runs at
 /// startup). The SDK reads the live surface color format from `gpu.surfaceInfo`
 /// and builds its pipeline target to match, so one bytecode runs on any surface.
-/// By default this is the **Material Design 3 gallery**; build with
-/// `--features game3d` to embed the **Game3D engine demo** instead — a lit,
-/// animated 3D scene driven by the object-oriented `elpa-game3d` SDK. (Swap the
-/// Material const to `demo.bc` / `graphics.bc` for the other Material apps.)
-/// Run with `cargo run --features liquidglass` to embed the **Liquid Glass UI
-/// kit** demo instead — Apple's iOS-26 glass material (a refractable wallpaper +
-/// glass chrome rendered in two GPU passes) from the `elpa-liquidglass` SDK. Run
-/// with `cargo run --features calculator` to embed the **Liquid Glass
-/// calculator** — a feature-rich scientific calculator (an in-VM expression
-/// engine + a responsive glass keypad) built on that same SDK.
-#[cfg(feature = "calculator")]
-const APP_BYTECODE: &[u8] = include_bytes!("../../liquidglass/assets/calculator.bc");
-#[cfg(all(feature = "liquidglass", not(feature = "calculator")))]
-const APP_BYTECODE: &[u8] = include_bytes!("../../liquidglass/assets/demo.bc");
-#[cfg(all(feature = "game3d", not(feature = "liquidglass"), not(feature = "calculator")))]
-const APP_BYTECODE: &[u8] = include_bytes!("../../game3d/assets/demo.bc");
-#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass"), not(feature = "calculator")))]
+/// **By default this is the Liquid Glass calculator** — a feature-rich scientific
+/// calculator (an in-VM expression engine + a responsive glass keypad) built on
+/// the `elpa-liquidglass` SDK. Build with `--features material` for the **Material
+/// Design 3 gallery**, `--features liquidglass` for the **Liquid Glass UI kit**
+/// showcase (refractable wallpaper + glass chrome in two GPU passes), or
+/// `--features game3d` for the **Game3D engine demo** (a lit, animated 3D scene
+/// from the object-oriented `elpa-game3d` SDK). The SDK reads the live surface
+/// color format from `gpu.surfaceInfo`, so one bytecode runs on any surface.
+#[cfg(feature = "material")]
 const APP_BYTECODE: &[u8] = include_bytes!("../../material/assets/gallery.bc");
+#[cfg(all(feature = "liquidglass", not(feature = "material")))]
+const APP_BYTECODE: &[u8] = include_bytes!("../../liquidglass/assets/demo.bc");
+#[cfg(all(feature = "game3d", not(feature = "liquidglass"), not(feature = "material")))]
+const APP_BYTECODE: &[u8] = include_bytes!("../../game3d/assets/demo.bc");
+#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass"), not(feature = "material")))]
+const APP_BYTECODE: &[u8] = include_bytes!("../../liquidglass/assets/calculator.bc");
 
 /// The winit window title for the embedded app.
-#[cfg(feature = "calculator")]
-const WINDOW_TITLE: &str = "Elpa — Liquid Glass calculator";
-#[cfg(all(feature = "liquidglass", not(feature = "calculator")))]
-const WINDOW_TITLE: &str = "Elpa — Liquid Glass demo";
-#[cfg(all(feature = "game3d", not(feature = "liquidglass"), not(feature = "calculator")))]
-const WINDOW_TITLE: &str = "Elpa — Game3D demo";
-#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass"), not(feature = "calculator")))]
+#[cfg(feature = "material")]
 const WINDOW_TITLE: &str = "Elpa — Material demo";
+#[cfg(all(feature = "liquidglass", not(feature = "material")))]
+const WINDOW_TITLE: &str = "Elpa — Liquid Glass demo";
+#[cfg(all(feature = "game3d", not(feature = "liquidglass"), not(feature = "material")))]
+const WINDOW_TITLE: &str = "Elpa — Game3D demo";
+#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass"), not(feature = "material")))]
+const WINDOW_TITLE: &str = "Elpa — Liquid Glass calculator";
 
 /// Everything that exists only while we hold a surface. On Android this is
 /// recreated on each `resumed` and torn down on each `suspended`.

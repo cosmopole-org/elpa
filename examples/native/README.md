@@ -1,17 +1,15 @@
 # Elpa native example (desktop + Android)
 
-Runs the Elpa **Material Design 3 SDK demo** in a **[winit]** window and draws
-its wgpu frames to the window's surface. The native desktop and Android builds
-now link the JavaScript Material SDK from [`examples/material`](../material) and
-run its interactive demo, so the APK shows the same Material controls you can
-exercise in the SDK demo.
+Runs an Elpa app in a **[winit]** window and draws its wgpu frames to the
+window's surface. **By default it runs the Liquid Glass calculator**
+([`examples/liquidglass`](../liquidglass)) — a feature-rich scientific calculator
+built on the `elpa-liquidglass` SDK. Other apps are one `--features` flag away
+(see [Run a different app](#run-a-different-app)).
 
 One codebase targets **desktop (Windows/macOS/Linux) and Android**:
 
-- [`../material/assets/sdk/`](../material/assets/sdk) — the object-oriented
-  Material SDK (class modules) linked into this native app.
-- [`../material/assets/demo.js`](../material/assets/demo.js) — the interactive
-  demo script linked after the SDK.
+- [`../liquidglass/assets/`](../liquidglass/assets) — the default app: the Liquid
+  Glass SDK (`sdk/*.js`) + the `calculator.js` app, linked into this native host.
 - [`src/lib.rs`](src/lib.rs) — the cross-platform window + render loop. The
   window and GPU surface are created lazily in `resumed` and dropped in
   `suspended`, which is **required on Android** (the native surface only exists
@@ -28,47 +26,31 @@ cd examples/native
 cargo run --release            # build & run on the host OS
 ```
 
-### Run the 3D game demo instead
+A window opens with the **Liquid Glass calculator**. Tap the keys (they press in
+with a tactile scale), switch BASIC/SCIENTIFIC, toggle DEG/RAD and the theme, or
+drive it from the keyboard — digits, `+ - * / ^ ! % ( )`, `Enter`/`=`,
+`Backspace`, `Escape`, and `s` (scientific) / `r` (DEG·RAD) / `d` (theme).
+Resizing reconfigures the swapchain and asks the SDK to relayout.
 
-The same host can run the **Game3D engine demo** ([`examples/game3d`](../game3d)) —
-a low-poly **island village** (terrain, sea, cottages, trees, a turning windmill,
-boats, villagers and clouds) from the object-oriented `elpa-game3d` SDK, with a
-turntable camera (drag to orbit, scroll to zoom, right-drag to pan) — by enabling
-the `game3d` feature, which embeds `game3d/assets/demo.bc` instead of the Material
-gallery:
+### Run a different app
 
-```bash
-cargo run --release --features game3d        # desktop
-cargo apk run --release --features game3d    # Android
-```
-
-Regenerate the bytecode after editing the SDK with
-`cargo run -p elpa-game3d --bin build_bytecode`.
-
-### Run the Liquid Glass calculator instead
-
-The same host can run the **Liquid Glass calculator**
-([`examples/liquidglass`](../liquidglass)) — a feature-rich scientific calculator
-built on the `elpa-liquidglass` SDK: an in-VM expression engine (tokenizer +
-shunting-yard parser + RPN evaluator) wired to a responsive glass keypad with a
-BASIC/SCIENTIFIC switch, DEG/RAD + theme chips, memory keys and a tap-to-recall
-history — by enabling the `calculator` feature, which embeds
-`liquidglass/assets/calculator.bc` instead of the Material gallery:
+The same host can embed any of the other example apps by enabling exactly one
+feature (each swaps in that app's precompiled bytecode):
 
 ```bash
-cargo run --release --features calculator        # desktop
-cargo apk run --release --features calculator    # Android
+cargo run --release --features material      # Material Design 3 gallery
+cargo run --release --features liquidglass   # Liquid Glass UI kit showcase
+cargo run --release --features game3d        # Game3D engine demo (island village)
+# (Android: swap `cargo run` for `cargo apk run`.)
 ```
 
-Regenerate the bytecode after editing the SDK or the app with
-`cargo run -p elpa-liquidglass --bin build_bytecode`. The on-demand
-[`Build APK`](../../.github/workflows/android-apk.yml) workflow can also package
-it (pick `calculator`), committing `elpa-calculator.apk` to the repo root.
-
-A window opens with the Material demo. Click/tap controls, drag the slider, use
-the mouse wheel where supported, or press `d`, `Space`, `r`, `ArrowLeft`, and
-`ArrowRight` to exercise the demo keyboard handlers. Resizing reconfigures the
-swapchain and asks the SDK to relayout.
+Regenerate an app's bytecode after editing its SDK/app with the owning crate's
+generator, e.g. `cargo run -p elpa-liquidglass --bin build_bytecode` (calculator
++ showcase), `cargo run -p elpa-game3d --bin build_bytecode`, or
+`cargo run -p elpa-material --bin build_bytecode`. The on-demand
+[`Build APK`](../../.github/workflows/android-apk.yml) workflow packages any of
+them (pick the `app`) and commits the signed APK to the repo root
+(`elpa-calculator.apk` by default, `elpa.apk` for Material, etc.).
 
 ### Cross-compiling to Windows from Linux
 
