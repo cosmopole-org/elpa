@@ -45,8 +45,12 @@ Two draw calls per frame. The per-fragment glass math (`assets/sdk/00-data.js`,
   `edge² · refraction`, where `edge` rises from 0 in the centre to 1 at the rim:
   a convex-lens magnification of what's just outside the panel.
 * **Chromatic aberration** — the R and B channels are sampled at a slightly
-  larger / smaller offset along `n`, only at the rim, for the prism fringe.
-* **Blur** — a 5-tap box blur of the (already ½-res, pre-softened) backdrop.
+  larger / smaller offset along `n`, only at the rim, for the prism fringe. The
+  two extra taps are **gated to the rim** (`edge > 0.03`) so the panel interior —
+  the bulk of the fragments — skips them.
+* **Blur** — a cheap **3-tap** diagonal blur of the (already ~⅖-res,
+  pre-softened) backdrop. Interior glass fragments cost **3 texture samples**
+  (down from 7), the dominant fill-rate term when many lenses overlap.
 * **Specular** — `pow(edge, 2.5) · max(dot(n, lightDir), 0)` lights the top-left
   rim; the opposite rim is darkened for depth.
 * **Tint** — a translucent glass colour over the refracted backdrop, plus a faint

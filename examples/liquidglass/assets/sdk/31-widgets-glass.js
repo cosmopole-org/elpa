@@ -105,7 +105,8 @@ function paintPillButton(app, node, cx, cy, kind) {
     let sc = 1.0 - pr * 0.05; hw = hw * sc; hh = hh * sc; r = hh;
     if (kind == "filled") {
         pnt.shadow(cx, cy, hw, hh, r, m.u * 0.2, m.u * 0.6, m.u * 2.0, [th.accCh(0) * 0.5, th.accCh(1) * 0.5, th.accCh(2) * 0.5, 0.4]);
-        pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, th.acc(1.0), CLEAR);
+        // A *colour glass* fill: accent-tinted refractive glass, not a flat solid.
+        pnt.glass(cx, cy, hw, hh, r, m.u * 0.16, 0.0, accentGlass(th, 0.78), th.rim(1.0), m.u * 4.5, 0.9, m.u * 1.6);
         if (pr > 0.01) { pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, [1.0, 1.0, 1.0, pr * 0.18], CLEAR); }
         app.font.text(pnt, label, cx, cy, cell, th.onAcc(1.0));
     } else { if (kind == "outlined") {
@@ -157,11 +158,11 @@ class KeyButtonWidget extends Widget {
 
         if (kind == "op") {
             pnt.shadow(cx, cy, hw, hh, r, m.u * 0.2, m.u * 0.7, m.u * 2.4, [th.accCh(0) * 0.55, th.accCh(1) * 0.55, th.accCh(2) * 0.55, 0.45]);
-            pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, th.acc(1.0), CLEAR);
+            pnt.glass(cx, cy, hw, hh, r, m.u * 0.14, 0.0, accentGlass(th, 0.72), th.rim(1.0), m.u * 4.5, 0.85, m.u * 1.6);
             if (pr > 0.01) { pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, [1.0, 1.0, 1.0, pr * 0.2], CLEAR); }
         } else { if (kind == "eq") {
             pnt.shadow(cx, cy, hw, hh, r, m.u * 0.3, m.u * 0.9, m.u * 3.6, [th.accCh(0), th.accCh(1), th.accCh(2), 0.55]);
-            pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, th.acc(1.0), CLEAR);
+            pnt.glass(cx, cy, hw, hh, r, m.u * 0.14, 0.0, accentGlass(th, 0.8), th.rim(1.0), m.u * 5.0, 0.95, m.u * 1.6);
             pnt.rect(cx, cy - hh * 0.52, hw * 0.9, hh * 0.34, r, 0.0, 0.0, [1.0, 1.0, 1.0, 0.16], CLEAR);
             if (pr > 0.01) { pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, [1.0, 1.0, 1.0, pr * 0.22], CLEAR); }
         } else {
@@ -195,7 +196,7 @@ class GlassFabWidget extends Widget {
         let r = m.du() * 4.2;
         let pr = app.clock.pressVal("fab"); let rr = r * (1.0 - pr * 0.06);
         pnt.shadow(cx, cy, rr, rr, rr, m.u * 0.2, m.u * 1.0, m.u * 3.0, [0.0, 0.0, 0.05, 0.3]);
-        if (has(p, "accent")) { if (p.accent > 0.5) { pnt.rect(cx, cy, rr, rr, rr, 0.0, 0.0, th.acc(1.0), CLEAR); } else { pnt.glass(cx, cy, rr, rr, rr, m.u * 0.2, 0.0, th.glassThick(), th.rim(1.0), m.u * 5.0, 0.7, m.u * 2.0); } }
+        if (has(p, "accent")) { if (p.accent > 0.5) { pnt.glass(cx, cy, rr, rr, rr, m.u * 0.2, 0.0, accentGlass(th, 0.8), th.rim(1.0), m.u * 5.5, 0.95, m.u * 1.8); } else { pnt.glass(cx, cy, rr, rr, rr, m.u * 0.2, 0.0, th.glassThick(), th.rim(1.0), m.u * 5.0, 0.7, m.u * 2.0); } }
         else { pnt.glass(cx, cy, rr, rr, rr, m.u * 0.2, 0.0, th.glassThick(), th.rim(1.0), m.u * 5.0, 0.7, m.u * 2.0); }
         let ic = "add"; if (has(p, "icon")) { ic = p.icon; }
         let icol = th.ink(0.95); if (has(p, "accent")) { if (p.accent > 0.5) { icol = th.onAcc(1.0); } }

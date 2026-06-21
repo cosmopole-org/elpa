@@ -38,8 +38,10 @@ let KIND_SHADOW = 3.0;
 
 // The backdrop captured for refraction is rendered at 1/BD_SCALE resolution: the
 // glass blur is a low-frequency effect, so a smaller offscreen target cuts the
-// capture fill-rate ~BD_SCALE^2 while the linear upsample only helps the blur.
-let BD_SCALE = 2.0;
+// capture fill-rate ~BD_SCALE^2 AND shrinks the texture the glass lenses sample
+// on the surface pass (better cache locality per tap) — the linear upsample only
+// softens the blur, which the lens wants anyway.
+let BD_SCALE = 2.5;
 
 // --------------------------------------------------------------- shader -------
 // One pipeline draws everything. Bindings: globals uniform, the captured backdrop
@@ -153,17 +155,22 @@ fn fs(o: Out) -> @location(0) vec4<f32> {
     let px = blur / g.viewport.x;
     let py = blur / g.viewport.y;
     let buv = uv + disp;
-    // Multi-tap box blur of the backdrop (centre + 4 axis taps).
-    var bg = textureSampleLevel(backdrop, samp, buv, 0.0).rgb * 0.36;
-    bg = bg + textureSampleLevel(backdrop, samp, buv + vec2<f32>(px, 0.0), 0.0).rgb * 0.16;
-    bg = bg + textureSampleLevel(backdrop, samp, buv - vec2<f32>(px, 0.0), 0.0).rgb * 0.16;
-    bg = bg + textureSampleLevel(backdrop, samp, buv + vec2<f32>(0.0, py), 0.0).rgb * 0.16;
-    bg = bg + textureSampleLevel(backdrop, samp, buv - vec2<f32>(0.0, py), 0.0).rgb * 0.16;
-    // Edge-only chromatic aberration: split R/B along the normal at the rim.
-    let ca = edge * edge * refr * 0.5 / g.viewport.x;
-    let cr = textureSampleLevel(backdrop, samp, buv + n * ca, 0.0).r;
-    let cb = textureSampleLevel(backdrop, samp, buv - n * ca, 0.0).b;
-    bg = vec3<f32>(mix(bg.r, cr, 0.7), bg.g, mix(bg.b, cb, 0.7));
+    // Backdrop blur. The captured scene texture is already half-res (pre-softened),
+    // so a cheap 3-tap diagonal blur reads the same as a 5-tap cross but costs two
+    // fewer samples per fragment — a big fill-rate win when many lenses overlap.
+    let d1 = vec2<f32>(px, py);
+    var bg = textureSampleLevel(backdrop, samp, buv, 0.0).rgb * 0.5;
+    bg = bg + textureSampleLevel(backdrop, samp, buv + d1, 0.0).rgb * 0.25;
+    bg = bg + textureSampleLevel(backdrop, samp, buv - d1, 0.0).rgb * 0.25;
+    // Edge-only chromatic aberration: split R/B along the normal at the rim. Gated
+    // to the rim so the panel interior (the bulk of the fragments) skips these two
+    // samples entirely — the prism fringe is only ever visible near the edge.
+    if (edge > 0.03) {
+        let ca = edge * edge * refr * 0.5 / g.viewport.x;
+        let cr = textureSampleLevel(backdrop, samp, buv + n * ca, 0.0).r;
+        let cb = textureSampleLevel(backdrop, samp, buv - n * ca, 0.0).b;
+        bg = vec3<f32>(mix(bg.r, cr, 0.7), bg.g, mix(bg.b, cb, 0.7));
+    }
     // Tint (translucent glass colour over the refracted backdrop).
     let tint = o.fill;
     var col = mix(bg, tint.rgb, tint.a);
