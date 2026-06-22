@@ -25,6 +25,12 @@ class ComponentNode extends Box {
         if (isNull(this._sub)) { this._sub = new TextRun(""); }
         this.forward();
         this._sub.mount(app, parent);
+        // A component is transparent (it paints/measures through its single sub):
+        // adopt the sub's computed style so the parent's layout reads the real
+        // box-model fields (margins, width, flex, display) off this node, not the
+        // bare `{display:"contents"}` stub — whose missing `.m`/`.width`/… read as
+        // null in flow/flex/grid.
+        this._cs = this._sub._cs;
     }
     forward() { this._sub._fw = this._fw; this._sub._fh = this._fh; this._sub._cbW = this._cbW; this._sub._cbH = this._cbH; }
     measureIntrinsic(app) { this.forward(); return this._sub.measure(app); }

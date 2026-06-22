@@ -109,4 +109,7 @@ delegate + the `premount` hook), and static class methods (use top-level
 functions). `typeOf` reports every numeric representation (i16…f64) as
 `"number"`, so numeric checks go through the `isNum` helper. Implicit constructors do
 not forward arguments, so every `Box` subclass declares
-`constructor(tag, props) { super(tag, props); }`.
+`constructor(tag, props) { super(tag, props); }`. `has(obj, key)` tests only an
+object's **own data fields**, not its class methods, so type predicates flag a
+node with an own field (e.g. `TextRun` sets `this._isText`) rather than probing
+for a method name.

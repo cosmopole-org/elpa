@@ -13,7 +13,9 @@
 // A run of text: an inline leaf with no box of its own; its glyphs are flowed by
 // the containing block's inline formatter and painted into that block's buffer.
 class TextRun extends Box {
-    constructor(text) { super("#text", {}); this._text = concat("", text); }
+    // `_isText` is an own data field (not a method): this VM's `has` sees only
+    // instance fields, so the `isText` predicate tests this flag, not a method.
+    constructor(text) { super("#text", {}); this._text = concat("", text); this._isText = 1.0; }
     isText() { return 1.0; }
     isInline() { return 1.0; }
     kids() { return []; }
@@ -29,7 +31,7 @@ class TextRun extends Box {
         return t;
     }
 }
-function isText(n) { if (has(n, "isText")) { return n.isText(); } return 0.0; }
+function isText(n) { if (has(n, "_isText")) { return 1.0; } return 0.0; }
 // Physical font cell for the SDF/atlas text engine from a physical font size.
 function pxCell(fontPxPhys) { return fontPxPhys / 6.6; }
 function weightThick(w) { let t = 0.5 + w / 1000.0; if (t < 0.6) { t = 0.6; } if (t > 1.4) { t = 1.4; } return t; }
