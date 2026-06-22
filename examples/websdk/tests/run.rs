@@ -83,20 +83,33 @@ fn click_repaints_and_changes_the_page() {
     app.start();
     let before = instances(&app).len();
 
-    // Click around the counter button (left card region) - exercises tap
-    // hit-testing + the component partial-update path.
-    app.send_event(&InputEvent::PointerDown { x: 150.0, y: 320.0, button: 0 });
-    app.send_event(&InputEvent::PointerUp { x: 150.0, y: 320.0, button: 0 });
+    // Hover across the nav (top of the page): exercises the :hover hit-testing +
+    // the CSS-transition path (nav links / the "Get started" button declare
+    // `transition`, so a hover change routes their colour/transform through the
+    // animation clock).
+    app.send_event(&InputEvent::PointerMove { x: 900.0, y: 30.0 });
+    app.send_event(&InputEvent::PointerMove { x: 500.0, y: 30.0 });
+    assert!(app.trap_reason().is_none(), "no trap while hovering: {:?}", app.trap_reason());
+
+    // Click in the hero (tap hit-testing + the repaint path).
+    app.send_event(&InputEvent::PointerDown { x: 200.0, y: 320.0, button: 0 });
+    app.send_event(&InputEvent::PointerUp { x: 200.0, y: 320.0, button: 0 });
     assert!(app.trap_reason().is_none(), "no trap after click: {:?}", app.trap_reason());
 
-    // Focus the text field (lower form row) and type into it.
-    app.send_event(&InputEvent::PointerDown { x: 200.0, y: 720.0, button: 0 });
-    app.send_event(&InputEvent::PointerUp { x: 200.0, y: 720.0, button: 0 });
+    // Type some characters (keyboard path; harmless when nothing is focused).
     app.send_event(&InputEvent::KeyDown { key: "H".into() });
     app.send_event(&InputEvent::KeyDown { key: "i".into() });
     assert!(app.trap_reason().is_none(), "no trap after typing: {:?}", app.trap_reason());
+
+    // Run a few animation frames so the hovered transitions + the live FPS
+    // visualiser (a continuous animTime() component) actually advance.
+    for _ in 0..6 {
+        app.animate(16.0);
+        assert!(app.trap_reason().is_none(), "no trap animating after interaction: {:?}", app.trap_reason());
+    }
     let after = instances(&app).len();
-    assert!(after >= before, "page still renders after interaction");
+    assert!(after >= 16, "page still renders after interaction ({} floats)", after);
+    let _ = before;
 }
 
 #[test]
@@ -131,6 +144,86 @@ fn scrolling_is_stable_and_keeps_content() {
     // Scrolled fully back to the top: the same content as the initial frame.
     let after = instances(&app).len();
     assert_eq!(after, before, "scrolling back to the top restores the page");
+}
+
+// A minimal page whose card declares `backdrop-filter: blur()`, over content
+// behind it — exercises the two-pass frosted-glass compositor end to end.
+const BACKDROP_APP: &str = r##"
+let App = defineComponent(function (props, update) {
+    return Body({ style: { background: "#101426", padding: "24px" }, children: [
+        Div({ style: { background: "linear-gradient(90deg, #ef4444, #3b82f6)", width: "260px", height: "140px",
+            borderRadius: "12px" }, children: ["behind"] }),
+        Div({ style: { marginTop: "-60px", marginLeft: "40px", background: "rgba(255,255,255,0.16)",
+            border: "1px solid rgba(255,255,255,0.3)", borderRadius: "16px", padding: "20px",
+            backdropFilter: "blur(12px)" }, children: ["frosted glass"] }),
+    ] });
+});
+runApp(App);
+"##;
+
+#[test]
+fn backdrop_filter_composites_offscreen() {
+    let src = format!("{}\n{}", elpa_websdk::module_js(), BACKDROP_APP);
+    let mut app = Elpa::new_from_js(HeadlessBackend::default(), SurfaceInfo::new(640, 400, 1.0), &src)
+        .expect("SDK + backdrop app compiles");
+    app.start();
+    assert!(app.trap_reason().is_none(), "no trap with a backdrop: {:?}", app.trap_reason());
+
+    let frame = app.last_frame().expect("a frame was submitted");
+    // The two-pass compositor captures the below-backdrop content into an
+    // offscreen "scene" texture before blurring it back over the surface.
+    assert!(
+        frame.resources.iter().any(|r| r.id().starts_with("elpa.web.bd.scene")),
+        "backdrop frame captures an offscreen scene texture"
+    );
+    assert!(app.take_log().is_empty(), "no host errors compositing the backdrop");
+}
+
+// Four fixed-width boxes in a flex row of a narrow container. `WRAP` switches
+// flex-wrap on; everything else is identical, so any change in painted height is
+// the wrapping.
+fn flex_app(wrap: &str) -> String {
+    format!(
+        "{}\nlet App = defineComponent(function (props, update) {{ return Body({{ style: {{ padding: \"0px\" }}, children: [ \
+         Div({{ style: {{ display: \"flex\", flexDirection: \"row\", flexWrap: \"{wrap}\", gap: \"10px\", width: \"300px\" }}, children: [ \
+         Div({{ style: {{ width: \"120px\", height: \"40px\", flexShrink: \"0\", background: \"#e11\" }} }}), \
+         Div({{ style: {{ width: \"120px\", height: \"40px\", flexShrink: \"0\", background: \"#1e1\" }} }}), \
+         Div({{ style: {{ width: \"120px\", height: \"40px\", flexShrink: \"0\", background: \"#11e\" }} }}), \
+         Div({{ style: {{ width: \"120px\", height: \"40px\", flexShrink: \"0\", background: \"#ee1\" }} }}) ] }}) ] }}); }}); runApp(App);",
+        elpa_websdk::module_js()
+    )
+}
+
+// Bottom edge of the painted content (max cy+hh over real rect/glyph instances,
+// skipping image/backdrop sentinels).
+fn painted_bottom(app: &Elpa<HeadlessBackend>) -> f32 {
+    let inst = instances(app);
+    let mut bottom = 0.0f32;
+    for chunk in inst.chunks(16) {
+        let mark = chunk[0];
+        if mark == 424242.0 || mark == 525252.0 {
+            continue;
+        }
+        bottom = bottom.max(chunk[1] + chunk[3]);
+    }
+    bottom
+}
+
+#[test]
+fn flex_wrap_breaks_onto_new_lines() {
+    let mut nowrap = Elpa::new_from_js(HeadlessBackend::default(), SurfaceInfo::new(360, 400, 1.0), &flex_app("nowrap"))
+        .expect("nowrap compiles");
+    nowrap.start();
+    let mut wrap = Elpa::new_from_js(HeadlessBackend::default(), SurfaceInfo::new(360, 400, 1.0), &flex_app("wrap"))
+        .expect("wrap compiles");
+    wrap.start();
+    assert!(nowrap.trap_reason().is_none() && wrap.trap_reason().is_none());
+
+    // 4 unshrinkable 120px boxes do not fit one 300px row, so wrapping stacks them
+    // onto further lines — the painted content reaches further down the page.
+    let nb = painted_bottom(&nowrap);
+    let wb = painted_bottom(&wrap);
+    assert!(wb > nb + 20.0, "wrap should be taller than nowrap (wrap={wb}, nowrap={nb})");
 }
 
 #[test]

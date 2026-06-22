@@ -21,7 +21,13 @@ class ComponentNode extends Box {
         this._parent = parent; this._d = app.metrics.dpr;
         this._inhOut = inhOf(parent); this._cs = { display: "contents" };
         if (!has(this, "_update")) { let self = this; this._update = () => { app.partial(self); }; }
-        let build = this.fn; this._sub = build(this.p, this._update);
+        // The build fn runs here (not in paint), so set `paintingComp` around it:
+        // any animTime()/tween() the component reads must subscribe *this* node so
+        // the frame clock repaints the right component.
+        let build = this.fn;
+        let prevc = app.clock.paintingComp; app.clock.paintingComp = this;
+        this._sub = build(this.p, this._update);
+        app.clock.paintingComp = prevc;
         if (isNull(this._sub)) { this._sub = new TextRun(""); }
         this.forward();
         this._sub.mount(app, parent);
@@ -140,10 +146,25 @@ class WebRuntime {
         this.submit();
     }
     repaintComps(dirty) {
-        for (let i = 0; i < len(dirty); i++) { let c = dirty[i]; c.paint(this, c._cx, c._cy); c._dirtyFlag = 0.0; }
+        let painted = [];
+        for (let i = 0; i < len(dirty); i++) {
+            let c = dirty[i]; c._dirtyFlag = 0.0;
+            // Skip a component that has not been laid out yet (e.g. scrolled out of
+            // view, so never painted): it has no centre, and there is nothing on
+            // screen to refresh. It re-subscribes when it next paints.
+            if (isNull(c._cx)) { } else {
+                // Re-run the component (a partial re-mount) so any animTime()/tween()
+                // it reads is re-evaluated against the new clock and re-subscribed —
+                // a bare re-paint would reuse last frame's values and drop the
+                // continuous subscription, freezing the animation after one frame.
+                c.mount(this, c._parent);
+                c._sub._cbW = c._cbW; c._sub._cbH = c._cbH; c._sub._fw = c._fw; c._sub._fh = c._fh;
+                c.paint(this, c._cx, c._cy); push(painted, c);
+            }
+        }
         this.root.reassemble();
         this.inst = this.root._out; this.taps = this.root._taps; this.drags = this.root._drags;
-        if (this.layered > 0.5) { this.submitLayered(dirty); } else { this.submit(); }
+        if (this.layered > 0.5) { this.submitLayered(painted); } else { this.submit(); }
     }
 
     // ---- submit (single instanced SDF draw, images interleaved) -------------
@@ -175,6 +196,8 @@ class WebRuntime {
     }
     submit() {
         this.frameN = this.frameN + 1;
+        // A backdrop-filter region needs the two-pass frosted-glass compositor.
+        if (this.hasBackdrop(this.inst) > 0.5) { this.submitBackdrop(); return 0; }
         if (this.media.imgHandleN == 0) { this.submitPlain(); return 0; }
         let bg = this.clearCol; let plan = this.media.planDraws(this.inst);
         if (len(plan.handles) == 0) { this.submitPlain(); return 0; }
@@ -197,6 +220,9 @@ class WebRuntime {
         for (let i = 0; i < len(animating); i++) { animating[i]._animLayer = 0.0; }
         if (len(dyn) < 1) { this.submit(); return 0; }
         if (this.media.imgHandleN > 0) { this.submit(); return 0; }
+        // A frame with a backdrop falls out of the static/dynamic fast path (it
+        // needs the offscreen capture + composite); route it through `submit`.
+        if (this.hasBackdrop(this.inst) > 0.5) { this.submit(); return 0; }
         let bg = this.clearCol;
         let res = concat(concat(webPipelineResources(), this.font.atlasTexRes()), concat(this.frameBindings(), [
             bufF32("elpa.web.inst.static", ["VERTEX", "COPY_DST"], stat),
@@ -214,6 +240,121 @@ class WebRuntime {
                 { cmd: "draw", vertex_count: 6, instance_count: len(dyn) / 16, first_vertex: 0, first_instance: 0 },
             ] };
         askHost("gpu.submit", [{ resources: res, commands: concat(this.font.atlasUploadCmds(), [pass]) }]);
+        return 0;
+    }
+
+    // ---- backdrop blur (frosted glass) --------------------------------------
+    // A `backdrop-filter: blur()` region needs a two-stage frame: everything
+    // painted *before* a backdrop sentinel is rendered into an offscreen texture
+    // (pass A); the surface pass (B) redraws that content sharp, composites a
+    // blurred copy of it inside each backdrop region (multi-tap samples of the
+    // offscreen texture through the image pipeline — a cheap box blur), then draws
+    // everything painted *after* on top. (Images in the same frame are not
+    // interleaved on this path; a frosted region and an <img> do not co-occur in
+    // the kit's pages.)
+    hasBackdrop(inst) { let n = len(inst) / 16; for (let i = 0; i < n; i++) { if (inst[i * 16] == BACKDROP_MARK) { return 1.0; } } return 0.0; }
+    scanBackdrops(inst) {
+        let n = len(inst) / 16; let marks = []; let last = -1;
+        for (let i = 0; i < n; i++) { if (inst[i * 16] == BACKDROP_MARK) { push(marks, i); last = i; } }
+        return { marks: marks, last: last };
+    }
+    // Contiguous runs of plain SDF instances in [lo, hi), splitting at any image
+    // or backdrop sentinel (whose slots the SDF draw must not read).
+    sdfRuns(inst, lo, hi) {
+        let runs = []; let start = -1;
+        for (let i = lo; i < hi; i++) {
+            let mark = inst[i * 16]; let sentinel = 0.0;
+            if (mark == IMG_MARK) { sentinel = 1.0; } if (mark == BACKDROP_MARK) { sentinel = 1.0; }
+            if (sentinel > 0.5) { if (start >= 0) { push(runs, { first: start, count: i - start }); start = -1; } }
+            else { if (start < 0) { start = i; } }
+        }
+        if (start >= 0) { push(runs, { first: start, count: hi - start }); }
+        return runs;
+    }
+    regionAt(inst, i) {
+        let b = i * 16;
+        return { blur: inst[b + 1], cx: inst[b + 2], cy: inst[b + 3], hw: inst[b + 4], hh: inst[b + 5], r: inst[b + 6] };
+    }
+    sdfDrawCmds(runs) {
+        let cmds = [];
+        for (let i = 0; i < len(runs); i++) { push(cmds, { cmd: "draw", vertex_count: 6, instance_count: runs[i].count, first_vertex: 0, first_instance: runs[i].first }); }
+        return cmds;
+    }
+    // Multi-tap blur composite of region `rg`, sampling the offscreen scene texture
+    // through the image pipeline (an opaque centre tap + four half-weight diagonal
+    // taps; the reduced-resolution scene's linear upsample pre-blurs it).
+    backdropTapCmds(rg, sceneTex, res, tag) {
+        let m = this.metrics; let cmds = [];
+        let b = rg.blur; if (b < 0.5) { b = 0.5; }
+        let taps = [[0.0, 0.0, 1.0], [b, b, 0.5], [-b, b, 0.5], [b, -b, 0.5], [-b, -b, 0.5]];
+        let u0b = (rg.cx - rg.hw) / m.vw; let v0b = (rg.cy - rg.hh) / m.vh;
+        let u1b = (rg.cx + rg.hw) / m.vw; let v1b = (rg.cy + rg.hh) / m.vh;
+        for (let i = 0; i < len(taps); i++) {
+            let dx = taps[i][0] / m.vw; let dy = taps[i][1] / m.vh; let a = taps[i][2];
+            let uid = concat(concat("elpa.web.bd.u.", tag), str(i)); let bid = concat(concat("elpa.web.bd.bg.", tag), str(i));
+            push(res, bufF32(uid, ["UNIFORM", "COPY_DST"],
+                [m.vw, m.vh, rg.cx, rg.cy, rg.hw, rg.hh, rg.r, 0.0, u0b + dx, v0b + dy, u1b + dx, v1b + dy, 1.0, 1.0, 1.0, a]));
+            push(res, { kind: "bindGroup", id: bid, layout: "elpa.web.img.bgl", entries: [
+                { binding: 0, resource: { type: "buffer", buffer: uid } },
+                { binding: 1, resource: { type: "textureView", texture: sceneTex } },
+                { binding: 2, resource: { type: "sampler", sampler: "elpa.web.img.samp" } } ] });
+            push(cmds, { cmd: "setPipeline", pipeline: "elpa.web.img.pipe" });
+            push(cmds, { cmd: "setBindGroup", index: 0, bind_group: bid });
+            push(cmds, { cmd: "draw", vertex_count: 6, instance_count: 1, first_vertex: 0, first_instance: 0 });
+        }
+        return cmds;
+    }
+    submitBackdrop() {
+        let m = this.metrics; let bg = this.clearCol;
+        let scan = this.scanBackdrops(this.inst);
+        let n = len(this.inst) / 16;
+        let below = this.sdfRuns(this.inst, 0, scan.last);
+        let above = this.sdfRuns(this.inst, scan.last + 1, n);
+        // The blur source is captured at reduced resolution (BD_SCALE): blur is a
+        // low-frequency effect, so a smaller offscreen target cuts fill-rate while
+        // its linear upsample only helps. Geometry maps by NDC (globals stay vw,vh).
+        let sw = floor(m.vw / BD_SCALE) + 1; let sh = floor(m.vh / BD_SCALE) + 1;
+        if (sw < 1) { sw = 1; } if (sh < 1) { sh = 1; }
+        let sceneTex = concat(concat(concat("elpa.web.bd.scene.", str(sw)), "x"), str(sh));
+        let res = concat(concat(webPipelineResources(), this.font.atlasTexRes()), concat(this.frameBindings(), [
+            bufF32("elpa.web.inst", ["VERTEX", "COPY_DST"], this.inst),
+            { kind: "texture", id: sceneTex, size: { width: sw, height: sh }, format: SURFACE_FMT,
+              usage: ["RENDER_ATTACHMENT", "TEXTURE_BINDING"] },
+        ]));
+        this.media.addImgPipeline(res);
+        let uploads = this.font.atlasUploadCmds();
+        // Pass A: render the below-backdrop content into the offscreen scene.
+        let sceneCmds = concat([
+            { cmd: "setBindGroup", index: 0, bind_group: "elpa.web.gb" },
+            { cmd: "setPipeline", pipeline: "elpa.web.pipe" },
+            { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.web.inst", offset: 0 },
+        ], this.sdfDrawCmds(below));
+        let scenePass = { op: "renderPass", id: "elpa.web.bd.scenePass",
+            color_attachments: [{ view: { kind: "texture", texture: sceneTex }, load: "clear",
+                clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
+            commands: sceneCmds };
+        // Pass B (surface): sharp below content, then the blurred composite inside
+        // each region, then the above content on top.
+        let surfCmds = concat([
+            { cmd: "setBindGroup", index: 0, bind_group: "elpa.web.gb" },
+            { cmd: "setPipeline", pipeline: "elpa.web.pipe" },
+            { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.web.inst", offset: 0 },
+        ], this.sdfDrawCmds(below));
+        for (let k = 0; k < len(scan.marks); k++) {
+            let rg = this.regionAt(this.inst, scan.marks[k]);
+            surfCmds = concat(surfCmds, this.backdropTapCmds(rg, sceneTex, res, str(k)));
+        }
+        surfCmds = concat(surfCmds, [
+            { cmd: "setBindGroup", index: 0, bind_group: "elpa.web.gb" },
+            { cmd: "setPipeline", pipeline: "elpa.web.pipe" },
+            { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.web.inst", offset: 0 },
+        ]);
+        surfCmds = concat(surfCmds, this.sdfDrawCmds(above));
+        let surfPass = { op: "renderPass", id: "elpa.web.pass",
+            color_attachments: [{ view: { kind: "surface" }, load: "clear",
+                clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
+            commands: surfCmds };
+        askHost("gpu.submit", [{ resources: res, commands: concat(uploads, [scenePass, surfPass]) }]);
         return 0;
     }
 
@@ -292,7 +433,7 @@ class WebRuntime {
     }
     onFrame(dt) {
         let mediaChanged = this.media.tick();
-        let dirty = []; this.clock.advance(dirty);
+        let dirty = []; this.clock.advance(dirty, dt);
         let flinging = this.flingStep();
         if (flinging > 0.5) { for (let i = 0; i < len(dirty); i++) { dirty[i]._dirtyFlag = 0.0; } this.renderScroll(); return 0; }
         if (len(dirty) > 0) { this.repaintComps(dirty); return 0; }
