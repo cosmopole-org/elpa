@@ -160,10 +160,18 @@ function flushLine(box, line, lineW, lineH, contentW, y, align) {
 }
 
 // ===================================================================== flex ===
+// A full flexbox pass with multi-line wrapping. Items are sized along the main
+// axis (flex-grow/shrink against each line's free space), broken into lines when
+// `flex-wrap` is on and the main size is definite, justified along the main axis
+// per line, and the lines are stacked + distributed along the cross axis per
+// `align-content`. With `flex-wrap: nowrap` this collapses to a single line and
+// reproduces the original single-line behaviour exactly.
 function flexLayout(app, box, contentW, contentH) {
     let c = box._cs; let d = box._d; let kids = box._childNodes;
     let row = 1.0; if (startsWith(c.flexDirection, "column")) { row = 0.0; }
     let rev = 0.0; if (endsWith(c.flexDirection, "reverse")) { rev = 1.0; }
+    let wrap = 0.0; if (c.flexWrap != "nowrap") { wrap = 1.0; }
+    let wrapRev = 0.0; if (c.flexWrap == "wrap-reverse") { wrapRev = 1.0; }
     let gapMain = c.colGap * d; let gapCross = c.rowGap * d;
     if (row < 0.5) { gapMain = c.rowGap * d; gapCross = c.colGap * d; }
     let items = [];
@@ -175,71 +183,115 @@ function flexLayout(app, box, contentW, contentH) {
     let n = len(items); if (n == 0) { return { h: 0.0, place: [], text: [] }; }
     let mainAvail = contentW; if (row < 0.5) { mainAvail = contentH; if (contentH == AUTO) { mainAvail = AUTO; } }
 
-    // Base (hypothetical) main sizes.
-    let bases = []; let crosses = []; let grows = []; let shrinks = [];
+    // Base (hypothetical) main sizes + grow/shrink factors.
+    let bases = []; let grows = []; let shrinks = [];
     for (let i = 0; i < n; i++) {
         let k = items[i]; let kc = k._cs; k._cbW = contentW; k._fw = -1.0; k._fh = -1.0;
         let cm = k.measure(app); let base = 0.0;
         if (row > 0.5) {
-            if (kc.flexBasis.k != "auto") { base = dpx(kc.flexBasis, contentW, d, cm.w); if (kc.boxSizing != "border-box") { } } else { if (!isAuto(kc.width)) { base = cm.w; } else { base = cm.w; } }
-            push(crosses, cm.h);
+            if (kc.flexBasis.k != "auto") { base = dpx(kc.flexBasis, contentW, d, cm.w); } else { base = cm.w; }
         } else {
             if (kc.flexBasis.k != "auto") { base = dpx(kc.flexBasis, box.cbH(), d, cm.h); } else { base = cm.h; }
-            push(crosses, cm.w);
         }
         push(bases, base); push(grows, kc.flexGrow); push(shrinks, kc.flexShrink);
     }
-    let sumBase = 0.0; for (let i = 0; i < n; i++) { sumBase = sumBase + bases[i]; }
-    let totalGap = gapMain * (n - 1);
-    let mainSize = mainAvail; if (mainAvail == AUTO) { mainSize = sumBase + totalGap; }
-    let free = mainSize - sumBase - totalGap;
-    // Grow / shrink distribution.
-    let sizes = [];
-    let sumGrow = 0.0; for (let i = 0; i < n; i++) { sumGrow = sumGrow + grows[i]; }
-    let sumShrink = 0.0; for (let i = 0; i < n; i++) { sumShrink = sumShrink + shrinks[i] * bases[i]; }
-    for (let i = 0; i < n; i++) {
-        let s = bases[i];
-        if (free > 0.0) { if (sumGrow > 0.0) { s = bases[i] + free * grows[i] / sumGrow; } }
-        else { if (free < 0.0) { if (sumShrink > 0.0) { s = bases[i] + free * (shrinks[i] * bases[i]) / sumShrink; } } }
-        if (s < 0.0) { s = 0.0; }
-        push(sizes, s);
-    }
-    // Cross size of the line.
-    let crossSize = contentH; if (row < 0.5) { crossSize = contentW; }
-    let lineCross = 0.0; for (let i = 0; i < n; i++) { if (crosses[i] > lineCross) { lineCross = crosses[i]; } }
-    if (crossSize == AUTO) { crossSize = lineCross; }
-    if (row > 0.5) { if (contentH != AUTO) { crossSize = contentH; } } else { crossSize = contentW; }
+    // Definite main size (the line length to grow/shrink/wrap against).
+    let mainSize = mainAvail;
+    if (mainAvail == AUTO) { let sb = 0.0; for (let i = 0; i < n; i++) { sb = sb + bases[i]; } mainSize = sb + gapMain * (n - 1); }
 
-    // Main-axis justification.
-    let used = totalGap; for (let i = 0; i < n; i++) { used = used + sizes[i]; }
-    let slack = mainSize - used; if (slack < 0.0) { slack = 0.0; }
-    let lead = 0.0; let between = gapMain;
-    let jc = c.justifyContent;
-    if (jc == "center") { lead = slack / 2.0; }
-    if (jc == "flex-end") { lead = slack; } if (jc == "end") { lead = slack; }
-    if (jc == "space-between") { if (n > 1) { between = gapMain + slack / (n - 1); } else { lead = 0.0; } }
-    if (jc == "space-around") { let g = slack / n; lead = g / 2.0; between = gapMain + g; }
-    if (jc == "space-evenly") { let g = slack / (n + 1); lead = g; between = gapMain + g; }
-
-    let place = []; let pos = lead;
-    for (let i = 0; i < n; i++) {
-        let idx = i; if (rev > 0.5) { idx = n - 1 - i; }
-        let k = items[idx]; let kc = k._cs; let s = sizes[idx]; let cs2 = crosses[idx];
-        // align-items / align-self along the cross axis (stretch grows the item).
-        let al = c.alignItems; if (kc.alignSelf != "auto") { al = kc.alignSelf; }
-        let crossPos = 0.0; let crossLen = cs2;
-        if (al == "stretch") { let autoCross = 0.0; if (row > 0.5) { if (isAuto(kc.height)) { autoCross = 1.0; } } else { if (isAuto(kc.width)) { autoCross = 1.0; } } if (autoCross > 0.5) { crossLen = crossSize; } }
-        if (al == "center") { crossPos = (crossSize - cs2) / 2.0; }
-        if (al == "flex-end") { crossPos = crossSize - cs2; } if (al == "end") { crossPos = crossSize - cs2; }
-        // Force the computed main (and stretched cross) size, then measure.
-        if (row > 0.5) { k._fw = s; if (crossLen != cs2) { k._fh = crossLen; } } else { k._fh = s; if (crossLen != cs2) { k._fw = crossLen; } }
-        let cm = k.measure(app);
-        let mainC = pos + s / 2.0; let crossC = crossPos + cm.h / 2.0; if (row < 0.5) { crossC = crossPos + cm.w / 2.0; }
-        let cx = mainC; let cy = crossC; if (row < 0.5) { cx = crossC; cy = mainC; }
-        push(place, { node: k, x: cx, y: cy });
-        pos = pos + s + between;
+    // --- partition items into flex lines --------------------------------------
+    let canWrap = wrap; if (mainAvail == AUTO) { canWrap = 0.0; }
+    let lines = [];
+    if (canWrap < 0.5) { let all = []; for (let i = 0; i < n; i++) { push(all, i); } push(lines, all); }
+    else {
+        let cur = []; let curMain = 0.0;
+        for (let i = 0; i < n; i++) {
+            let g = 0.0; if (len(cur) > 0) { g = gapMain; }
+            let over = 0.0; if (len(cur) > 0) { if (curMain + g + bases[i] > mainSize + 0.5) { over = 1.0; } }
+            if (over > 0.5) { push(lines, cur); cur = []; curMain = 0.0; g = 0.0; }
+            push(cur, i); curMain = curMain + g + bases[i];
+        }
+        if (len(cur) > 0) { push(lines, cur); }
     }
-    let h = crossSize; if (row > 0.5) { if (contentH == AUTO) { h = lineCross; } else { h = contentH; } } else { h = mainSize; }
+    let nLines = len(lines);
+
+    // --- pass A: size each line + measure its cross extent --------------------
+    let lineData = [];
+    for (let li = 0; li < nLines; li++) {
+        let line = lines[li]; let m = len(line);
+        let sumBase = 0.0; for (let q = 0; q < m; q++) { sumBase = sumBase + bases[line[q]]; }
+        let totalGap = gapMain * (m - 1);
+        let free = mainSize - sumBase - totalGap;
+        let sumGrow = 0.0; for (let q = 0; q < m; q++) { sumGrow = sumGrow + grows[line[q]]; }
+        let sumShrink = 0.0; for (let q = 0; q < m; q++) { sumShrink = sumShrink + shrinks[line[q]] * bases[line[q]]; }
+        let sizes = [];
+        for (let q = 0; q < m; q++) {
+            let idx = line[q]; let s = bases[idx];
+            if (free > 0.0) { if (sumGrow > 0.0) { s = bases[idx] + free * grows[idx] / sumGrow; } }
+            else { if (free < 0.0) { if (sumShrink > 0.0) { s = bases[idx] + free * (shrinks[idx] * bases[idx]) / sumShrink; } } }
+            if (s < 0.0) { s = 0.0; }
+            push(sizes, s);
+        }
+        // Cross extent of each item at its flexed main size; the line cross is the max.
+        let crs = []; let lc = 0.0;
+        for (let q = 0; q < m; q++) {
+            let k = items[line[q]];
+            if (row > 0.5) { k._fw = sizes[q]; k._fh = -1.0; } else { k._fh = sizes[q]; k._fw = -1.0; }
+            let cm = k.measure(app); let cc = cm.h; if (row < 0.5) { cc = cm.w; }
+            push(crs, cc); if (cc > lc) { lc = cc; }
+        }
+        push(lineData, { line: line, sizes: sizes, crs: crs, lc: lc });
+    }
+
+    // --- align-content: distribute the lines along the cross axis -------------
+    let containerCross = contentH; if (row < 0.5) { containerCross = contentW; }
+    let totalLineCross = gapCross * (nLines - 1);
+    for (let li = 0; li < nLines; li++) { totalLineCross = totalLineCross + lineData[li].lc; }
+    if (containerCross == AUTO) { containerCross = totalLineCross; }
+    let acFree = containerCross - totalLineCross; if (acFree < 0.0) { acFree = 0.0; }
+    let acLead = 0.0; let acGap = gapCross; let acStretch = 0.0; let ac = c.alignContent;
+    if (ac == "center") { acLead = acFree / 2.0; }
+    if (ac == "flex-end") { acLead = acFree; } if (ac == "end") { acLead = acFree; }
+    if (ac == "space-between") { if (nLines > 1) { acGap = gapCross + acFree / (nLines - 1); } }
+    if (ac == "space-around") { let g = acFree / nLines; acLead = g / 2.0; acGap = gapCross + g; }
+    if (ac == "space-evenly") { let g = acFree / (nLines + 1); acLead = g; acGap = gapCross + g; }
+    if (ac == "stretch") { acStretch = acFree / nLines; }
+
+    // --- pass B: place items, line by line ------------------------------------
+    let place = []; let crossOff = acLead;
+    for (let li = 0; li < nLines; li++) {
+        let realLi = li; if (wrapRev > 0.5) { realLi = nLines - 1 - li; }
+        let ld = lineData[realLi]; let line = ld.line; let sizes = ld.sizes; let crs = ld.crs;
+        let m = len(line); let lcEff = ld.lc + acStretch;
+        // Main-axis justification within the line.
+        let used = gapMain * (m - 1); for (let q = 0; q < m; q++) { used = used + sizes[q]; }
+        let slack = mainSize - used; if (slack < 0.0) { slack = 0.0; }
+        let lead = 0.0; let between = gapMain; let jc = c.justifyContent;
+        if (jc == "center") { lead = slack / 2.0; }
+        if (jc == "flex-end") { lead = slack; } if (jc == "end") { lead = slack; }
+        if (jc == "space-between") { if (m > 1) { between = gapMain + slack / (m - 1); } }
+        if (jc == "space-around") { let g = slack / m; lead = g / 2.0; between = gapMain + g; }
+        if (jc == "space-evenly") { let g = slack / (m + 1); lead = g; between = gapMain + g; }
+        let pos = lead;
+        for (let q = 0; q < m; q++) {
+            let qq = q; if (rev > 0.5) { qq = m - 1 - q; }
+            let idx = line[qq]; let k = items[idx]; let kc = k._cs; let s = sizes[qq]; let cs2 = crs[qq];
+            let al = c.alignItems; if (kc.alignSelf != "auto") { al = kc.alignSelf; }
+            let crossPos = 0.0; let crossLen = cs2;
+            if (al == "stretch") { let autoCross = 0.0; if (row > 0.5) { if (isAuto(kc.height)) { autoCross = 1.0; } } else { if (isAuto(kc.width)) { autoCross = 1.0; } } if (autoCross > 0.5) { crossLen = lcEff; } }
+            if (al == "center") { crossPos = (lcEff - cs2) / 2.0; }
+            if (al == "flex-end") { crossPos = lcEff - cs2; } if (al == "end") { crossPos = lcEff - cs2; }
+            if (row > 0.5) { k._fw = s; if (crossLen != cs2) { k._fh = crossLen; } else { k._fh = -1.0; } }
+            else { k._fh = s; if (crossLen != cs2) { k._fw = crossLen; } else { k._fw = -1.0; } }
+            let cm = k.measure(app);
+            let mainC = pos + s / 2.0; let crossC = crossOff + crossPos + cm.h / 2.0; if (row < 0.5) { crossC = crossOff + crossPos + cm.w / 2.0; }
+            let cx = mainC; let cy = crossC; if (row < 0.5) { cx = crossC; cy = mainC; }
+            push(place, { node: k, x: cx, y: cy });
+            pos = pos + s + between;
+        }
+        crossOff = crossOff + lcEff + acGap;
+    }
+    let h = mainSize; if (row > 0.5) { h = containerCross; }
     let ab = layoutAbs(app, box, absOf(kids), contentW, contentH); place = concat(place, ab);
     return { h: h, place: place, text: [] };
 }

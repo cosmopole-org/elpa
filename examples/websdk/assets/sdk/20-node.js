@@ -238,11 +238,15 @@ class Box {
         pnt.translate(-cx, -cy);
     }
     // The transition duration+delay (ms) for `prop` (longhand wins over `all`).
+    // A shorthand family member matches too: a `transition: background …` covers
+    // `background-color` and `background-image` (gradients).
     transDur(prop) {
         let tr = this._cs.transition; let dur = 200.0; let found = 0.0;
         for (let i = 0; i < len(tr); i++) {
-            let t = tr[i];
-            if (t.prop == prop) { dur = t.dur + t.delay; found = 1.0; }
+            let t = tr[i]; let exact = 0.0;
+            if (t.prop == prop) { exact = 1.0; }
+            if (startsWith(prop, concat(t.prop, "-"))) { exact = 1.0; }
+            if (exact > 0.5) { dur = t.dur + t.delay; found = 1.0; }
             else { if (t.prop == "all") { if (found < 0.5) { dur = t.dur + t.delay; } } }
         }
         return dur;
@@ -269,9 +273,19 @@ class Box {
                 pnt.shadowCol(cx + s.x * d, cy + s.y * d, hw + sp, hh + sp, r, bl * 0.5, 0.0, bl + 1.0, s.color);
             }
         }
+        // backdrop-filter: emit a frosted-glass sentinel the submitter composites a
+        // blurred copy of the content painted *before* this box into, clipped to the
+        // box (rounded). The box's own (usually translucent) background then paints
+        // over it as the tint.
+        if (c.backdropBlur > 0.0) { pnt.backdrop(cx, cy, hw, hh, r, c.backdropBlur * d, CLEAR); }
         // Gradient or solid background fill (the padding box = border box here).
-        // A transition eases the solid fill colour through the animation clock.
-        if (c.bgGradient != 0) { this.paintGradient(app, c.bgGradient, cx, cy, hw, hh, r); }
+        // A transition eases the solid fill colour (or the gradient's stops &
+        // geometry) through the animation clock.
+        if (c.bgGradient != 0) {
+            let g = c.bgGradient;
+            if (has(this, "_trans")) { if (this._trans > 0.5) { g = this.easeGradient(app, concat(this.nodeKey(), "|gg"), g, this.transDur("background-image")); } }
+            this.paintGradient(app, g, cx, cy, hw, hh, r);
+        }
         else {
             let bg = c.bgColor;
             if (has(this, "_trans")) { if (this._trans > 0.5) { bg = app.clock.tweenCol(concat(this.nodeKey(), "|bg"), c.bgColor, this.transDur("background-color")); } }
@@ -302,6 +316,23 @@ class Box {
         if (bl > 0.01) { pnt.rect(cx - hw + bl / 2.0, cy, bl / 2.0, hh, 0.0, 0.0, 0.0, c.bc.l, CLEAR); }
         if (brr > 0.01) { pnt.rect(cx + hw - brr / 2.0, cy, brr / 2.0, hh, 0.0, 0.0, 0.0, c.bc.r, CLEAR); }
         return 0;
+    }
+    // A gradient with its stop colours, stop offsets and axis eased toward the
+    // target through the animation clock (for `transition: background`). Two
+    // gradients of the same stop count cross-fade; a changed count simply snaps
+    // the extra stops (their tween keys appear fresh).
+    easeGradient(app, key, g, dur) {
+        let cols = []; let stops = [];
+        for (let i = 0; i < len(g.colors); i++) {
+            cols = concat(cols, [ app.clock.tweenCol(concat(key, concat("c", str(i))), g.colors[i], dur) ]);
+            stops = concat(stops, [ app.clock.tweenTo(concat(key, concat("s", str(i))), g.stops[i], dur) ]);
+        }
+        let b0 = app.clock.tweenTo(concat(key, "b0"), g.begin[0], dur);
+        let b1 = app.clock.tweenTo(concat(key, "b1"), g.begin[1], dur);
+        let e0 = app.clock.tweenTo(concat(key, "e0"), g.end[0], dur);
+        let e1 = app.clock.tweenTo(concat(key, "e1"), g.end[1], dur);
+        let start = app.clock.tweenTo(concat(key, "st"), g.start, dur);
+        return { type: g.type, colors: cols, stops: stops, angle: g.angle, start: start, begin: [b0, b1], end: [e0, e1] };
     }
     paintGradient(app, g, cx, cy, hw, hh, r) {
         let pnt = app.painter; let stops = [];

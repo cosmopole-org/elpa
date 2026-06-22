@@ -343,6 +343,17 @@ function cssTextShadows(v, cur) {
         }
         return out;
     }
+// Parse a `backdrop-filter` value, extracting the `blur(<length>)` radius in CSS
+// px (other filter functions are ignored). 0 when there is no blur.
+function parseBlur(v) {
+    if (isNull(v)) { return 0.0; } if (typeOf(v) != "string") { return 0.0; }
+    let s = lower(v); if (trim(s) == "none") { return 0.0; }
+    if (!contains(s, "blur(")) { return 0.0; }
+    let o = indexOf(s, "blur("); let inner = substring(s, o + 5, len(s));
+    let cl = indexOf(inner, ")"); if (cl >= 0) { inner = substring(inner, 0, cl); }
+    let pl = parseLen(trim(inner), 16.0, VPGLOBAL); if (pl.k == "px") { return pl.v; }
+    return 0.0;
+}
 function cssTransitions(v) {
         if (isNull(v)) { return []; } if (typeOf(v) != "string") { return []; }
         let parts = cssSplitTop(v, ","); let out = [];
@@ -479,6 +490,8 @@ function computeStyle(st, inh, vp) {
     cs.transition = cssTransitions(sv(st, "transition"));
     cs.outline = 0;
     if (has(st, "outline")) { let o = computeOutline(st.outline, col, fontPx, vp); cs.outline = o; }
+    cs.backdropBlur = 0.0;
+    if (has(st, "backdropFilter")) { cs.backdropBlur = parseBlur(st.backdropFilter); }
 
     // --- flexbox --------------------------------------------------------------
     cs.flexDirection = lower(svdef(st, "flexDirection", "row"));

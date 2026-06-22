@@ -93,10 +93,12 @@ let Nav = defineComponent(function (props, update) {
         // Links + CTA.
         Div({ style: { display: "flex", flexDirection: "row", alignItems: "center", gap: "22px" }, children: [
             navLink("Features"), navLink("Performance"), navLink("Docs"),
-            Button({ id: "nav-cta", hoverStyle: { background: "#4848d6", transform: "translateY(-1px)" },
-                style: { background: BRAND, color: "white", border: "0px", borderRadius: "10px",
+            // The gradient background eases between the two stop sets on hover
+            // (a CSS `transition: background`, driven by the animation clock).
+            Button({ id: "nav-cta", hoverStyle: { background: "linear-gradient(135deg, #06b6d4, #5b5bf0)", transform: "translateY(-1px)" },
+                style: { background: "linear-gradient(135deg, #5b5bf0, #22d3ee)", color: "white", border: "0px", borderRadius: "10px",
                     padding: "10px 18px", fontSize: "15px", fontWeight: "bold", cursor: "pointer",
-                    boxShadow: "0 6px 16px rgba(91,91,240,0.32)", transition: "background-color 160ms, transform 160ms" },
+                    boxShadow: "0 6px 16px rgba(91,91,240,0.32)", transition: "background 220ms, transform 160ms" },
                 children: ["Get started"] }),
         ] }),
     ] });
@@ -260,6 +262,39 @@ let StatBand = defineComponent(function (props, update) {
 });
 
 // =============================================================================
+// Glassmorphism band — a real backdrop-filter: blur(). Colourful blobs sit
+// behind a translucent card; the card captures what's behind it to an offscreen
+// target, blurs it, and composites it under a white tint (the two-pass frosted
+// compositor). Placed well below the hero so it never co-occurs with the live
+// FPS animation (the heavier two-pass frame and the per-frame animation are in
+// different scroll positions).
+// =============================================================================
+function blob(top, side, off, size, colr) {
+    let st = { position: "absolute", top: top, width: size, height: size, borderRadius: "999px",
+        background: colr, opacity: 0.7 };
+    if (side == "left") { st.left = off; } else { st.right = off; }
+    return Div({ style: st });
+}
+
+let GlassBand = defineComponent(function (props, update) {
+    return Section({ style: { position: "relative", background: "linear-gradient(120deg, #14163f, #4f46e5 60%, #06b6d4)",
+        padding: "96px 24px" }, children: [
+        blob("40px", "left", "12%", "170px", "#22d3ee"),
+        blob("150px", "right", "14%", "150px", "#ec4899"),
+        blob("70px", "left", "44%", "120px", "#f59e0b"),
+        Div({ style: { maxWidth: "640px", marginLeft: "auto", marginRight: "auto", position: "relative",
+            background: "rgba(255,255,255,0.14)", border: "1px solid rgba(255,255,255,0.30)", borderRadius: "24px",
+            padding: "44px 38px", backdropFilter: "blur(16px)", boxShadow: "0 24px 60px rgba(0,0,0,0.28)",
+            textAlign: "center" }, children: [
+            H2({ style: { color: "white", fontSize: "31px", margin: "0px", letterSpacing: "-0.5px",
+                textShadow: "0 4px 18px rgba(0,0,0,0.25)" }, children: ["Frosted glass, composited on the GPU"] }),
+            P({ style: { color: "#eef1ff", fontSize: "17px", lineHeight: "1.6", marginTop: "14px", marginBottom: "0px" },
+                children: ["This card is a real CSS backdrop-filter blur — the shapes behind it are captured to an offscreen target, blurred, and composited under a translucent tint, all in one frame."] }),
+        ] }),
+    ] });
+});
+
+// =============================================================================
 // FAQ — click to expand (module state + full repaint on toggle).
 // =============================================================================
 let openIdx = -1;
@@ -367,7 +402,7 @@ let Footer2 = defineComponent(function (props, update) {
 let App = defineComponent(function (props, update) {
     return Body({ id: "page", style: { fontFamily: "sans", color: INK, background: "white",
         overflowY: "auto" }, children: [
-        Nav({}), Hero({}), Trust({}), Features({}), StatBand({}), Faq({}), Closing({}), Footer2({}),
+        Nav({}), Hero({}), Trust({}), Features({}), StatBand({}), GlassBand({}), Faq({}), Closing({}), Footer2({}),
     ] });
 });
 

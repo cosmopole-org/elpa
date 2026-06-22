@@ -60,9 +60,9 @@ runApp(App);
 | `10-engine` | `Painter` (the 16-float instanced primitive: rect/shadow/glyph/gradient/image, plus `skew`), `FontEngine` (host glyph atlas + stroke fallback, **letter-spacing aware**), `MediaEngine` (images), `AnimationClock` (eased values, **real-time CSS-transition tweens**, a **continuous time source**, and per-key subscriber tracking so the frame clock repaints only what is moving). |
 | `15-css` | **The CSS engine**: the `Viewport`, the `<color>` grammar (keywords, `#rgb/#rgba/#rrggbb/#rrggbbaa`, `rgb()/rgba()`, `hsl()/hsla()`, `transparent`, `currentColor`), the `<length>`/`<percentage>` grammar (`px`, `em`, `rem`, `vw/vh/vmin/vmax`, `%`, `pt`, `auto`/`none`), shorthand expansion (margin/padding/border/radius/inset/gap/flex/background/box-shadow/transform/transition), inheritance, and the `computeStyle` cascade. |
 | `20-node` | The `Box` base class — the CSS box model (content/padding/border/margin, `box-sizing`, min/max clamping) and the painted decoration (background colour & gradient, per-side borders, border-radius, box-shadow, outline) wrapped in the `transform`/`opacity` group. |
-| `30-layout` | The layout algorithms — **block + inline flow** (line-box text wrapping, `text-align`), **flexbox** (direction/wrap/grow/shrink/basis/justify/align/order/gap), **grid** (`grid-template-columns/rows` with `px`/`%`/`fr`/`repeat()`, gaps), and **positioning** (relative/absolute/fixed). |
+| `30-layout` | The layout algorithms — **block + inline flow** (line-box text wrapping, `text-align`), **flexbox** (direction/grow/shrink/basis/justify/align/order/gap **plus multi-line `flex-wrap` + `align-content`**), **grid** (`grid-template-columns/rows` with `px`/`%`/`fr`/`repeat()`, gaps), and **positioning** (relative/absolute/fixed). |
 | `40-elements` | The HTML element catalog as `Box` subclasses + the **user-agent stylesheet** (every tag's default `display`, margins, font size/weight). Behavioural elements: `<img>`, `<input>`/`<textarea>` (focus + caret + key editing), `<a>`, `<li>` (markers), `<br>`, `<hr>`. |
-| `50-runtime` | The retained-tree `WebRuntime`: mount, **partial update**, the transition/animation clock, the DOM-style **event loop** (click, hover/`:hover`, focus, keyboard, scroll/`overflow`), and the `gpu.submit` frame builder with the **static/dynamic layered** split. |
+| `50-runtime` | The retained-tree `WebRuntime`: mount, **partial update**, the transition/animation clock, the DOM-style **event loop** (click, hover/`:hover`, focus, keyboard, scroll/`overflow`), and the `gpu.submit` frame builder with the **static/dynamic layered** split and the **two-pass `backdrop-filter` compositor** (offscreen scene capture → multi-tap blur composite). |
 | `60-api` | The element constructors (one per HTML tag), `h()`, `defineComponent`/`runApp`, the style/viewport helpers, the animation surface (`animTime`/`tweenValue`/`pressValue`), and the host entry points (`onEvent`/`onFrame`/`onResize`). |
 
 ## CSS coverage
@@ -73,28 +73,39 @@ runApp(App);
   `visibility`, `overflow`(-x/y) scrolling with momentum.
 * **Layout** — `display: block | inline | inline-block | flex | inline-flex |
   grid | none`; normal flow with inline line-box text wrapping; the full
-  flexbox model; a CSS grid; `position: static | relative | absolute | fixed`
-  with `top/right/bottom/left`; `z-index`.
+  flexbox model **including multi-line `flex-wrap`** (`wrap` / `wrap-reverse`,
+  with per-line grow/shrink/justify and `align-content` distribution); a CSS
+  grid; `position: static | relative | absolute | fixed` with
+  `top/right/bottom/left`; `z-index`.
 * **Typography** — `color`, `font-size` (px/em/rem/%), `font-weight`,
   `font-style`, `line-height`, **`letter-spacing`** (applied to text measure &
   paint), `text-align`, `text-transform`, `white-space`, **`text-decoration`**
   (`underline` / `overline` / `line-through`, painted as a rule across the run),
   **`text-shadow`** (offset copies behind the glyphs), with CSS inheritance.
 * **Paint** — solid + `linear`/`radial`/`conic` gradient backgrounds,
-  `transform` (`translate`/`scale`/`rotate`/`skew`).
+  `transform` (`translate`/`scale`/`rotate`/`skew`), and **`backdrop-filter:
+  blur()`** — a real frosted-glass effect: the content behind the box is
+  captured to a reduced-resolution offscreen target, blurred (multi-tap), and
+  composited back under the box's translucent background in a two-pass frame.
 * **Transitions & animation** — `transition` is wired to the animation clock:
   a state change (e.g. `:hover`) **eases** `opacity`, `transform`,
-  `background-color` and `border-color` over the declared duration instead of
-  snapping. Apps can also drive their own motion: `animTime(key)` (a continuous
-  ms time that keeps just the reading component repainting — for looping hero
-  animations), `tweenValue(key, target, ms)` (an eased scalar) and
-  `pressValue(id)` (a decaying press level for tap feedback).
+  `background-color`, `border-color` **and gradient backgrounds** (a
+  `transition: background` cross-fades the gradient's stop colours and axis)
+  over the declared duration instead of snapping. Apps can also drive their own
+  motion: `animTime(key)` (a continuous ms time that keeps just the reading
+  component repainting — for looping hero animations), `tweenValue(key, target,
+  ms)` (an eased scalar) and `pressValue(id)` (a decaying press level for tap
+  feedback).
 
 > **Single-pass by design.** Like the Material kit, the whole document is one
 > instanced rounded-rect SDF draw — text is sampled from a coverage atlas in the
 > same shader. The SDF primitive carries a single corner radius, so the four CSS
 > corners are averaged (equal corners — the common case — are exact); per-side
-> borders that differ are drawn as separate edge rects.
+> borders that differ are drawn as separate edge rects. The two exceptions that
+> add passes are `<img>`/video (interleaved textured quads) and `backdrop-filter`
+> (an offscreen capture + blur composite); a frame that uses neither stays a
+> single instanced draw, and the **static/dynamic layered** split keeps an
+> animating component's per-frame cost to just its own instances.
 
 ## Build & test
 
