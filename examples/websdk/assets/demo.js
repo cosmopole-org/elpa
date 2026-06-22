@@ -19,7 +19,18 @@ let Counter = defineComponent(function (props, update) {
 });
 
 let App = defineComponent(function (props, update) {
-    return Body({ style: { fontFamily: "sans", fontSize: "16px", color: "#1a1a1a", background: "#f6f7fb", padding: "24px" }, children: [
+    // Mobile-first: lay out for a narrow phone by default and only widen when the
+    // viewport has room. The runtime re-mounts (re-runs this component) on every
+    // resize, so reading `viewportWidth()` here makes the page reflow live.
+    let vw = viewportWidth();
+    let wide = 0.0; if (vw > 640.0) { wide = 1.0; }
+    // Stack the two cards in a single column on phones; place them side-by-side on
+    // wider screens. The grid drops from three columns to one when it is cramped.
+    let colsDir = "column"; if (wide > 0.5) { colsDir = "row"; }
+    let swatchCols = "repeat(3, 1fr)"; if (wide < 0.5) { swatchCols = "1fr"; }
+    let pagePad = "16px"; if (wide > 0.5) { pagePad = "24px"; }
+
+    return Body({ style: { fontFamily: "sans", fontSize: "16px", color: "#1a1a1a", background: "#f6f7fb", padding: pagePad }, children: [
         // Header card with a linear gradient and a shadow.
         Header({ style: { background: "linear-gradient(90deg, #4f46e5, #06b6d4)", color: "white",
             padding: "20px", borderRadius: "12px", boxShadow: "0 6px 18px rgba(0,0,0,0.18)" }, children: [
@@ -27,8 +38,8 @@ let App = defineComponent(function (props, update) {
             P({ style: { margin: "6px 0 0 0", opacity: 0.9 }, children: ["HTML elements + a CSS engine, rendered on the GPU."] }),
         ] }),
 
-        // Two-column flex layout.
-        Div({ style: { display: "flex", flexDirection: "row", gap: "16px", marginTop: "20px" }, children: [
+        // Two cards: stacked on mobile, two columns when there is room.
+        Div({ style: { display: "flex", flexDirection: colsDir, gap: "16px", marginTop: "20px" }, children: [
             Div({ style: { flex: "2", background: "white", padding: "16px", borderRadius: "10px", border: "1px solid #e5e7eb" }, children: [
                 H2({ children: ["Flow & inline text"] }),
                 P({ children: ["This paragraph wraps across line boxes, with ",
@@ -46,17 +57,18 @@ let App = defineComponent(function (props, update) {
             ] }),
         ] }),
 
-        // CSS grid of swatches.
-        Div({ style: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "10px", marginTop: "20px" }, children: [
+        // CSS grid of swatches (three across when wide, a single column on phones).
+        Div({ style: { display: "grid", gridTemplateColumns: swatchCols, gap: "10px", marginTop: "20px" }, children: [
             Div({ style: { height: "60px", borderRadius: "8px", background: "#ef4444" } }),
             Div({ style: { height: "60px", borderRadius: "8px", background: "#10b981" } }),
             Div({ style: { height: "60px", borderRadius: "8px", background: "#3b82f6" } }),
         ] }),
 
-        // A form row.
+        // A form row; the field grows to fill the width on a phone.
         Div({ style: { marginTop: "20px" }, children: [
             Label({ children: ["Name: "] }),
-            Input({ id: "nm", placeholder: "type here", value: name, onInput: (v) => { name = v; W.repaint(); } }),
+            Input({ id: "nm", placeholder: "type here", value: name, style: { width: "100%", marginTop: "6px" },
+                onInput: (v) => { name = v; W.repaint(); } }),
             P({ children: ["Hello, ", Span({ style: { fontWeight: "bold" }, children: [name] }), "!"] }),
         ] }),
     ] });
