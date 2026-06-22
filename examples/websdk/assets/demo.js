@@ -24,13 +24,22 @@ let App = defineComponent(function (props, update) {
     // resize, so reading `viewportWidth()` here makes the page reflow live.
     let vw = viewportWidth();
     let wide = 0.0; if (vw > 640.0) { wide = 1.0; }
-    // Stack the two cards in a single column on phones; place them side-by-side on
-    // wider screens. The grid drops from three columns to one when it is cramped.
-    let colsDir = "column"; if (wide > 0.5) { colsDir = "row"; }
+    // On wide screens the two cards sit side-by-side in a flex row with a 2:1
+    // width ratio; on a phone they stack as ordinary full-width blocks (a column
+    // flex with `flex: 2/1` resolves flex-basis to 0 and would collapse, and
+    // block flow wraps the text at the right width anyway).
     let swatchCols = "repeat(3, 1fr)"; if (wide < 0.5) { swatchCols = "1fr"; }
     let pagePad = "16px"; if (wide > 0.5) { pagePad = "24px"; }
+    let cardWrap = { marginTop: "20px" };
+    let cardA = { background: "white", padding: "16px", borderRadius: "10px", border: "1px solid #e5e7eb", marginBottom: "16px" };
+    let cardB = { background: "white", padding: "16px", borderRadius: "10px", border: "1px solid #e5e7eb" };
+    if (wide > 0.5) {
+        cardWrap = { marginTop: "20px", display: "flex", flexDirection: "row", gap: "16px" };
+        cardA = { flex: "2", background: "white", padding: "16px", borderRadius: "10px", border: "1px solid #e5e7eb" };
+        cardB = { flex: "1", background: "white", padding: "16px", borderRadius: "10px", border: "1px solid #e5e7eb" };
+    }
 
-    return Body({ style: { fontFamily: "sans", fontSize: "16px", color: "#1a1a1a", background: "#f6f7fb", padding: pagePad }, children: [
+    return Body({ id: "page", style: { fontFamily: "sans", fontSize: "16px", color: "#1a1a1a", background: "#f6f7fb", padding: pagePad, overflowY: "auto" }, children: [
         // Header card with a linear gradient and a shadow.
         Header({ style: { background: "linear-gradient(90deg, #4f46e5, #06b6d4)", color: "white",
             padding: "20px", borderRadius: "12px", boxShadow: "0 6px 18px rgba(0,0,0,0.18)" }, children: [
@@ -39,15 +48,15 @@ let App = defineComponent(function (props, update) {
         ] }),
 
         // Two cards: stacked on mobile, two columns when there is room.
-        Div({ style: { display: "flex", flexDirection: colsDir, gap: "16px", marginTop: "20px" }, children: [
-            Div({ style: { flex: "2", background: "white", padding: "16px", borderRadius: "10px", border: "1px solid #e5e7eb" }, children: [
+        Div({ style: cardWrap, children: [
+            Div({ style: cardA, children: [
                 H2({ children: ["Flow & inline text"] }),
                 P({ children: ["This paragraph wraps across line boxes, with ",
                     Strong({ children: ["bold"] }), ", ", Em({ children: ["italic"] }),
                     " and an ", A({ href: "#", children: ["anchor"] }), " flowing inline like a browser."] }),
                 Counter({}),
             ] }),
-            Div({ style: { flex: "1", background: "white", padding: "16px", borderRadius: "10px", border: "1px solid #e5e7eb" }, children: [
+            Div({ style: cardB, children: [
                 H3({ children: ["A list"] }),
                 Ul({ children: [
                     Li({ children: ["box model"] }),
