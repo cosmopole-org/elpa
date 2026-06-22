@@ -100,6 +100,40 @@ fn click_repaints_and_changes_the_page() {
 }
 
 #[test]
+fn scrolling_is_stable_and_keeps_content() {
+    // A narrow, short viewport: the page stacks into a tall single column whose
+    // height exceeds the viewport, so the body's `overflow:auto` becomes a live
+    // scroll region.
+    let mut app = Elpa::new_from_js(
+        HeadlessBackend::default(),
+        SurfaceInfo::new(420, 600, 1.0),
+        &elpa_websdk::program(),
+    )
+    .expect("SDK + app program compiles");
+    app.start();
+    let before = instances(&app).len();
+
+    // Wheel down repeatedly, then back up - the scroll-only repaint path.
+    for _ in 0..12 {
+        app.send_event(&InputEvent::Wheel { x: 200.0, y: 300.0, delta_y: 80.0 });
+        assert!(app.trap_reason().is_none(), "no trap while scrolling: {:?}", app.trap_reason());
+    }
+    // Mid-scroll the page must still paint real content - the centre-based culler
+    // used to drop elements taller than the viewport while they were on screen.
+    let mid = instances(&app).len();
+    assert!(mid >= 16, "content still painted mid-scroll ({} floats)", mid);
+    assert_eq!(mid % 16, 0, "instance stride is 16 floats");
+
+    for _ in 0..12 {
+        app.send_event(&InputEvent::Wheel { x: 200.0, y: 300.0, delta_y: -80.0 });
+        assert!(app.trap_reason().is_none(), "no trap while scrolling back: {:?}", app.trap_reason());
+    }
+    // Scrolled fully back to the top: the same content as the initial frame.
+    let after = instances(&app).len();
+    assert_eq!(after, before, "scrolling back to the top restores the page");
+}
+
+#[test]
 fn animation_frame_is_stable() {
     let mut app = instance();
     app.start();
