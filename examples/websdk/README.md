@@ -57,13 +57,13 @@ runApp(App);
 | Module | Responsibility |
 |--------|----------------|
 | `00-data` | The SDF + image WGSL shaders, the fallback glyph font, the **CSS named-colour table** (CSS Color L4 keywords) and shared constants. |
-| `10-engine` | `Painter` (the 16-float instanced primitive: rect/shadow/glyph/gradient/image), `FontEngine` (host glyph atlas + stroke fallback), `MediaEngine` (images), `AnimationClock` (eased values + per-key subscriber tracking for partial animation). |
+| `10-engine` | `Painter` (the 16-float instanced primitive: rect/shadow/glyph/gradient/image, plus `skew`), `FontEngine` (host glyph atlas + stroke fallback, **letter-spacing aware**), `MediaEngine` (images), `AnimationClock` (eased values, **real-time CSS-transition tweens**, a **continuous time source**, and per-key subscriber tracking so the frame clock repaints only what is moving). |
 | `15-css` | **The CSS engine**: the `Viewport`, the `<color>` grammar (keywords, `#rgb/#rgba/#rrggbb/#rrggbbaa`, `rgb()/rgba()`, `hsl()/hsla()`, `transparent`, `currentColor`), the `<length>`/`<percentage>` grammar (`px`, `em`, `rem`, `vw/vh/vmin/vmax`, `%`, `pt`, `auto`/`none`), shorthand expansion (margin/padding/border/radius/inset/gap/flex/background/box-shadow/transform/transition), inheritance, and the `computeStyle` cascade. |
 | `20-node` | The `Box` base class — the CSS box model (content/padding/border/margin, `box-sizing`, min/max clamping) and the painted decoration (background colour & gradient, per-side borders, border-radius, box-shadow, outline) wrapped in the `transform`/`opacity` group. |
 | `30-layout` | The layout algorithms — **block + inline flow** (line-box text wrapping, `text-align`), **flexbox** (direction/wrap/grow/shrink/basis/justify/align/order/gap), **grid** (`grid-template-columns/rows` with `px`/`%`/`fr`/`repeat()`, gaps), and **positioning** (relative/absolute/fixed). |
 | `40-elements` | The HTML element catalog as `Box` subclasses + the **user-agent stylesheet** (every tag's default `display`, margins, font size/weight). Behavioural elements: `<img>`, `<input>`/`<textarea>` (focus + caret + key editing), `<a>`, `<li>` (markers), `<br>`, `<hr>`. |
 | `50-runtime` | The retained-tree `WebRuntime`: mount, **partial update**, the transition/animation clock, the DOM-style **event loop** (click, hover/`:hover`, focus, keyboard, scroll/`overflow`), and the `gpu.submit` frame builder with the **static/dynamic layered** split. |
-| `60-api` | The element constructors, `h()`, `defineComponent`/`runApp`, the style/viewport helpers, and the host entry points (`onEvent`/`onFrame`/`onResize`). |
+| `60-api` | The element constructors (one per HTML tag), `h()`, `defineComponent`/`runApp`, the style/viewport helpers, the animation surface (`animTime`/`tweenValue`/`pressValue`), and the host entry points (`onEvent`/`onFrame`/`onResize`). |
 
 ## CSS coverage
 
@@ -76,11 +76,19 @@ runApp(App);
   flexbox model; a CSS grid; `position: static | relative | absolute | fixed`
   with `top/right/bottom/left`; `z-index`.
 * **Typography** — `color`, `font-size` (px/em/rem/%), `font-weight`,
-  `font-style`, `line-height`, `letter-spacing`, `text-align`,
-  `text-transform`, `white-space`, with CSS inheritance.
+  `font-style`, `line-height`, **`letter-spacing`** (applied to text measure &
+  paint), `text-align`, `text-transform`, `white-space`, **`text-decoration`**
+  (`underline` / `overline` / `line-through`, painted as a rule across the run),
+  **`text-shadow`** (offset copies behind the glyphs), with CSS inheritance.
 * **Paint** — solid + `linear`/`radial`/`conic` gradient backgrounds,
-  `transform` (`translate`/`scale`/`rotate`), `transition` (driven by the
-  animation clock).
+  `transform` (`translate`/`scale`/`rotate`/`skew`).
+* **Transitions & animation** — `transition` is wired to the animation clock:
+  a state change (e.g. `:hover`) **eases** `opacity`, `transform`,
+  `background-color` and `border-color` over the declared duration instead of
+  snapping. Apps can also drive their own motion: `animTime(key)` (a continuous
+  ms time that keeps just the reading component repainting — for looping hero
+  animations), `tweenValue(key, target, ms)` (an eased scalar) and
+  `pressValue(id)` (a decaying press level for tap feedback).
 
 > **Single-pass by design.** Like the Material kit, the whole document is one
 > instanced rounded-rect SDF draw — text is sampled from a coverage atlas in the
@@ -112,4 +120,9 @@ not forward arguments, so every `Box` subclass declares
 `constructor(tag, props) { super(tag, props); }`. `has(obj, key)` tests only an
 object's **own data fields**, not its class methods, so type predicates flag a
 node with an own field (e.g. `TextRun` sets `this._isText`) rather than probing
-for a method name.
+for a method name. Ordering comparisons (`<`/`>`) trap on a boolean operand, so
+flags stored for such comparisons are kept as `1.0`/`0.0` numbers, not `true`/
+`false`. Finally, **top-level names share one binding space with the SDK's
+function-locals** — an app's global helper must not reuse a name the SDK uses as
+a local (e.g. the runtime's event loop has a local `px`, so the demo's
+px-formatter is named `toPx`), or the local will clobber it on first use.

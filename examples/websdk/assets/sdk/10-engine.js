@@ -64,6 +64,13 @@ class Painter {
         let a0 = m[0]; let b0 = m[1]; let c0 = m[2]; let d0 = m[3];
         m[0] = a0 * c + c0 * s; m[1] = b0 * c + d0 * s; m[2] = a0 * (-s) + c0 * c; m[3] = b0 * (-s) + d0 * c;
     }
+    // Shear the current transform (CSS `skewX`/`skewY`), angles in radians.
+    skew(ax, ay) {
+        let tx = 0.0; if (cos(ax) != 0.0) { tx = sin(ax) / cos(ax); }
+        let ty = 0.0; if (cos(ay) != 0.0) { ty = sin(ay) / cos(ay); }
+        let m = this.m; let a0 = m[0]; let b0 = m[1]; let c0 = m[2]; let d0 = m[3];
+        m[0] = a0 + c0 * ty; m[1] = b0 + d0 * ty; m[2] = a0 * tx + c0; m[3] = b0 * tx + d0;
+    }
     setAlpha(a) { this.alpha = this.alpha * a; }
     colorFilter(mul, add) {
         this.cfm = [this.cfm[0] * mul[0], this.cfm[1] * mul[1], this.cfm[2] * mul[2], this.cfm[3] * mul[3]];
@@ -225,21 +232,23 @@ class FontEngine {
     textScale(cell) { if (this.atlas == 0) { return cell * 0.2; } return cell * 6.6 / this.atlas.pxSize; }
     glyphMap(thick) { if (thick > 1.1) { return this.atlas.bold; } return this.atlas.regular; }
     // Proportional text width from the atlas advances (monospace estimate before
-    // the atlas loads). Uses the regular weight for measurement.
-    textW(str, cell) {
-        if (this.atlas == 0) { return len(str) * 5.0 * cell; }
+    // the atlas loads). Uses the regular weight for measurement. `ls` is the
+    // optional CSS letter-spacing in physical px, added after each glyph.
+    textW(str, cell, ls) {
+        if (isNull(ls)) { ls = 0.0; }
+        if (this.atlas == 0) { let w = len(str) * 5.0 * cell; if (len(str) > 0) { w = w + ls * len(str); } return w; }
         let g = this.atlas.regular; let sc = this.textScale(cell); let w = 0.0;
-        for (let i = 0; i < len(str); i++) { let ch = charAt(str, i); if (has(g, ch)) { w = w + g[ch].adv * sc; } }
+        for (let i = 0; i < len(str); i++) { let ch = charAt(str, i); if (has(g, ch)) { w = w + g[ch].adv * sc; } w = w + ls; }
         return w;
     }
     // Real text: lay glyphs out from the atlas, centred on (cx,cy). Falls back to
-    // the stroke font when no atlas is available.
-    paintCentered(painter, str, cx, cy, cell, col, thick, font) {
+    // the stroke font when no atlas is available. `ls` is letter-spacing (phys px).
+    paintCentered(painter, str, cx, cy, cell, col, thick, font, ls) {
+        if (isNull(ls)) { ls = 0.0; }
         if (this.atlas == 0) { this.paintCapsules(painter, str, cx, cy, cell, col, thick, font); return 0; }
         let g = this.glyphMap(thick); let sc = this.textScale(cell);
         let aw = this.atlas.width; let ah = this.atlas.height; let n = len(str);
-        let tw = 0.0;
-        for (let i = 0; i < n; i++) { let ch = charAt(str, i); if (has(g, ch)) { tw = tw + g[ch].adv * sc; } }
+        let tw = this.textW(str, cell, ls);
         let penX = cx - tw / 2.0;
         let baseline = cy + (this.atlas.ascent + this.atlas.descent) * sc / 2.0;
         for (let i = 0; i < n; i++) {
@@ -253,8 +262,8 @@ class FontEngine {
                     painter.glyph(glx + gw / 2.0, gtop + gh / 2.0, gw / 2.0, gh / 2.0,
                         gg.x / aw, gg.y / ah, (gg.x + gg.w) / aw, (gg.y + gg.h) / ah, col);
                 }
-                penX = penX + gg.adv * sc;
-            }
+                penX = penX + gg.adv * sc + ls;
+            } else { penX = penX + ls; }
         }
     }
     // Fallback stroke-font rasteriser (when no atlas). `thick` is the capsule
@@ -501,13 +510,36 @@ class IconEngine {
 // clock repaints only the components whose keys are still moving. `paintingComp`
 // is set by the runtime while a component paints.
 class AnimationClock {
-    constructor() { this.anim = {}; this.target = {}; this.press = {}; this.keySubs = {}; this.paintingComp = 0; }
+    constructor() { this.anim = {}; this.target = {}; this.press = {}; this.keySubs = {}; this.paintingComp = 0;
+        this.t = 0.0; this.tw = {}; this.timeSubs = {}; }
     // Reading an eased value records this subscriber and sets the target.
     ease(key, target) {
         this.keySubs[key] = this.paintingComp;
         this.target[key] = target;
         if (has(this.anim, key)) { return this.anim[key]; }
         this.anim[key] = target; return target;
+    }
+    // A CSS-transition tween: ease `cur` toward `target` over ~`durMs` using real
+    // frame time. First sighting snaps (no animation); later target changes glide.
+    // The painting component is recorded so the frame clock repaints only it.
+    tweenTo(key, target, durMs) {
+        this.keySubs[key] = this.paintingComp;
+        if (has(this.tw, key)) { let s = this.tw[key]; s.tgt = target; s.dur = durMs; return s.cur; }
+        this.tw[key] = { cur: target, tgt: target, dur: durMs }; return target;
+    }
+    // Tween an rgba colour (four channels) as one logical value; returns the
+    // currently-eased colour.
+    tweenCol(key, col, durMs) {
+        return [ this.tweenTo(concat(key, "r"), col[0], durMs), this.tweenTo(concat(key, "g"), col[1], durMs),
+            this.tweenTo(concat(key, "b"), col[2], durMs), this.tweenTo(concat(key, "a"), col[3], durMs) ];
+    }
+    // A continuously-advancing time (ms) for looping animations: subscribing keeps
+    // the painting component repainting every frame, so a hero shimmer / float runs
+    // smoothly. Subscriptions are re-collected each frame, so a component that stops
+    // reading the clock stops animating.
+    continuous(key) {
+        this.keySubs[key] = this.paintingComp; this.timeSubs[key] = this.paintingComp;
+        return this.t;
     }
     // Reading a press value records this subscriber.
     pressVal(id) {
@@ -520,13 +552,31 @@ class AnimationClock {
     markDirty(dirty, key) {
         if (has(this.keySubs, key)) {
             let c = this.keySubs[key];
+            if (typeOf(c) != "object") { return 0; }
             let mk = 0.0; if (has(c, "_dirtyFlag")) { mk = c._dirtyFlag; }
             if (mk != 1.0) { c._dirtyFlag = 1.0; push(dirty, c); }
         }
+        return 0;
     }
     // Advance every eased value and press layer one step; mark still-moving keys'
-    // owners dirty into `dirty`.
-    advance(dirty) {
+    // owners dirty into `dirty`. `dt` is the real frame delta (ms) driving the
+    // time source and the CSS-transition tweens.
+    advance(dirty, dt) {
+        if (isNull(dt)) { dt = 16.0; }
+        this.t = this.t + dt;
+        // Continuous-time subscribers repaint every frame; re-collected on repaint.
+        let tsk = keys(this.timeSubs);
+        for (let i = 0; i < len(tsk); i++) { this.markDirty(dirty, tsk[i]); }
+        this.timeSubs = {};
+        // CSS-transition tweens: real-time exponential glide toward the target.
+        let twk = keys(this.tw);
+        for (let i = 0; i < len(twk); i++) {
+            let k = twk[i]; let s = this.tw[k];
+            let tau = s.dur * 0.5 + 1.0; let a = dt / (dt + tau);
+            let nv = s.cur + (s.tgt - s.cur) * a;
+            if (abs(s.tgt - s.cur) > 0.0008) { this.markDirty(dirty, k); } else { nv = s.tgt; }
+            s.cur = nv;
+        }
         let ks = keys(this.anim);
         for (let i = 0; i < len(ks); i++) {
             let k = ks[i]; let nv = this.anim[k] + (this.target[k] - this.anim[k]) * 0.25;

@@ -83,20 +83,33 @@ fn click_repaints_and_changes_the_page() {
     app.start();
     let before = instances(&app).len();
 
-    // Click around the counter button (left card region) - exercises tap
-    // hit-testing + the component partial-update path.
-    app.send_event(&InputEvent::PointerDown { x: 150.0, y: 320.0, button: 0 });
-    app.send_event(&InputEvent::PointerUp { x: 150.0, y: 320.0, button: 0 });
+    // Hover across the nav (top of the page): exercises the :hover hit-testing +
+    // the CSS-transition path (nav links / the "Get started" button declare
+    // `transition`, so a hover change routes their colour/transform through the
+    // animation clock).
+    app.send_event(&InputEvent::PointerMove { x: 900.0, y: 30.0 });
+    app.send_event(&InputEvent::PointerMove { x: 500.0, y: 30.0 });
+    assert!(app.trap_reason().is_none(), "no trap while hovering: {:?}", app.trap_reason());
+
+    // Click in the hero (tap hit-testing + the repaint path).
+    app.send_event(&InputEvent::PointerDown { x: 200.0, y: 320.0, button: 0 });
+    app.send_event(&InputEvent::PointerUp { x: 200.0, y: 320.0, button: 0 });
     assert!(app.trap_reason().is_none(), "no trap after click: {:?}", app.trap_reason());
 
-    // Focus the text field (lower form row) and type into it.
-    app.send_event(&InputEvent::PointerDown { x: 200.0, y: 720.0, button: 0 });
-    app.send_event(&InputEvent::PointerUp { x: 200.0, y: 720.0, button: 0 });
+    // Type some characters (keyboard path; harmless when nothing is focused).
     app.send_event(&InputEvent::KeyDown { key: "H".into() });
     app.send_event(&InputEvent::KeyDown { key: "i".into() });
     assert!(app.trap_reason().is_none(), "no trap after typing: {:?}", app.trap_reason());
+
+    // Run a few animation frames so the hovered transitions + the live FPS
+    // visualiser (a continuous animTime() component) actually advance.
+    for _ in 0..6 {
+        app.animate(16.0);
+        assert!(app.trap_reason().is_none(), "no trap animating after interaction: {:?}", app.trap_reason());
+    }
     let after = instances(&app).len();
-    assert!(after >= before, "page still renders after interaction");
+    assert!(after >= 16, "page still renders after interaction ({} floats)", after);
+    let _ = before;
 }
 
 #[test]

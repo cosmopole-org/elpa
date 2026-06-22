@@ -169,13 +169,31 @@ class Box {
         let mz = this.measure(app); let hw = mz.w / 2.0; let hh = mz.h / 2.0;
         this.beginSelf(app);
         let pnt = app.painter;
+        // CSS transitions: when the element declares `transition`, route opacity and
+        // transform through the animation clock so a state change (e.g. :hover)
+        // glides instead of snapping. Decoration colours ease in drawDecoration.
+        let trans = 0.0; if (len(c.transition) > 0) { trans = 1.0; }
+        this._trans = trans;
+        let opv = c.opacity; let useT5 = 0.0; let t5 = 0;
+        let hasTf = 0.0; if (len(c.transform) > 0) { hasTf = 1.0; }
+        if (trans > 0.5) {
+            let k = this.nodeKey();
+            opv = app.clock.tweenTo(concat(k, "|op"), c.opacity, this.transDur("opacity"));
+            let r5 = reduceT5(c.transform);
+            if (r5.ok > 0.5) {
+                let dr = this.transDur("transform");
+                t5 = { tx: app.clock.tweenTo(concat(k, "|tx"), r5.tx, dr), ty: app.clock.tweenTo(concat(k, "|ty"), r5.ty, dr),
+                    sx: app.clock.tweenTo(concat(k, "|sx"), r5.sx, dr), sy: app.clock.tweenTo(concat(k, "|sy"), r5.sy, dr),
+                    rot: app.clock.tweenTo(concat(k, "|rot"), r5.rot, dr) };
+                useT5 = 1.0;
+            }
+        }
         let needsSave = 0.0;
-        if (len(c.transform) > 0) { needsSave = 1.0; }
-        if (c.opacity < 0.999) { needsSave = 1.0; }
+        if (hasTf > 0.5) { needsSave = 1.0; } if (useT5 > 0.5) { needsSave = 1.0; } if (opv < 0.999) { needsSave = 1.0; }
         if (needsSave > 0.5) {
             pnt.save();
-            if (len(c.transform) > 0) { this.applyTransform(pnt, cx, cy); }
-            if (c.opacity < 0.999) { pnt.setAlpha(c.opacity); }
+            if (useT5 > 0.5) { this.applyT5(pnt, cx, cy, t5); } else { if (hasTf > 0.5) { this.applyTransform(pnt, cx, cy); } }
+            if (opv < 0.999) { pnt.setAlpha(opv); }
         }
         let vis = 1.0; if (c.visibility == "hidden") { vis = 0.0; }
         if (vis > 0.5) { this.drawDecoration(app, cx, cy, hw, hh); }
@@ -205,8 +223,29 @@ class Box {
             if (o.t == "tr") { pnt.translate(o.x * d, o.y * d); }
             if (o.t == "sc") { pnt.scale(o.x, o.y); }
             if (o.t == "rot") { pnt.rotate(o.a); }
+            if (o.t == "sk") { pnt.skew(o.x, o.y); }
         }
         pnt.translate(-cx, -cy);
+    }
+    // Apply a reduced (translate/scale/rotate) transform around the box centre —
+    // the form a CSS transition eases between.
+    applyT5(pnt, cx, cy, t) {
+        let d = this._d;
+        pnt.translate(cx, cy);
+        pnt.translate(t.tx * d, t.ty * d);
+        pnt.scale(t.sx, t.sy);
+        pnt.rotate(t.rot);
+        pnt.translate(-cx, -cy);
+    }
+    // The transition duration+delay (ms) for `prop` (longhand wins over `all`).
+    transDur(prop) {
+        let tr = this._cs.transition; let dur = 200.0; let found = 0.0;
+        for (let i = 0; i < len(tr); i++) {
+            let t = tr[i];
+            if (t.prop == prop) { dur = t.dur + t.delay; found = 1.0; }
+            else { if (t.prop == "all") { if (found < 0.5) { dur = t.dur + t.delay; } } }
+        }
+        return dur;
     }
 
     // The single uniform corner radius the SDF primitive supports (the average of
@@ -231,8 +270,13 @@ class Box {
             }
         }
         // Gradient or solid background fill (the padding box = border box here).
+        // A transition eases the solid fill colour through the animation clock.
         if (c.bgGradient != 0) { this.paintGradient(app, c.bgGradient, cx, cy, hw, hh, r); }
-        else { if (c.bgColor[3] > 0.0) { pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, c.bgColor, CLEAR); } }
+        else {
+            let bg = c.bgColor;
+            if (has(this, "_trans")) { if (this._trans > 0.5) { bg = app.clock.tweenCol(concat(this.nodeKey(), "|bg"), c.bgColor, this.transDur("background-color")); } }
+            if (bg[3] > 0.0) { pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, bg, CLEAR); }
+        }
         // Borders: uniform fast path (one SDF border) or per-side edges.
         this.drawBorders(app, cx, cy, hw, hh, r);
         // Outline (drawn just outside the border box, no radius contribution).
@@ -247,7 +291,11 @@ class Box {
         let uniform = 1.0;
         if (bt != brr) { uniform = 0.0; } if (brr != bb) { uniform = 0.0; } if (bb != bl) { uniform = 0.0; }
         if (colEq(c.bc.t, c.bc.r) < 0.5) { uniform = 0.0; } if (colEq(c.bc.r, c.bc.b) < 0.5) { uniform = 0.0; } if (colEq(c.bc.b, c.bc.l) < 0.5) { uniform = 0.0; }
-        if (uniform > 0.5) { pnt.rect(cx, cy, hw, hh, r, bt, 0.0, CLEAR, c.bc.t); return 0; }
+        if (uniform > 0.5) {
+            let bcol = c.bc.t;
+            if (has(this, "_trans")) { if (this._trans > 0.5) { bcol = app.clock.tweenCol(concat(this.nodeKey(), "|bc"), c.bc.t, this.transDur("border-color")); } }
+            pnt.rect(cx, cy, hw, hh, r, bt, 0.0, CLEAR, bcol); return 0;
+        }
         // Per-side: draw each non-zero edge as a flat rect just inside the box.
         if (bt > 0.01) { pnt.rect(cx, cy - hh + bt / 2.0, hw, bt / 2.0, 0.0, 0.0, 0.0, c.bc.t, CLEAR); }
         if (bb > 0.01) { pnt.rect(cx, cy + hh - bb / 2.0, hw, bb / 2.0, 0.0, 0.0, 0.0, c.bc.b, CLEAR); }
@@ -290,11 +338,11 @@ class Box {
             if (oy != "hidden") { app.listRegions[key] = { cx: cx, cy: cy, hw: hw, hh: hh, maxOff: maxOff }; }
         }
         // Emit this block's own text-run glyphs (painter still points at _self).
-        if (has(lay, "text")) { let tf = lay.text; let pnt = app.painter;
+        if (has(lay, "text")) { let tf = lay.text; let pnt = app.painter; let d = this._d;
             for (let i = 0; i < len(tf); i++) { let g = tf[i];
-                let gy = top + g.y - scrollY; let vis2 = 1.0;
+                let gy = top + g.y - scrollY; let vis2 = 1.0; let gx = left + g.x;
                 if (scrolls > 0.5) { if (gy < cy - hh - g.cell * 7.0) { vis2 = 0.0; } if (gy > cy + hh + g.cell * 7.0) { vis2 = 0.0; } }
-                if (vis2 > 0.5) { app.font.paintCentered(pnt, g.str, left + g.x, gy, g.cell, g.col, g.thick, 0); } } }
+                if (vis2 > 0.5) { this.paintTextFrag(app, pnt, g, gx, gy, d); } } }
         let place = lay.place;
         for (let i = 0; i < len(place); i++) {
             let pl2 = place[i]; let node = pl2.node;
@@ -312,6 +360,23 @@ class Box {
         }
         if (scrolls > 0.5) { if (maxOff > 0.5) { this.paintScrollbar(app, cx, cy, hw, hh, scrollY, maxOff, contentH, lay.h); } }
         return outKids;
+    }
+    // Paint one positioned text fragment: its `text-shadow` copies (offset), the
+    // glyphs themselves (with letter-spacing), and any `text-decoration` rule
+    // (underline / overline / line-through) as a thin rule across the fragment.
+    paintTextFrag(app, pnt, g, gx, gy, d) {
+        let ls = 0.0; if (has(g, "ls")) { ls = g.ls; }
+        let tsh = []; if (has(g, "tsh")) { tsh = g.tsh; }
+        for (let s = 0; s < len(tsh); s++) { let sh = tsh[s];
+            app.font.paintCentered(pnt, g.str, gx + sh.x * d, gy + sh.y * d, g.cell, sh.color, g.thick, 0, ls); }
+        app.font.paintCentered(pnt, g.str, gx, gy, g.cell, g.col, g.thick, 0, ls);
+        let deco = "none"; if (has(g, "deco")) { deco = g.deco; }
+        if (deco != "none") {
+            let hw = g.w / 2.0; let th = g.cell * 0.5; if (th < 1.0) { th = 1.0; }
+            if (contains(deco, "underline")) { pnt.rect(gx, gy + g.cell * 2.55, hw, th / 2.0, 0.0, 0.0, 0.0, g.col, CLEAR); }
+            if (contains(deco, "overline")) { pnt.rect(gx, gy - g.cell * 2.9, hw, th / 2.0, 0.0, 0.0, 0.0, g.col, CLEAR); }
+            if (contains(deco, "line-through")) { pnt.rect(gx, gy - g.cell * 0.2, hw, th / 2.0, 0.0, 0.0, 0.0, g.col, CLEAR); }
+        }
     }
     paintScrollbar(app, cx, cy, hw, hh, off, maxOff, viewport, total) {
         let pnt = app.painter; pnt.outInto(this._over);
@@ -363,6 +428,21 @@ class Box {
         if (has(this, "_over")) { s = concat(s, this._over); }
         return s;
     }
+}
+
+// Reduce a transform op list to a single (translate, scale, rotate) tuple a CSS
+// transition can interpolate. `ok` is 0 when the list contains an op (skew/…)
+// that cannot be flattened this way, so the caller applies it verbatim instead.
+function reduceT5(ops) {
+    let tx = 0.0; let ty = 0.0; let sx = 1.0; let sy = 1.0; let rot = 0.0; let ok = 1.0;
+    for (let i = 0; i < len(ops); i++) {
+        let o = ops[i];
+        if (o.t == "tr") { tx = tx + o.x; ty = ty + o.y; }
+        else { if (o.t == "sc") { sx = sx * o.x; sy = sy * o.y; }
+        else { if (o.t == "rot") { rot = rot + o.a; }
+        else { ok = 0.0; } } }
+    }
+    return { tx: tx, ty: ty, sx: sx, sy: sy, rot: rot, ok: ok };
 }
 
 // rgba equality (for the uniform-border fast path).

@@ -117,11 +117,12 @@ function inlineFlow(app, box, run, contentW, y0) {
         let node = run[i];
         if (isText(node) > 0.5) {
             let cell = pxCell(node._cs.fontPx * d); let col = node._cs.color; let thick = weightThick(node._cs.fontWeight);
+            let ls = node._cs.letterSpacing * d; let deco = node._cs.textDecoration; let tsh = node._cs.textShadow;
             let lh = node._cs.lineHeightPx * d; let words = split(node.transformed(), " ");
             let sp = app.font.textW(" ", cell);
             for (let w = 0; w < len(words); w++) {
                 let word = words[w];
-                if (len(word) > 0) { push(items, { kind: "text", w: app.font.textW(word, cell), h: lh, str: word, cell: cell, col: col, thick: thick, sp: sp }); }
+                if (len(word) > 0) { push(items, { kind: "text", w: app.font.textW(word, cell, ls), h: lh, str: word, cell: cell, col: col, thick: thick, sp: sp, ls: ls, deco: deco, tsh: tsh }); }
             }
         } else {
             node._cbW = contentW; node._fw = -1.0; let cm = node.measure(app);
@@ -152,7 +153,7 @@ function flushLine(box, line, lineW, lineH, contentW, y, align) {
     let cyLine = y + lineH / 2.0;
     for (let i = 0; i < len(line); i++) {
         let e = line[i]; let it = e.it; let cx = off + e.x + it.w / 2.0;
-        if (it.kind == "text") { push(text, { str: it.str, x: cx, y: cyLine, cell: it.cell, col: it.col, thick: it.thick }); }
+        if (it.kind == "text") { push(text, { str: it.str, x: cx, y: cyLine, cell: it.cell, col: it.col, thick: it.thick, w: it.w, ls: it.ls, deco: it.deco, tsh: it.tsh }); }
         else { push(place, { node: it.node, x: off + e.x + it.ml + (it.w - it.ml) / 2.0, y: cyLine }); }
     }
     return { place: place, text: text };

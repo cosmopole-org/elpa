@@ -24,7 +24,9 @@
 //!   loop and the `gpu.submit` frame builder with a static/dynamic layered
 //!   split), and `60-api` (the element constructors, `h()` hyperscript,
 //!   `defineComponent`/`runApp`, and the host entry points).
-//! * [`DEMO_JS`] - **a showcase page** built from the SDK.
+//! * [`DEMO_JS`] - **a product landing page** built from the SDK (nav, a hero
+//!   with a live continuous animation, a feature grid with `:hover` transitions,
+//!   a stat band, an interactive FAQ, and a footer).
 //!
 //! The SDK and app run in **one** VM; [`program`] concatenates the SDK ahead of
 //! the app and the result is handed to

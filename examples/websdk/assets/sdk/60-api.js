@@ -45,7 +45,22 @@ function runApp(root) {
     if (typeOf(root) == "object") { W.runApp(() => root); return 0; }
     W.runApp(root); return 0;
 }
-function setLayered(on) { W.layered = on; }
+// Store 1.0/0.0 (not the raw boolean): the runtime gates on `this.layered > 0.5`,
+// and the VM rejects ordering comparisons (`>`) between a boolean and a number.
+function setLayered(on) { W.layered = 0.0; if (on) { W.layered = 1.0; } }
+
+// ---- animation (the public animation-clock surface) --------------------------
+// A continuously-advancing time in ms: reading it inside a component keeps that
+// component (and only it) repainting every frame, for looping hero animations.
+// Use with sin()/cos() for smooth oscillation. Keep the animated content in its
+// own component so the rest of the page stays in the static layered buffer.
+function animTime(key) { return W.clock.continuous(key); }
+// Ease a scalar toward `target` over ~`durMs` of real time; first read snaps,
+// later target changes glide. Returns the current eased value.
+function tweenValue(key, target, durMs) { return W.clock.tweenTo(key, target, durMs); }
+// The decaying 1->0 press level for a tapped element id (set on pointer-down),
+// for press-feedback (a button that dips while held). Reading it animates it.
+function pressValue(id) { return W.clock.pressVal(id); }
 function setRootFontSize(px) { W.metrics.setRootFontSize(px); if (W.running > 0.5) { W.renderApp(); } }
 function viewportWidth() { return W.metrics.cssW(); }
 function viewportHeight() { return W.metrics.cssH(); }
@@ -116,12 +131,20 @@ function I(p) { return mkEl("i", p); }
 function U(p) { return mkEl("u", p); }
 function S(p) { return mkEl("s", p); }
 function Small(p) { return mkEl("small", p); }
+function Big(p) { return mkEl("big", p); }
 function Mark(p) { return mkEl("mark", p); }
 function Code(p) { return mkEl("code", p); }
+function Kbd(p) { return mkEl("kbd", p); }
+function Samp(p) { return mkEl("samp", p); }
 function Sub(p) { return mkEl("sub", p); }
 function Sup(p) { return mkEl("sup", p); }
 function Cite(p) { return mkEl("cite", p); }
+function Q(p) { return mkEl("q", p); }
 function Abbr(p) { return mkEl("abbr", p); }
+function Time(p) { return mkEl("time", p); }
+function Dfn(p) { return mkEl("dfn", p); }
+function Del(p) { return mkEl("del", p); }
+function Ins(p) { return mkEl("ins", p); }
 function Label(p) { return mkEl("label", p); }
 // Tables.
 function Table(p) { return mkEl("table", p); }
@@ -141,11 +164,18 @@ function TextArea(p) { return mkEl("textarea", p); }
 function Button(p) { return mkEl("button", p); }
 function Select(p) { return mkEl("select", p); }
 function Option(p) { return mkEl("option", p); }
+function Optgroup(p) { return mkEl("optgroup", p); }
 function Progress(p) { return mkEl("progress", p); }
+function Meter(p) { return mkEl("meter", p); }
+// Grouping (extra sectioning / list).
+function Hgroup(p) { return mkEl("hgroup", p); }
+function Menu(p) { return mkEl("menu", p); }
 // Embedded.
 function Img(p) { return mkEl("img", p); }
 function Canvas(p) { return mkEl("canvas", p); }
 function Video(p) { return mkEl("video", p); }
+function Audio(p) { return mkEl("audio", p); }
+function Picture(p) { return mkEl("picture", p); }
 function Svg(p) { return mkEl("svg", p); }
 function Iframe(p) { return mkEl("iframe", p); }
 

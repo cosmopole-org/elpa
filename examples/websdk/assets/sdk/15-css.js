@@ -25,7 +25,8 @@
 let ROOT_INH = {
     color: [0.0, 0.0, 0.0, 1.0], fontPx: 16.0, fontWeight: 400.0, fontStyle: "normal",
     lineHeight: 1.2, textAlign: "left", whiteSpace: "normal", textTransform: "none",
-    letterSpacing: 0.0, visibility: "visible", listStyleType: "disc", cursor: "auto"
+    letterSpacing: 0.0, visibility: "visible", listStyleType: "disc", cursor: "auto",
+    textDecoration: "none", textShadow: []
 };
 
 // ---------------------------------------------------------------- Viewport ----
@@ -318,8 +319,29 @@ function cssTransform(v, fontPx, vp) {
             if (name == "scalex") { push(ops, { t: "sc", x: num(a[0]), y: 1.0 }); }
             if (name == "scaley") { push(ops, { t: "sc", x: 1.0, y: num(a[0]) }); }
             if (name == "rotate") { push(ops, { t: "rot", a: angleRad(a[0]) }); }
+            if (name == "skew") { let kx = angleRad(a[0]); let ky = 0.0; if (len(a) > 1) { ky = angleRad(a[1]); } push(ops, { t: "sk", x: kx, y: ky }); }
+            if (name == "skewx") { push(ops, { t: "sk", x: angleRad(a[0]), y: 0.0 }); }
+            if (name == "skewy") { push(ops, { t: "sk", x: 0.0, y: angleRad(a[0]) }); }
         }
         return ops;
+    }
+    // Parse a `text-shadow` list into [{x,y,blur,color}] (physical-px-agnostic;
+    // offsets/blur are CSS px, scaled at paint time).
+function cssTextShadows(v, cur) {
+        if (isNull(v)) { return []; } if (typeOf(v) != "string") { return []; }
+        if (trim(lower(v)) == "none") { return []; }
+        let parts = cssSplitTop(v, ","); let out = [];
+        for (let i = 0; i < len(parts); i++) {
+            let toks = cssTokens(parts[i]); let nums = []; let col = cur;
+            for (let j = 0; j < len(toks); j++) {
+                let t = toks[j]; let pl = parseLen(t, 16.0, VPGLOBAL);
+                if (pl.k == "px") { push(nums, pl.v); } else { col = parseColor(t, cur); }
+            }
+            let x = 0.0; let y = 0.0; let bl = 0.0;
+            if (len(nums) > 0) { x = nums[0]; } if (len(nums) > 1) { y = nums[1]; } if (len(nums) > 2) { bl = nums[2]; }
+            push(out, { x: x, y: y, blur: bl, color: col });
+        }
+        return out;
     }
 function cssTransitions(v) {
         if (isNull(v)) { return []; } if (typeOf(v) != "string") { return []; }
@@ -372,7 +394,8 @@ function computeStyle(st, inh, vp) {
     cs.cursor = svdef(st, "cursor", inh.cursor);
     cs.letterSpacing = 0.0;
     if (has(st, "letterSpacing")) { let t = parseLen(st.letterSpacing, fontPx, vp); cs.letterSpacing = usedLen(t, 0.0, 0.0); } else { cs.letterSpacing = inh.letterSpacing; }
-    cs.textDecoration = svdef(st, "textDecoration", "none");
+    let inhDeco = "none"; if (has(inh, "textDecoration")) { inhDeco = inh.textDecoration; }
+    cs.textDecoration = svdef(st, "textDecoration", inhDeco);
 
     // --- box / display --------------------------------------------------------
     cs.display = lower(svdef(st, "display", "block"));
@@ -449,6 +472,8 @@ function computeStyle(st, inh, vp) {
 
     // --- effects --------------------------------------------------------------
     cs.boxShadow = cssShadows(sv(st, "boxShadow"), col);
+    let inhTsh = []; if (has(inh, "textShadow")) { inhTsh = inh.textShadow; }
+    if (has(st, "textShadow")) { cs.textShadow = cssTextShadows(st.textShadow, col); } else { cs.textShadow = inhTsh; }
     cs.transform = cssTransform(sv(st, "transform"), fontPx, vp);
     cs.transformOrigin = svdef(st, "transformOrigin", "center");
     cs.transition = cssTransitions(sv(st, "transition"));
@@ -490,7 +515,8 @@ function computeStyle(st, inh, vp) {
     // --- the context children inherit ----------------------------------------
     cs.childInh = { color: col, fontPx: fontPx, fontWeight: cs.fontWeight, fontStyle: cs.fontStyle,
         lineHeight: lh, textAlign: cs.textAlign, whiteSpace: cs.whiteSpace, textTransform: cs.textTransform,
-        letterSpacing: cs.letterSpacing, visibility: cs.visibility, listStyleType: cs.listStyleType, cursor: cs.cursor };
+        letterSpacing: cs.letterSpacing, visibility: cs.visibility, listStyleType: cs.listStyleType, cursor: cs.cursor,
+        textDecoration: cs.textDecoration, textShadow: cs.textShadow };
     return cs;
 }
 

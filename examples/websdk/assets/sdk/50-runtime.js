@@ -21,7 +21,13 @@ class ComponentNode extends Box {
         this._parent = parent; this._d = app.metrics.dpr;
         this._inhOut = inhOf(parent); this._cs = { display: "contents" };
         if (!has(this, "_update")) { let self = this; this._update = () => { app.partial(self); }; }
-        let build = this.fn; this._sub = build(this.p, this._update);
+        // The build fn runs here (not in paint), so set `paintingComp` around it:
+        // any animTime()/tween() the component reads must subscribe *this* node so
+        // the frame clock repaints the right component.
+        let build = this.fn;
+        let prevc = app.clock.paintingComp; app.clock.paintingComp = this;
+        this._sub = build(this.p, this._update);
+        app.clock.paintingComp = prevc;
         if (isNull(this._sub)) { this._sub = new TextRun(""); }
         this.forward();
         this._sub.mount(app, parent);
@@ -140,10 +146,25 @@ class WebRuntime {
         this.submit();
     }
     repaintComps(dirty) {
-        for (let i = 0; i < len(dirty); i++) { let c = dirty[i]; c.paint(this, c._cx, c._cy); c._dirtyFlag = 0.0; }
+        let painted = [];
+        for (let i = 0; i < len(dirty); i++) {
+            let c = dirty[i]; c._dirtyFlag = 0.0;
+            // Skip a component that has not been laid out yet (e.g. scrolled out of
+            // view, so never painted): it has no centre, and there is nothing on
+            // screen to refresh. It re-subscribes when it next paints.
+            if (isNull(c._cx)) { } else {
+                // Re-run the component (a partial re-mount) so any animTime()/tween()
+                // it reads is re-evaluated against the new clock and re-subscribed —
+                // a bare re-paint would reuse last frame's values and drop the
+                // continuous subscription, freezing the animation after one frame.
+                c.mount(this, c._parent);
+                c._sub._cbW = c._cbW; c._sub._cbH = c._cbH; c._sub._fw = c._fw; c._sub._fh = c._fh;
+                c.paint(this, c._cx, c._cy); push(painted, c);
+            }
+        }
         this.root.reassemble();
         this.inst = this.root._out; this.taps = this.root._taps; this.drags = this.root._drags;
-        if (this.layered > 0.5) { this.submitLayered(dirty); } else { this.submit(); }
+        if (this.layered > 0.5) { this.submitLayered(painted); } else { this.submit(); }
     }
 
     // ---- submit (single instanced SDF draw, images interleaved) -------------
@@ -292,7 +313,7 @@ class WebRuntime {
     }
     onFrame(dt) {
         let mediaChanged = this.media.tick();
-        let dirty = []; this.clock.advance(dirty);
+        let dirty = []; this.clock.advance(dirty, dt);
         let flinging = this.flingStep();
         if (flinging > 0.5) { for (let i = 0; i < len(dirty); i++) { dirty[i]._dirtyFlag = 0.0; } this.renderScroll(); return 0; }
         if (len(dirty) > 0) { this.repaintComps(dirty); return 0; }
