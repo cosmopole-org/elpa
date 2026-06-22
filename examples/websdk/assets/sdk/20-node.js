@@ -57,6 +57,9 @@ class Box {
     // ---- mount: compute style top-down, recurse ------------------------------
     mount(app, parent) {
         this._parent = parent; this._d = app.metrics.dpr;
+        // A fresh mount means the style/children may have changed, so drop the
+        // memoized measure (see `measure`); it is rebuilt lazily this frame.
+        this._mc = 0;
         this._sidNum = app.sidN; app.sidN = app.sidN + 1;
         this.premount(app);
         let inh = inhOf(parent);
@@ -128,10 +131,23 @@ class Box {
         h = this.clampH(app, h, pyy + by);
         return { w: w, h: h };
     }
+    // Border-box size. Memoized per (forced-size, containing-block) inputs: a node
+    // is measured many times each frame (its parent's layout measures it, its own
+    // `paint` measures it, the overflow culler measures it) always with the same
+    // inputs, and `measureIntrinsic` re-runs a full sub-tree layout pass, so
+    // without this every level of the tree re-measures its whole subtree
+    // (~O(n*depth)). The cache collapses the identical re-measures to O(n); a real
+    // change of forced size (flex base vs. resolved, grid stretch) misses the
+    // single slot and recomputes, and a re-mount clears it.
     measure(app) {
+        let c = this._mc;
+        if (c != 0) { if (c.fw == this._fw) { if (c.fh == this._fh) { if (c.cbW == this._cbW) { if (c.cbH == this._cbH) {
+            return { w: c.w, h: c.h };
+        } } } } }
         let m = this.measureIntrinsic(app);
         if (this._fw >= 0.0) { m.w = this._fw; }
         if (this._fh >= 0.0) { m.h = this._fh; }
+        this._mc = { fw: this._fw, fh: this._fh, cbW: this._cbW, cbH: this._cbH, w: m.w, h: m.h };
         return m;
     }
     // Shrink-to-fit max-content width (used when width is auto and unconstrained).
@@ -283,7 +299,15 @@ class Box {
         for (let i = 0; i < len(place); i++) {
             let pl2 = place[i]; let node = pl2.node;
             let ny = top + pl2.y - scrollY; let vis3 = 1.0;
-            if (scrolls > 0.5) { if (node._cs.position != "fixed") { if (ny < cy - hh - hh) { vis3 = 0.0; } if (ny > cy + hh + hh) { vis3 = 0.0; } } }
+            // Cull against the child's *actual* bounds, not its centre: a fixed
+            // half-viewport margin around the centre hid any element taller than
+            // the viewport (a stacked card column on a phone) while its top edge
+            // was still on screen. `node.measure` here is a cache hit (the layout
+            // pass above just measured it), so the bound is free.
+            if (scrolls > 0.5) { if (node._cs.position != "fixed") {
+                let ncm = node.measure(app); let nhh = ncm.h / 2.0;
+                if (ny + nhh < cy - hh) { vis3 = 0.0; } if (ny - nhh > cy + hh) { vis3 = 0.0; }
+            } }
             if (vis3 > 0.5) { node.paint(app, left + pl2.x, ny); push(outKids, node); }
         }
         if (scrolls > 0.5) { if (maxOff > 0.5) { this.paintScrollbar(app, cx, cy, hw, hh, scrollY, maxOff, contentH, lay.h); } }

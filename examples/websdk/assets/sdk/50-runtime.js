@@ -116,6 +116,19 @@ class WebRuntime {
         this.inst = this.root._out; this.taps = this.root._taps; this.drags = this.root._drags;
         this.submit();
     }
+    // Re-paint the page *without* re-mounting. Scrolling and flinging change
+    // neither the element tree nor any computed style - only the scroll offset,
+    // which is applied as a paint-time shift in `paintChildren`. So the expensive
+    // half of `renderApp` (re-running every component function and the whole CSS
+    // cascade) is pure waste here; skipping it - and reusing the memoized measures,
+    // which stay valid because layout is unchanged - is what keeps scrolling at a
+    // high frame rate.
+    renderScroll() {
+        this.hovers = []; this.media.resetRefs();
+        this.root.paint(this, this.metrics.vw * 0.5, this.metrics.vh * 0.5);
+        this.inst = this.root._out; this.taps = this.root._taps; this.drags = this.root._drags;
+        this.submit();
+    }
     // Re-run one component, repaint its subtree in place, reassemble to the root.
     partial(node) {
         node.mount(this, node._parent);
@@ -256,14 +269,14 @@ class WebRuntime {
             else { if (len(this.focusId) > 0) { this.focusId = ""; this.hasKey = 0.0; this.repaint(); } }
         }
         if (et == "pointermove") {
-            if (this.scrollDragOn > 0.5) { let dy = this.scrollDragY - py; this.scrollBy(px, this.scrollDragY, dy); this.scrollVel = this.scrollVel * 0.55 + dy * 0.45; this.scrollDragY = py; this.repaint(); }
+            if (this.scrollDragOn > 0.5) { let dy = this.scrollDragY - py; this.scrollBy(px, this.scrollDragY, dy); this.scrollVel = this.scrollVel * 0.55 + dy * 0.45; this.scrollDragY = py; this.renderScroll(); }
             else { if (has(this, "dragging")) { if (this.dragging > 0.5) { this.activeDrag.onDrag(px, py); return 0; } } this.hoverRepaint(px, py); }
         }
         if (et == "pointerup") {
             if (this.scrollDragOn > 0.5) { if (abs(this.scrollVel) > 0.6) { this.flingId = this.scrollDragId; this.flingV = this.scrollVel; } }
             this.dragging = 0.0; this.scrollDragOn = 0.0; this.repaint();
         }
-        if (et == "wheel") { let h = this.scrollBy(px, py, e.deltaY); if (h > 0.5) { this.repaint(); } }
+        if (et == "wheel") { let h = this.scrollBy(px, py, e.deltaY); if (h > 0.5) { this.renderScroll(); } }
         if (et == "keydown") { if (this.hasKey > 0.5) { if (this.keyFn != 0) { this.keyFn(e.key); } } }
     }
     flingStep() {
@@ -281,7 +294,7 @@ class WebRuntime {
         let mediaChanged = this.media.tick();
         let dirty = []; this.clock.advance(dirty);
         let flinging = this.flingStep();
-        if (flinging > 0.5) { for (let i = 0; i < len(dirty); i++) { dirty[i]._dirtyFlag = 0.0; } this.repaint(); return 0; }
+        if (flinging > 0.5) { for (let i = 0; i < len(dirty); i++) { dirty[i]._dirtyFlag = 0.0; } this.renderScroll(); return 0; }
         if (len(dirty) > 0) { this.repaintComps(dirty); return 0; }
         if (mediaChanged > 0.5) { this.submit(); }
     }
