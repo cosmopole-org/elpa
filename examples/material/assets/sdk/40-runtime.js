@@ -426,6 +426,11 @@ class Material {
     }
     onFrame(dt) {
         let mediaChanged = this.media.tick();
+        // A media source crossed a ready/failed boundary this tick: the visible
+        // tree paints a different structure now (real image vs placeholder), so
+        // re-paint the whole tree to re-emit the draw plan rather than re-submitting
+        // a stale one. Happens at most once per source as it loads.
+        if (this.media.dirtyStruct > 0.5) { this.media.dirtyStruct = 0.0; this.renderApp(); return 0; }
         let themeMoving = 0.0;
         let nd = this.theme.darkAnim + (this.theme.darkTarget - this.theme.darkAnim) * 0.18;
         if (abs(nd - this.theme.darkAnim) > 0.0005) { themeMoving = 1.0; }

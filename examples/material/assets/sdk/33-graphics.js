@@ -195,13 +195,19 @@ class Canvas {
         for (let p = 0; p < len(polys); p++) { let poly = polys[p]; for (let i = 0; i + 1 < len(poly); i++) { this.pnt.seg(poly[i][0], poly[i][1], poly[i + 1][0], poly[i + 1][1], w, col); } }
         return this;
     }
-    // A filled triangle, approximated as a fan of short capsules from one vertex —
-    // covers convex area without a triangle pipeline.
+    // A filled triangle, approximated as a fan of capsules from vertex A sweeping
+    // across the opposite edge B->C. The spokes spread out toward B->C, so the
+    // capsule must be wide enough to close the gap between adjacent endpoints
+    // there (|BC|/steps) or the fill breaks up into a starburst of spikes. Both
+    // the step count and the thickness scale with the edge length so the fill
+    // stays solid at any size (the same gap-closing trick the pie-fill uses).
     fillTri(ax, ay, bx, by, cx, cy, col) {
-        let steps = 6;
+        let bc = sqrt((cx - bx) * (cx - bx) + (cy - by) * (cy - by));
+        let steps = ceil(bc / 0.6); if (steps < 6) { steps = 6; } if (steps > 96) { steps = 96; }
+        let thick = bc / steps + 0.3;
         for (let i = 0; i <= steps; i++) {
             let t = num(i) / steps; let ex = bx + (cx - bx) * t; let ey = by + (cy - by) * t;
-            this.pnt.seg(ax, ay, ex, ey, 0.5, col);
+            this.pnt.seg(ax, ay, ex, ey, thick, col);
         }
         return this;
     }

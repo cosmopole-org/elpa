@@ -399,10 +399,17 @@ class DrawerWidget extends Widget {
         let headerH = m.saT + m.du() * 26.0;
         let headInk = th.onSurface(1.0); let headSub = th.onSurface(0.6);
         if (has(p, "image")) {
+            // Accent-tinted header underneath, always. Only composite the photo
+            // (and its darkening scrim + white text) once it has actually loaded;
+            // while it loads or if it failed, the accent header stands in instead
+            // of a grey placeholder box.
             pnt.rect(pcx, headerH / 2.0, hw, headerH / 2.0, 0.0, 0.0, 0.0, th.acc(0.16), CLEAR);
-            app.media.drawMedia(pnt, concat("drw:", p.image), { url: p.image }, 0.0, pcx, headerH / 2.0, hw, headerH / 2.0, 0.0, WHITE);
-            pnt.rect(pcx, headerH / 2.0, hw, headerH / 2.0, 0.0, 0.0, 0.0, [0.0, 0.0, 0.0, 0.42], CLEAR);
-            headInk = [1.0, 1.0, 1.0, 1.0]; headSub = [1.0, 1.0, 1.0, 0.82];
+            let hst = app.media.ensure(concat("drw:", p.image), { url: p.image }, 0.0);
+            if (hst.ready > 0.5) {
+                pnt.image(hst.handle, pcx, headerH / 2.0, hw, headerH / 2.0, 0.0, WHITE);
+                pnt.rect(pcx, headerH / 2.0, hw, headerH / 2.0, 0.0, 0.0, 0.0, [0.0, 0.0, 0.0, 0.42], CLEAR);
+                headInk = [1.0, 1.0, 1.0, 1.0]; headSub = [1.0, 1.0, 1.0, 0.82];
+            }
         } else {
             pnt.rect(pcx, headerH / 2.0, hw, headerH / 2.0, 0.0, 0.0, 0.0, th.acc(0.16), CLEAR);
         }

@@ -23,11 +23,23 @@ class ImageWidget extends Widget {
         let mz = this.measure(app); let hw = mz.w / 2.0; let hh = mz.h / 2.0; let r = m.u * 1.2; if (has(p, "radius")) { r = p.radius * m.u; }
         let src = app.media.srcOf(p);
         if (src != 0) {
-            let tone = th.surfaceHighest(1.0);
-            pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, tone, CLEAR);
-            app.media.drawMedia(pnt, src.key, src.req, 0.0, cx, cy, hw, hh, r, WHITE);
-            if (has(p, "label")) { app.font.text(pnt, p.label, cx, cy + hh - m.u * 2.0, m.cell("caption"), [1.0, 1.0, 1.0, 0.85]); }
-            return 0;
+            // Kick off / poll the load. Only paint the real texture once it has
+            // actually decoded; while it is still loading (or if it failed — a
+            // network/CORS error) fall through to the styled placeholder rather
+            // than stretching the 1x1 grey placeholder pixel into a blank box.
+            let st = app.media.ensure(src.key, src.req, 0.0);
+            if (st.ready > 0.5) {
+                let tone = th.surfaceHighest(1.0);
+                pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, tone, CLEAR);
+                pnt.image(st.handle, cx, cy, hw, hh, r, WHITE);
+                if (has(p, "label")) {
+                    // A short scrim under the caption so white text stays legible
+                    // over a bright photo.
+                    pnt.rect(cx, cy + hh - m.u * 1.8, hw, m.u * 2.2, 0.0, 0.0, 0.0, [0.0, 0.0, 0.0, 0.28], CLEAR);
+                    app.font.text(pnt, p.label, cx, cy + hh - m.u * 2.0, m.cell("caption"), [1.0, 1.0, 1.0, 0.92]);
+                }
+                return 0;
+            }
         }
         let tone = th.surfaceHighest(1.0); if (has(p, "color")) { tone = th.colorRole(p.color, 1.0); }
         pnt.rect(cx, cy, hw, hh, r, 0.0, 0.0, tone, CLEAR);
@@ -51,9 +63,17 @@ class VideoPlayerWidget extends Widget {
         pnt.rect(cx, cy, hw, hh, m.u * 1.2, 0.0, 0.0, [0.05, 0.05, 0.07, 1.0], CLEAR);
         let src = app.media.srcOf(p);
         if (src != 0) {
-            let md = app.media.drawMedia(pnt, src.key, src.req, 1.0, cx, cy, hw, hh, m.u * 1.2, WHITE);
-            md._playing = playing;
-            if (md.ready > 0.5) { if (md.frames > 1) { val = md.curIdx / (md.frames - 1); } }
+            // Start / keep the stream loading; only blit a frame once one has
+            // decoded. Until then the dark base above stands in (no grey box),
+            // and a failed load simply leaves the styled player chrome.
+            let st = app.media.ensure(src.key, src.req, 1.0);
+            st._playing = playing;
+            if (st.ready > 0.5) {
+                pnt.image(st.handle, cx, cy, hw, hh, m.u * 1.2, WHITE);
+                if (st.frames > 1) { val = st.curIdx / (st.frames - 1); }
+            } else {
+                pnt.rect(cx, cy - hh * 0.4, hw, hh * 0.6, m.u * 1.2, 0.0, 0.0, [0.1, 0.11, 0.14, 1.0], CLEAR);
+            }
         } else {
             pnt.rect(cx, cy - hh * 0.4, hw, hh * 0.6, m.u * 1.2, 0.0, 0.0, [0.1, 0.11, 0.14, 1.0], CLEAR);
         }

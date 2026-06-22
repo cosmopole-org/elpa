@@ -710,6 +710,10 @@ class MediaEngine {
         this.imgHandle = {};   // media key -> numeric texture handle
         this.imgHandleN = 0;   // handle allocator
         this.app = 0;          // back-ref (metrics + frameN), set by Material
+        // Set when a source crosses a ready/failed boundary: widgets paint a
+        // different *structure* (real image vs styled placeholder) on that edge,
+        // so the runtime must re-paint (re-emit the draw plan), not just re-submit.
+        this.dirtyStruct = 0.0;
     }
     handle(key) {
         if (!has(this.imgHandle, key)) { this.imgHandle[key] = this.imgHandleN; this.imgHandleN = this.imgHandleN + 1; }
@@ -742,11 +746,14 @@ class MediaEngine {
         if (m.ready > 0.5) { return 0; } if (m.failed > 0.5) { return 0; }
         let p = askHost("media.poll", [{ id: key }]);
         if (isNull(p)) { return 0; }
-        if (has(p, "failed")) { if (p.failed) { m.failed = 1.0; return 0; } }
+        if (has(p, "failed")) { if (p.failed) { m.failed = 1.0; this.dirtyStruct = 1.0; return 0; } }
         if (has(p, "ready")) { if (p.ready) {
             m.ready = 1.0; m.w = num(p.width); m.h = num(p.height);
             m.frames = num(p.frames); m.total = num(p.durationMs);
             m.curIdx = -1;
+            // A still image / first video frame now exists: the widget switches
+            // from placeholder to a real textured quad, which adds an image draw.
+            this.dirtyStruct = 1.0;
         } }
         return 0;
     }
