@@ -57,15 +57,16 @@ jobs:
           cargo run -p elpa-game3d --bin build_bytecode
           cargo run -p elpa-liquidglass --bin build_bytecode
           cargo run -p elpa-websdk --bin build_bytecode
+          cargo run -p elpa-flutter --bin build_bytecode
 
-      # Five apps share one Pages site: the Liquid Glass **calculator** at the
+      # Six apps share one Pages site: the Liquid Glass **calculator** at the
       # site root (`--features calculator`), the Liquid Glass UI kit demo under
       # `/glass/`, the Game3D engine demo under `/game3d/`, the Material gallery
-      # under `/material/`, and the Web SDK showcase under `/websdk/`, each with
-      # the matching `--public-url` so its asset URLs resolve. Build the root
-      # first (it writes the default `dist/`), then the others into their own
-      # subdirs; each subsequent build only manages its own dist, so they coexist
-      # in one upload.
+      # under `/material/`, the Web SDK showcase under `/websdk/`, and the Flutter
+      # SDK demo under `/flutter/`, each with the matching `--public-url` so its
+      # asset URLs resolve. Build the root first (it writes the default `dist/`),
+      # then the others into their own subdirs; each subsequent build only manages
+      # its own dist, so they coexist in one upload.
       - name: Build web example (Liquid Glass calculator, site root)
         working-directory: examples/web
         run: trunk build --release --features calculator --public-url "/${{ github.event.repository.name }}/"
@@ -85,6 +86,10 @@ jobs:
       - name: Build web example (Web SDK, /websdk/)
         working-directory: examples/web
         run: trunk build --release --features websdk --public-url "/${{ github.event.repository.name }}/websdk/" --dist dist/websdk
+
+      - name: Build web example (Flutter, /flutter/)
+        working-directory: examples/web
+        run: trunk build --release --features flutter --public-url "/${{ github.event.repository.name }}/flutter/" --dist dist/flutter
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
