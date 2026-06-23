@@ -1,36 +1,43 @@
-// Elpa Flutter — demo app (step 1: a dart:ui Canvas showcase).
+// Elpa Flutter — demo app (step 2: the rendering layer).
 //
-// Proves the bottom layers end to end: the dart:ui `Canvas` lowering onto the
-// SDF raster backend and submitting one instanced GPU frame. Later steps replace
-// this with a real widget tree mounted through `runApp`.
+// Builds a render tree by hand and mounts it under the RenderView, proving the
+// Flutter box layout protocol end to end: constraints flow down, sizes flow up,
+// the parent positions each child, and the tree paints through dart:ui. Later
+// steps inflate this tree from a widget tree via `runApp`.
 
-runPaint((canvas, sz) => {
-    let w = sz.width; let h = sz.height;
+// A fixed-size coloured box.
+function demoBox(color, w, h) {
+    let cb = new RenderConstrainedBox(constraintsTightFor(w, h));
+    cb.setChild(new RenderDecoratedBox({ color: color, borderRadius: 12.0 }, "background"));
+    return cb;
+}
 
-    // A header bar (filled rounded rect).
-    canvas.drawRRect(
-        rrectFromRectAndRadius(rectLTWH(16.0, 16.0, w - 32.0, 64.0), radiusCircular(16.0)),
-        paintFill(Colors.deepPurple));
-    canvas.drawText("FLUTTER ON ELPA", offset(40.0, 38.0), 4.0, Colors.white);
+let title = new RenderParagraph("RENDERING LAYER", { fontSize: 22.0, color: Colors.white, textAlign: "center" });
+let body = new RenderParagraph("Constraints flow down, sizes flow up.", { fontSize: 13.0, color: withOpacity(Colors.white, 0.92), textAlign: "center" });
+let gap = new RenderConstrainedBox(constraintsTightFor(-1.0, 14.0));
 
-    // A gradient card.
-    let card = rectLTWH(16.0, 96.0, w - 32.0, 120.0);
-    let p = new Paint();
-    p.shader = linearGradient(offset(-1.0, -1.0), offset(1.0, 1.0),
-        [Colors.blue, Colors.teal], 0);
-    canvas.drawRRect(rrectFromRectAndRadius(card, radiusCircular(20.0)), p);
+// A row of two flex children (Expanded), proving the flex algorithm.
+let a = new RenderDecoratedBox({ color: withOpacity(Colors.white, 0.25), borderRadius: 8.0 }, "background");
+let b = new RenderDecoratedBox({ color: withOpacity(Colors.white, 0.45), borderRadius: 8.0 }, "background");
+let aH = new RenderConstrainedBox(constraintsTightFor(-1.0, 36.0)); aH.setChild(a);
+let bH = new RenderConstrainedBox(constraintsTightFor(-1.0, 36.0)); bH.setChild(b);
+let row = new RenderFlex("horizontal", "start", "stretch", "max");
+row.setChildren([aH, bH]);
+aH.parentData.flex = 2.0; bH.parentData.flex = 1.0;
 
-    // A stroked circle + a filled disc.
-    canvas.drawCircle(offset(w * 0.3, 280.0), 36.0, paintStroke(Colors.orange, 4.0));
-    canvas.drawCircle(offset(w * 0.7, 280.0), 36.0, paintFill(Colors.pink));
+let gap2 = new RenderConstrainedBox(constraintsTightFor(-1.0, 14.0));
+let col = new RenderFlex("vertical", "center", "stretch", "min");
+col.setChildren([title, gap, body, gap2, row]);
 
-    // A path (a little chart line).
-    let line = path();
-    line.moveTo(20.0, 380.0);
-    line.lineTo(80.0, 340.0);
-    line.cubicTo(120.0, 300.0, 160.0, 420.0, 220.0, 360.0);
-    line.lineTo(280.0, 330.0);
-    canvas.drawPath(line, paintStroke(Colors.green, 3.0));
+let pad = new RenderPadding(edgeAll(22.0)); pad.setChild(col);
+let card = new RenderDecoratedBox({
+    gradient: linearGradient(offset(-1.0, -1.0), offset(1.0, 1.0), [Colors.deepPurple, Colors.indigo], 0),
+    borderRadius: 22.0,
+    boxShadow: [{ color: withOpacity(Colors.black, 0.32), blur: 18.0, dy: 8.0 }],
+}, "background");
+card.setChild(pad);
 
-    canvas.drawText("DART:UI CANVAS OK", offset(20.0, 440.0), 3.0, Colors.black);
-});
+let sized = new RenderConstrainedBox(constraintsTightFor(340.0, -1.0)); sized.setChild(card);
+let center = new RenderPositionedBox(Alignments.center, -1.0, -1.0); center.setChild(sized);
+
+runRenderObject(center);
