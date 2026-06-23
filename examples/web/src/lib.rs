@@ -65,15 +65,17 @@ type App = Elpa<WgpuBackend<'static>>;
 /// instead — the HTML element model + CSS engine from the object-oriented
 /// `elpa-websdk` kit, painting the whole document through one instanced SDF
 /// pipeline.
-#[cfg(feature = "websdk")]
+#[cfg(feature = "flutter")]
+const APP_BYTECODE: &[u8] = include_bytes!("../../flutter/assets/demo.bc");
+#[cfg(all(feature = "websdk", not(feature = "flutter")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../websdk/assets/demo.bc");
-#[cfg(all(feature = "calculator", not(feature = "websdk")))]
+#[cfg(all(feature = "calculator", not(feature = "websdk"), not(feature = "flutter")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../liquidglass/assets/calculator.bc");
-#[cfg(all(feature = "liquidglass", not(feature = "calculator"), not(feature = "websdk")))]
+#[cfg(all(feature = "liquidglass", not(feature = "calculator"), not(feature = "websdk"), not(feature = "flutter")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../liquidglass/assets/demo.bc");
-#[cfg(all(feature = "game3d", not(feature = "liquidglass"), not(feature = "calculator"), not(feature = "websdk")))]
+#[cfg(all(feature = "game3d", not(feature = "liquidglass"), not(feature = "calculator"), not(feature = "websdk"), not(feature = "flutter")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../game3d/assets/demo.bc");
-#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass"), not(feature = "calculator"), not(feature = "websdk")))]
+#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass"), not(feature = "calculator"), not(feature = "websdk"), not(feature = "flutter")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../material/assets/gallery.bc");
 
 #[wasm_bindgen(start)]

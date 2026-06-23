@@ -103,27 +103,31 @@ fn safe_area_insets(w: u32, h: u32) -> Insets {
 /// Build with `--features websdk` for the **Web SDK** showcase page — the HTML
 /// element model + CSS engine from the object-oriented `elpa-websdk` kit,
 /// painting the whole document through one instanced SDF pipeline.
-#[cfg(feature = "websdk")]
+#[cfg(feature = "flutter")]
+const APP_BYTECODE: &[u8] = include_bytes!("../../flutter/assets/demo.bc");
+#[cfg(all(feature = "websdk", not(feature = "flutter")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../websdk/assets/demo.bc");
-#[cfg(all(feature = "material", not(feature = "websdk")))]
+#[cfg(all(feature = "material", not(feature = "websdk"), not(feature = "flutter")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../material/assets/gallery.bc");
-#[cfg(all(feature = "liquidglass", not(feature = "material"), not(feature = "websdk")))]
+#[cfg(all(feature = "liquidglass", not(feature = "material"), not(feature = "websdk"), not(feature = "flutter")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../liquidglass/assets/demo.bc");
-#[cfg(all(feature = "game3d", not(feature = "liquidglass"), not(feature = "material"), not(feature = "websdk")))]
+#[cfg(all(feature = "game3d", not(feature = "liquidglass"), not(feature = "material"), not(feature = "websdk"), not(feature = "flutter")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../game3d/assets/demo.bc");
-#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass"), not(feature = "material"), not(feature = "websdk")))]
+#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass"), not(feature = "material"), not(feature = "websdk"), not(feature = "flutter")))]
 const APP_BYTECODE: &[u8] = include_bytes!("../../liquidglass/assets/calculator.bc");
 
 /// The winit window title for the embedded app.
-#[cfg(feature = "websdk")]
+#[cfg(feature = "flutter")]
+const WINDOW_TITLE: &str = "Elpa — Flutter demo";
+#[cfg(all(feature = "websdk", not(feature = "flutter")))]
 const WINDOW_TITLE: &str = "Elpa — Web SDK demo";
-#[cfg(all(feature = "material", not(feature = "websdk")))]
+#[cfg(all(feature = "material", not(feature = "websdk"), not(feature = "flutter")))]
 const WINDOW_TITLE: &str = "Elpa — Material demo";
-#[cfg(all(feature = "liquidglass", not(feature = "material"), not(feature = "websdk")))]
+#[cfg(all(feature = "liquidglass", not(feature = "material"), not(feature = "websdk"), not(feature = "flutter")))]
 const WINDOW_TITLE: &str = "Elpa — Liquid Glass demo";
-#[cfg(all(feature = "game3d", not(feature = "liquidglass"), not(feature = "material"), not(feature = "websdk")))]
+#[cfg(all(feature = "game3d", not(feature = "liquidglass"), not(feature = "material"), not(feature = "websdk"), not(feature = "flutter")))]
 const WINDOW_TITLE: &str = "Elpa — Game3D demo";
-#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass"), not(feature = "material"), not(feature = "websdk")))]
+#[cfg(all(not(feature = "game3d"), not(feature = "liquidglass"), not(feature = "material"), not(feature = "websdk"), not(feature = "flutter")))]
 const WINDOW_TITLE: &str = "Elpa — Liquid Glass calculator";
 
 /// Everything that exists only while we hold a surface. On Android this is

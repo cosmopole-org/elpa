@@ -31,6 +31,10 @@ liquidglass = []
 # Accepted for symmetry with the web example / CI; the calculator is already the
 # default, so this selects the same app explicitly.
 calculator = []
+# Embed the Flutter SDK demo (a faithful, layered Flutter port — dart:ui Canvas,
+# RenderObject/RenderBox layout, Widget/Element reconciliation — from the
+# `elpa-flutter` kit) instead. Build/run with `cargo run --features flutter`.
+flutter = []
 # Embed the Web SDK showcase page (the HTML element model + CSS engine from the
 # object-oriented `elpa-websdk` kit, rendered through one instanced SDF pipeline)
 # instead. Build/run with `cargo run --features websdk`.
