@@ -119,4 +119,12 @@ fn tap_drives_setstate_rebuild() {
     assert!(changed, "a tap on the GestureDetector fired onTap → setState → rebuild → new frame");
     assert!(app.last_stats().presented, "the rebuilt frame was submitted");
     assert_eq!(instances(&app).len() % 16, 0, "instance stride preserved after tap");
+
+    // Tapping the same spot again advances the counter once more (the element /
+    // render objects are reused across rebuilds, only the label changes).
+    let before2 = instances(&app);
+    app.send_event(&InputEvent::PointerDown { x: 500.0, y, button: 0 });
+    app.send_event(&InputEvent::PointerUp { x: 500.0, y, button: 0 });
+    assert!(app.trap_reason().is_none(), "no trap on the second tap");
+    assert_ne!(before2, instances(&app), "a second tap advances the counter again");
 }

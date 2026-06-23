@@ -10,9 +10,10 @@ architecture, built bottom-to-top as separate layers:
 | Raster backend | `assets/sdk/10-engine.js` | Skia / CanvasKit (`Painter`, glyph atlas) |
 | `dart:ui` | `assets/sdk/20-ui.js` | `Offset`, `Size`, `Rect`, `RRect`, `Color`, `Paint`, `Gradient`, `Path`, `Canvas` |
 | rendering | `assets/sdk/30-rendering.js` | `BoxConstraints`, `RenderObject`/`RenderBox`, `PaintingContext`, `RenderView`, `RenderFlex`, … |
-| widgets | `assets/sdk/40-widget.js` | `Widget`/`Element`/`BuildContext`/`BuildOwner`, reconciliation, `StatelessWidget`/`StatefulWidget` |
-| catalog | `assets/sdk/50-widgets.js` | the widget catalog + a small Material catalog |
-| binding | `assets/sdk/60-binding.js` | `WidgetsFlutterBinding` + `runApp` (build→layout→paint→submit) |
+| widgets | `assets/sdk/40-widget.js` | `Widget`/`Element`/`BuildContext`/`BuildOwner`, reconciliation, `StatelessWidget`/`StatefulWidget`, `InheritedWidget`, `ParentDataWidget` |
+| catalog | `assets/sdk/50-widgets.js` | `SizedBox`, `Container`, `Padding`, `Center`, `Align`, `Row`/`Column`, `Expanded`, `Stack`, `Positioned`, `Text`, `Opacity`, `Transform`, `GestureDetector`, … |
+| Material | `assets/sdk/55-material.js` | `Theme`/`ThemeData`, `MaterialApp`, `Scaffold`, `AppBar`, `ElevatedButton`, `Icon`, `CustomPaint` (dart:ui) |
+| binding | `assets/sdk/60-binding.js` | `WidgetsFlutterBinding` + `runApp` (build→layout→paint→submit) + pointer hit-test routing |
 
 The constraints flow **down**, sizes flow **up**, and the parent positions each
 child — exactly the box layout protocol of `package:flutter/rendering`. The

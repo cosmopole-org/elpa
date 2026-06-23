@@ -34,12 +34,13 @@ pub const SDK_UI_JS: &str = include_str!("../assets/sdk/20-ui.js");
 pub const SDK_RENDERING_JS: &str = include_str!("../assets/sdk/30-rendering.js");
 pub const SDK_WIDGET_JS: &str = include_str!("../assets/sdk/40-widget.js");
 pub const SDK_WIDGETS_JS: &str = include_str!("../assets/sdk/50-widgets.js");
+pub const SDK_MATERIAL_JS: &str = include_str!("../assets/sdk/55-material.js");
 pub const SDK_BINDING_JS: &str = include_str!("../assets/sdk/60-binding.js");
 
 /// The framework as one JavaScript source (the modules concatenated). The VM
 /// hoists every `class`/`function`, so this is just textual concatenation.
 pub fn module_js() -> String {
-    format!("{SDK_DATA_JS}\n{SDK_ENGINE_JS}\n{SDK_UI_JS}\n{SDK_RENDERING_JS}\n{SDK_WIDGET_JS}\n{SDK_WIDGETS_JS}\n{SDK_BINDING_JS}")
+    format!("{SDK_DATA_JS}\n{SDK_ENGINE_JS}\n{SDK_UI_JS}\n{SDK_RENDERING_JS}\n{SDK_WIDGET_JS}\n{SDK_WIDGETS_JS}\n{SDK_MATERIAL_JS}\n{SDK_BINDING_JS}")
 }
 
 /// The interactive demo application, as JavaScript source. Uses [`module_js`].
