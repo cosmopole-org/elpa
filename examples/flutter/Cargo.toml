@@ -1,0 +1,30 @@
+[package]
+name = "elpa-flutter"
+version = "0.1.0"
+edition = "2021"
+description = "A faithful, layered Flutter port delivered as JavaScript (assets/sdk/*.js) that Elpa compiles and runs directly on its VM. Unlike the `material` kit's fused measure/paint, this SDK mirrors Flutter's real architecture bottom-to-top: a dart:ui Canvas over the SDF raster backend, a RenderObject/RenderBox layout protocol (constraints down, sizes up), a Widget/Element/BuildOwner reconciliation layer, and a widget catalog with runApp. `lib` embeds the JS for host examples; an Elpa instance is built from it with Elpa::new_from_js."
+
+[lib]
+name = "elpa_flutter"
+
+[dependencies]
+# The kit ships as JavaScript source strings only; the library itself needs no
+# deps. The `build_bytecode` binary (build-time tool) lowers those programs to VM
+# bytecode via the VM's compiler front-end — a light, GPU-free dependency.
+elpian-vm = { path = "../../crates/elpian-vm" }
+
+# The build-time bytecode generator. Run `cargo run -p elpa-flutter --bin
+# build_bytecode` to (re)compile the kit's JS programs to `assets/*.bc`, which the
+# web and native examples embed and load via `Elpa::new_from_bytecode`.
+[[bin]]
+name = "build_bytecode"
+path = "src/bin/build_bytecode.rs"
+
+[dev-dependencies]
+# Drive the JS framework end to end through a real (headless) Elpa instance + VM,
+# and lower the kit's JS to AST so its embedded WGSL can be validated.
+elpa = { path = "../../crates/elpa" }
+# Validate the kit's WGSL the same way wgpu does, so shader errors are caught in
+# `cargo test` without a browser/GPU.
+naga = { version = "29", features = ["wgsl-in"] }
+serde_json = { workspace = true }

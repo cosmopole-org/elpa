@@ -1,0 +1,135 @@
+// Elpa Flutter — WidgetsFlutterBinding + runApp (the glue to the host).
+//
+// The binding owns the engine services (Painter, FontEngine, Ticker), reads the
+// surface metrics, builds the one render pipeline, and runs the per-frame
+// pipeline that ends in `gpu.submit`. This is Flutter's RendererBinding +
+// WidgetsBinding: it holds the RenderView, drives drawFrame (build → layout →
+// paint → composite → submit), routes pointer events through a hit test, and
+// schedules frames for implicit animations.
+//
+// NOTE (step 1): the rendering + widgets layers are introduced in later modules.
+// This module is structured so those layers slot in: `drawFrame` resets the
+// painter, paints (today: a callback; later: the RenderView), and submits. The
+// pipeline / submit code below is the final, reused implementation.
+
+// The shared SDF pipeline resources (one pipeline draws the whole UI).
+function sdfPipelineResources() {
+    return [
+        { kind: "shader", id: "elpa.fl.shader", wgsl: SDF_WGSL },
+        { kind: "bindGroupLayout", id: "elpa.fl.bgl",
+          entries: [
+              { binding: 0, visibility: ["VERTEX"], ty: "uniform" },
+              { binding: 1, visibility: ["FRAGMENT"], ty: "texture" },
+              { binding: 2, visibility: ["FRAGMENT"], ty: "sampler" }] },
+        { kind: "pipelineLayout", id: "elpa.fl.layout", bind_group_layouts: ["elpa.fl.bgl"] },
+        { kind: "renderPipeline", id: "elpa.fl.pipe", layout: "elpa.fl.layout",
+          vertex: { module: "elpa.fl.shader", entry_point: "vs", buffers: [{
+              array_stride: 64, step_mode: "instance", attributes: [
+                  { format: "float32x4", offset: 0, shader_location: 0 },
+                  { format: "float32x4", offset: 16, shader_location: 1 },
+                  { format: "float32x4", offset: 32, shader_location: 2 },
+                  { format: "float32x4", offset: 48, shader_location: 3 }] }] },
+          fragment: { module: "elpa.fl.shader", entry_point: "fs", targets: [{
+              format: SURFACE_FMT,
+              blend: { color: { src_factor: "src-alpha", dst_factor: "one-minus-src-alpha", operation: "add" },
+                       alpha: { src_factor: "one", dst_factor: "one-minus-src-alpha", operation: "add" } } }] } },
+    ];
+}
+
+class WidgetsBinding {
+    constructor() {
+        this.painter = new Painter();
+        this.font = new FontEngine();
+        this.ticker = new Ticker();
+        // Surface metrics (physical px + device pixel ratio).
+        this.pw = 1.0; this.ph = 1.0; this.dpr = 1.0; this.lw = 1.0; this.lh = 1.0;
+        this.clearColor = [0.96, 0.96, 0.97, 1.0];
+        this.frameN = 0;
+        // The retained render/element trees (populated by later layers).
+        this.renderView = 0; this.rootElement = 0; this.buildOwner = 0;
+        // Step-1 fallback: a direct paint callback.
+        this.paintFn = 0;
+    }
+
+    // Refresh surface metrics from the host (called before every frame build).
+    readSurface() {
+        let si = askHost("gpu.surfaceInfo", []);
+        if (isNull(si)) { return 0; }
+        this.pw = num(si.width); this.ph = num(si.height);
+        if (has(si, "colorFormat")) { SURFACE_FMT = si.colorFormat; }
+        this.dpr = 1.0;
+        if (has(si, "scaleFactor")) { this.dpr = num(si.scaleFactor); }
+        if (this.dpr < 0.1) { this.dpr = 1.0; }
+        this.lw = this.pw / this.dpr; this.lh = this.ph / this.dpr;
+        if (has(si, "logicalWidth")) { this.lw = num(si.logicalWidth); }
+        if (has(si, "logicalHeight")) { this.lh = num(si.logicalHeight); }
+        return 0;
+    }
+
+    // Build / layout / paint the frame into the painter, then submit. The painter
+    // is reset with a root scale(dpr) so the tree paints in *logical* pixels (dp),
+    // exactly as Flutter's RenderView scales by devicePixelRatio.
+    drawFrame() {
+        if (this.font.atlas == 0) { this.font.loadAtlas(); }
+        this.readSurface();
+        let inst = [];
+        this.painter.reset(inst);
+        this.painter.scale(this.dpr, this.dpr);
+        this.paintRoot();
+        this.submit(inst);
+    }
+    // Overridden once the rendering layer exists; step 1 calls the paint callback.
+    paintRoot() {
+        if (this.paintFn != 0) {
+            let canvas = new Canvas(this.painter, this.font);
+            this.paintFn(canvas, new Size(this.lw, this.lh));
+        }
+    }
+
+    frameBindings() {
+        return [
+            bufF32("elpa.fl.globals", ["UNIFORM", "COPY_DST"], [this.pw, this.ph, 0.0, 0.0]),
+            { kind: "bindGroup", id: "elpa.fl.gb", layout: "elpa.fl.bgl", entries: [
+                { binding: 0, resource: { type: "buffer", buffer: "elpa.fl.globals" } },
+                { binding: 1, resource: { type: "textureView", texture: this.font.atlasId() } },
+                { binding: 2, resource: { type: "sampler", sampler: "elpa.fl.samp" } } ] },
+        ];
+    }
+    submit(inst) {
+        this.frameN = this.frameN + 1;
+        let bg = this.clearColor;
+        let res = concat(concat(sdfPipelineResources(), this.font.atlasTexRes()), concat(this.frameBindings(), [
+            bufF32("elpa.fl.inst", ["VERTEX", "COPY_DST"], inst),
+        ]));
+        let pass = { op: "renderPass", id: "elpa.fl.pass",
+            color_attachments: [{ view: { kind: "surface" }, load: "clear",
+                clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
+            commands: [
+                { cmd: "setBindGroup", index: 0, bind_group: "elpa.fl.gb" },
+                { cmd: "setPipeline", pipeline: "elpa.fl.pipe" },
+                { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.fl.inst", offset: 0 },
+                { cmd: "draw", vertex_count: 6, instance_count: len(inst) / 16, first_vertex: 0, first_instance: 0 },
+            ] };
+        askHost("gpu.submit", [{ resources: res, commands: concat(this.font.atlasUploadCmds(), [pass]) }]);
+    }
+
+    // ---- host event loop (expanded by the gestures layer) -------------------
+    onEvent(e) { return 0; }
+    onFrame(dt) {
+        let moving = this.ticker.advance();
+        if (moving > 0.5) { this.drawFrame(); }
+    }
+    onResize(info) { this.drawFrame(); }
+}
+
+// The one binding instance — Flutter's WidgetsFlutterBinding.ensureInitialized().
+let WB = new WidgetsBinding();
+
+// Step-1 entry: paint directly through a dart:ui Canvas callback. Superseded by
+// the widget-tree `runApp(widget)` once the widgets layer lands.
+function runPaint(fn) { WB.paintFn = fn; WB.drawFrame(); }
+
+// ---- host entry points -------------------------------------------------------
+function onEvent(e) { WB.onEvent(e); }
+function onFrame(dt) { WB.onFrame(dt); }
+function onResize(info) { WB.onResize(info); }
