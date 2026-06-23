@@ -1,43 +1,64 @@
-// Elpa Flutter — demo app (step 2: the rendering layer).
+// Elpa Flutter — demo app (step 3: the widgets layer).
 //
-// Builds a render tree by hand and mounts it under the RenderView, proving the
-// Flutter box layout protocol end to end: constraints flow down, sizes flow up,
-// the parent positions each child, and the tree paints through dart:ui. Later
-// steps inflate this tree from a widget tree via `runApp`.
+// A real widget tree, mounted with `runApp`. The widgets inflate into an element
+// tree that builds the render tree from step 2; StatelessWidget composition
+// (Container), MultiChild reconciliation (Row/Column), ParentData widgets
+// (Expanded) and a leaf (Text) all run through the faithful element machinery.
 
-// A fixed-size coloured box.
-function demoBox(color, w, h) {
-    let cb = new RenderConstrainedBox(constraintsTightFor(w, h));
-    cb.setChild(new RenderDecoratedBox({ color: color, borderRadius: 12.0 }, "background"));
-    return cb;
+class FeatureCard extends StatelessWidget {
+    constructor(p) { super(p); }
+    typeName() { return "FeatureCard"; }
+    build(context) {
+        return Container({
+            padding: edgeAll(16.0),
+            decoration: {
+                gradient: linearGradient(offset(-1.0, -1.0), offset(1.0, 1.0), this.p.colors, 0),
+                borderRadius: 18.0,
+                boxShadow: [{ color: withOpacity(Colors.black, 0.28), blur: 16.0, dy: 6.0 }],
+            },
+            child: Column({
+                mainAxisSize: "min", crossAxisAlignment: "start",
+                children: [
+                    Text(this.p.title, { fontSize: 20.0, color: Colors.white }),
+                    SizedBox({ height: 8.0 }),
+                    Text(this.p.body, { fontSize: 13.0, color: withOpacity(Colors.white, 0.9) }),
+                ],
+            }),
+        });
+    }
 }
 
-let title = new RenderParagraph("RENDERING LAYER", { fontSize: 22.0, color: Colors.white, textAlign: "center" });
-let body = new RenderParagraph("Constraints flow down, sizes flow up.", { fontSize: 13.0, color: withOpacity(Colors.white, 0.92), textAlign: "center" });
-let gap = new RenderConstrainedBox(constraintsTightFor(-1.0, 14.0));
+class App extends StatelessWidget {
+    constructor(p) { super(p); }
+    typeName() { return "App"; }
+    build(context) {
+        return Container({
+            color: colorRGBO(20, 22, 30, 1.0),
+            child: Center({
+                child: SizedBox({
+                    width: 360.0,
+                    child: Column({
+                        mainAxisSize: "min", crossAxisAlignment: "stretch",
+                        children: [
+                            Text("FLUTTER ON ELPA", { fontSize: 26.0, color: Colors.white, textAlign: "center" }),
+                            SizedBox({ height: 18.0 }),
+                            new FeatureCard({ title: "WIDGETS", body: "Immutable config inflates an element tree.", colors: [Colors.deepPurple, Colors.indigo] }),
+                            SizedBox({ height: 12.0 }),
+                            new FeatureCard({ title: "RENDERING", body: "Constraints down, sizes up, parent positions.", colors: [Colors.teal, Colors.blue] }),
+                            SizedBox({ height: 16.0 }),
+                            Row({
+                                children: [
+                                    Expanded({ flex: 2.0, child: Container({ height: 40.0, color: withOpacity(Colors.white, 0.18), borderRadius: 8.0 }) }),
+                                    SizedBox({ width: 10.0 }),
+                                    Expanded({ flex: 1.0, child: Container({ height: 40.0, color: withOpacity(Colors.white, 0.34), borderRadius: 8.0 }) }),
+                                ],
+                            }),
+                        ],
+                    }),
+                }),
+            }),
+        });
+    }
+}
 
-// A row of two flex children (Expanded), proving the flex algorithm.
-let a = new RenderDecoratedBox({ color: withOpacity(Colors.white, 0.25), borderRadius: 8.0 }, "background");
-let b = new RenderDecoratedBox({ color: withOpacity(Colors.white, 0.45), borderRadius: 8.0 }, "background");
-let aH = new RenderConstrainedBox(constraintsTightFor(-1.0, 36.0)); aH.setChild(a);
-let bH = new RenderConstrainedBox(constraintsTightFor(-1.0, 36.0)); bH.setChild(b);
-let row = new RenderFlex("horizontal", "start", "stretch", "max");
-row.setChildren([aH, bH]);
-aH.parentData.flex = 2.0; bH.parentData.flex = 1.0;
-
-let gap2 = new RenderConstrainedBox(constraintsTightFor(-1.0, 14.0));
-let col = new RenderFlex("vertical", "center", "stretch", "min");
-col.setChildren([title, gap, body, gap2, row]);
-
-let pad = new RenderPadding(edgeAll(22.0)); pad.setChild(col);
-let card = new RenderDecoratedBox({
-    gradient: linearGradient(offset(-1.0, -1.0), offset(1.0, 1.0), [Colors.deepPurple, Colors.indigo], 0),
-    borderRadius: 22.0,
-    boxShadow: [{ color: withOpacity(Colors.black, 0.32), blur: 18.0, dy: 8.0 }],
-}, "background");
-card.setChild(pad);
-
-let sized = new RenderConstrainedBox(constraintsTightFor(340.0, -1.0)); sized.setChild(card);
-let center = new RenderPositionedBox(Alignments.center, -1.0, -1.0); center.setChild(sized);
-
-runRenderObject(center);
+runApp(new App({}));

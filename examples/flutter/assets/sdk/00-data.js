@@ -174,6 +174,22 @@ let GLYPHS = {
 };
 
 // Shared colour constants.
+// The VM compares objects with `==` *structurally* (deep), which would recurse
+// forever on the render/element graph (parent↔child cycles). So heap nodes carry
+// a unique id and we compare *identity* via `sameRef` — Flutter's `identical()`.
+let NEXT_OBJ_ID = 0;
+function nextObjId() { NEXT_OBJ_ID = NEXT_OBJ_ID + 1; return NEXT_OBJ_ID; }
+function hasId(x) { if (isNull(x)) { return false; } if (x == 0) { return false; } if (has(x, "_id")) { return true; } return false; }
+// Reference identity: both have ids → compare ids; otherwise fall back to a
+// primitive `==` (safe: never deep-compares two cyclic objects).
+function sameRef(a, b) {
+    let ai = hasId(a); let bi = hasId(b);
+    if (ai) { if (bi) { if (a._id == b._id) { return true; } return false; } return false; }
+    if (bi) { return false; }
+    if (a == b) { return true; }
+    return false;
+}
+
 let WHITE = [1.0, 1.0, 1.0, 1.0];
 let BLACK = [0.0, 0.0, 0.0, 1.0];
 let CLEAR = [0.0, 0.0, 0.0, 0.0];

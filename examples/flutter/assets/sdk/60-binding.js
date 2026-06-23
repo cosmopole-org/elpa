@@ -95,6 +95,8 @@ class WidgetsBinding {
         if (this.font.atlas == 0) { this.font.loadAtlas(); }
         this.readSurface();
         this._needsFrame = 0.0;
+        // Phase 1: rebuild dirty elements (build → reconcile render tree).
+        if (this.buildOwner != 0) { this.buildOwner.buildScope(this.rootElement); }
         let inst = [];
         if (this.renderView.child != 0) {
             this.renderView.setConfiguration(this.lw, this.lh);
@@ -158,6 +160,18 @@ function runPaint(fn) { WB.paintFn = fn; WB.drawFrame(); }
 // Step-2 entry: mount a render object as the root and draw a frame (proves the
 // rendering layer before the widgets layer inflates the tree for you).
 function runRenderObject(ro) { WB.setRoot(ro); WB.drawFrame(); }
+
+// Inflate a widget tree and run it (Flutter's runApp): wrap the app in the root
+// element, mount it (build → element tree → render tree wired to the RenderView),
+// then draw the first frame.
+function runApp(widget) {
+    let owner = new BuildOwner();
+    WB.buildOwner = owner;
+    let el = new RootElement(new RootWidget(widget));
+    el.mountRoot(owner);
+    WB.rootElement = el;
+    WB.drawFrame();
+}
 
 // ---- host entry points -------------------------------------------------------
 function onEvent(e) { WB.onEvent(e); }

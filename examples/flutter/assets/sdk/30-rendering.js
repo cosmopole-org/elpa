@@ -151,6 +151,7 @@ class PaintingContext {
 // ----------------------------------------------------------- RenderObject -----
 class RenderObject {
     constructor() {
+        this._id = nextObjId();
         this.parent = 0; this.owner = 0; this.depth = 0; this._attached = 0.0;
         this._needsLayout = 1.0; this._needsPaint = 1.0;
         this._constraints = 0; this._relayoutBoundary = 0; this.parentData = 0;
@@ -185,8 +186,10 @@ class RenderObject {
         if (!isRenderObj(this.parent)) { isBoundary = 1.0; }
         let boundary = this;
         if (isBoundary < 0.5) { boundary = this.parent._relayoutBoundary; }
+        // Cache hit (clean + same constraints + same boundary) → skip. Identity
+        // compare via sameRef: `==` on render objects would deep-recurse the graph.
         if (this._needsLayout < 0.5) {
-            if (this._constraints != 0) { if (this._constraints.equals(constraints)) { if (this._relayoutBoundary == boundary) { return 0; } } }
+            if (this._constraints != 0) { if (this._constraints.equals(constraints)) { if (sameRef(this._relayoutBoundary, boundary)) { return 0; } } }
         }
         this._constraints = constraints; this._relayoutBoundary = boundary;
         if (this.sizedByParent() > 0.5) { this.performResize(); }
@@ -204,7 +207,7 @@ class RenderObject {
 
     markNeedsLayout() {
         if (this._needsLayout > 0.5) { return 0; }
-        if (this._relayoutBoundary != this) {
+        if (!sameRef(this._relayoutBoundary, this)) {
             if (isRenderObj(this.parent)) { this._needsLayout = 1.0; this.parent.markNeedsLayout(); return 0; }
         }
         this._needsLayout = 1.0;
@@ -222,6 +225,19 @@ class RenderObject {
 }
 function isObj(x) { if (isNull(x)) { return false; } if (x == 0) { return false; } return true; }
 function isRenderObj(x) { if (!isObj(x)) { return false; } if (has(x, "_isRenderObject")) { return true; } return false; }
+function roListContains(list, c) { for (let i = 0; i < len(list); i++) { if (sameRef(list[i], c)) { return true; } } return false; }
+// Sync a container render object's children to `list`, preserving identity:
+// drop the removed, adopt the new, and mark layout on any change. Used by the
+// MultiChildRenderObjectElement to wire reconciled children in.
+function syncContainerChildren(self, list) {
+    for (let i = 0; i < len(self.children); i++) { let c = self.children[i]; if (!roListContains(list, c)) { self.dropChild(c); } }
+    for (let i = 0; i < len(list); i++) { let c = list[i]; if (!sameRef(c.parent, self)) { self.adoptChild(c); } }
+    let changed = 0.0;
+    if (len(list) != len(self.children)) { changed = 1.0; }
+    else { for (let i = 0; i < len(list); i++) { if (!sameRef(list[i], self.children[i])) { changed = 1.0; } } }
+    self.children = list;
+    if (changed > 0.5) { self.markNeedsLayout(); }
+}
 
 // ------------------------------------------------------------- RenderBox ------
 class RenderBox extends RenderObject {
@@ -247,6 +263,7 @@ class RenderBox extends RenderObject {
 class RenderProxyBox extends RenderBox {
     constructor() { super(); this.child = 0; }
     setChild(c) {
+        if (sameRef(this.child, c)) { return 0; }
         if (this.child != 0) { this.dropChild(this.child); }
         this.child = c;
         if (c != 0) { this.adoptChild(c); }
@@ -280,7 +297,7 @@ class RenderConstrainedBox extends RenderProxyBox {
 // ---- RenderPadding ----
 class RenderPadding extends RenderBox {
     constructor(padding) { super(); this.padding = padding; this.child = 0; }
-    setChild(c) { if (this.child != 0) { this.dropChild(this.child); } this.child = c; if (c != 0) { this.adoptChild(c); } }
+    setChild(c) { if (sameRef(this.child, c)) { return 0; } if (this.child != 0) { this.dropChild(this.child); } this.child = c; if (c != 0) { this.adoptChild(c); } }
     visitChildren(fn) { if (this.child != 0) { fn(this.child); } }
     redepthChildren() { if (this.child != 0) { this.redepthChild(this.child); } }
     performLayout() {
@@ -301,7 +318,7 @@ class RenderPadding extends RenderBox {
 // ---- RenderPositionedBox (Align / Center) ----
 class RenderPositionedBox extends RenderBox {
     constructor(alignment, widthFactor, heightFactor) { super(); this.alignment = alignment; this.widthFactor = widthFactor; this.heightFactor = heightFactor; this.child = 0; }
-    setChild(c) { if (this.child != 0) { this.dropChild(this.child); } this.child = c; if (c != 0) { this.adoptChild(c); } }
+    setChild(c) { if (sameRef(this.child, c)) { return 0; } if (this.child != 0) { this.dropChild(this.child); } this.child = c; if (c != 0) { this.adoptChild(c); } }
     visitChildren(fn) { if (this.child != 0) { fn(this.child); } }
     redepthChildren() { if (this.child != 0) { this.redepthChild(this.child); } }
     performLayout() {
@@ -345,6 +362,7 @@ class RenderFlex extends RenderBox {
         this.children = list;
         for (let i = 0; i < len(list); i++) { this.adoptChild(list[i]); }
     }
+    syncChildren(list) { syncContainerChildren(this, list); }
     visitChildren(fn) { for (let i = 0; i < len(this.children); i++) { fn(this.children[i]); } }
     redepthChildren() { for (let i = 0; i < len(this.children); i++) { this.redepthChild(this.children[i]); } }
     isHoriz() { if (this.direction == "horizontal") { return 1.0; } return 0.0; }
@@ -450,6 +468,7 @@ class RenderStack extends RenderBox {
         this.children = list;
         for (let i = 0; i < len(list); i++) { this.adoptChild(list[i]); }
     }
+    syncChildren(list) { syncContainerChildren(this, list); }
     visitChildren(fn) { for (let i = 0; i < len(this.children); i++) { fn(this.children[i]); } }
     redepthChildren() { for (let i = 0; i < len(this.children); i++) { this.redepthChild(this.children[i]); } }
     performLayout() {
@@ -622,7 +641,7 @@ class RenderPointerListener extends RenderProxyBox {
 // its child with tight constraints and ties the tree to the frame pipeline.
 class RenderView extends RenderObject {
     constructor() { super(); this._isRenderObject = 1.0; this.child = 0; this.size = new Size(0.0, 0.0); this.configSize = new Size(1.0, 1.0); }
-    setChild(c) { if (this.child != 0) { this.dropChild(this.child); } this.child = c; if (c != 0) { this.adoptChild(c); } }
+    setChild(c) { if (sameRef(this.child, c)) { return 0; } if (this.child != 0) { this.dropChild(this.child); } this.child = c; if (c != 0) { this.adoptChild(c); } }
     visitChildren(fn) { if (this.child != 0) { fn(this.child); } }
     redepthChildren() { if (this.child != 0) { this.redepthChild(this.child); } }
     setConfiguration(w, h) {

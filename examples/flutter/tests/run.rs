@@ -74,3 +74,20 @@ fn app_mounts_and_paints() {
     assert!(inst.len() >= 16, "the app emitted instances ({} floats)", inst.len());
     assert_eq!(inst.len() % 16, 0, "instance stride is 16 floats");
 }
+
+#[test]
+fn widget_tree_relayouts_on_resize() {
+    // The widget tree inflates an element tree that builds a render tree; a resize
+    // reconfigures the RenderView and re-runs layout/paint without trapping.
+    let mut app = instance();
+    app.start();
+    let before = instances(&app).len();
+    assert!(before > 16, "the widget demo emits a non-trivial frame");
+
+    app.resize(700, 1200, 2.0);
+    assert!(app.trap_reason().is_none(), "no VM trap on resize: {:?}", app.trap_reason());
+    assert!(app.last_stats().presented, "resized frame presented");
+    let after = instances(&app).len();
+    assert_eq!(after % 16, 0, "instance stride preserved after resize");
+    assert!(after > 16, "the widget tree re-laid-out and re-painted on resize");
+}
