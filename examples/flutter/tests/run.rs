@@ -5,7 +5,7 @@
 //! like Flutter.
 
 use elpa::protocol::ResourceDesc;
-use elpa::{Elpa, HeadlessBackend, SurfaceInfo};
+use elpa::{Elpa, HeadlessBackend, InputEvent, SurfaceInfo};
 
 fn collect_wgsl(v: &serde_json::Value, out: &mut Vec<String>) {
     match v {
@@ -90,4 +90,33 @@ fn widget_tree_relayouts_on_resize() {
     let after = instances(&app).len();
     assert_eq!(after % 16, 0, "instance stride preserved after resize");
     assert!(after > 16, "the widget tree re-laid-out and re-painted on resize");
+}
+
+#[test]
+fn tap_drives_setstate_rebuild() {
+    // The interactive loop: a tap on the GestureDetector hit-tests to the
+    // RenderPointerListener, fires onTap → setState → markNeedsBuild, the
+    // BuildOwner rebuilds the dirty subtree, and a new frame is submitted whose
+    // counter text changed (different glyph instances) — with no VM trap.
+    let mut app = instance();
+    app.start();
+    let base = instances(&app);
+
+    // The "TAP ME" button sits in the bottom half of the centred 360-wide column;
+    // scan the column centre so the test does not depend on exact layout metrics.
+    let mut changed = false;
+    let mut y = 300.0;
+    while y < 760.0 {
+        app.send_event(&InputEvent::PointerDown { x: 500.0, y, button: 0 });
+        app.send_event(&InputEvent::PointerUp { x: 500.0, y, button: 0 });
+        assert!(app.trap_reason().is_none(), "no VM trap on tap: {:?}", app.trap_reason());
+        if instances(&app) != base {
+            changed = true;
+            break;
+        }
+        y += 20.0;
+    }
+    assert!(changed, "a tap on the GestureDetector fired onTap → setState → rebuild → new frame");
+    assert!(app.last_stats().presented, "the rebuilt frame was submitted");
+    assert_eq!(instances(&app).len() % 16, 0, "instance stride preserved after tap");
 }

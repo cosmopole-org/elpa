@@ -156,9 +156,13 @@ class RenderObject {
         this._needsLayout = 1.0; this._needsPaint = 1.0;
         this._constraints = 0; this._relayoutBoundary = 0; this.parentData = 0;
     }
-    // Lifecycle / tree wiring.
-    attach(owner) { this.owner = owner; this._attached = 1.0; if (this._needsLayout > 0.5) { if (this._relayoutBoundary != 0) { this._needsLayout = 0.0; this.markNeedsLayout(); } } if (this._needsPaint > 0.5) { this.markNeedsPaint(); } }
-    detach() { this._attached = 0.0; this.owner = 0; }
+    // Lifecycle / tree wiring. Attach recurses so the whole subtree shares the
+    // owner and is marked attached — flushLayout only re-lays attached boundaries.
+    attach(owner) {
+        this.owner = owner; this._attached = 1.0;
+        this.visitChildren((c) => { c.attach(owner); });
+    }
+    detach() { this._attached = 0.0; this.owner = 0; this.visitChildren((c) => { c.detach(); }); }
     setupParentData(child) { if (!isObj(child.parentData)) { child.parentData = new BoxParentData(); } }
     redepthChild(child) { if (child.depth <= this.depth) { child.depth = this.depth + 1; child.redepthChildren(); } }
     redepthChildren() { return 0; }

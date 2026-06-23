@@ -140,8 +140,42 @@ class WidgetsBinding {
         askHost("gpu.submit", [{ resources: res, commands: concat(this.font.atlasUploadCmds(), [pass]) }]);
     }
 
-    // ---- host event loop (expanded by the gestures layer) -------------------
-    onEvent(e) { return 0; }
+    // ---- pointer routing (Flutter's GestureBinding.hitTest + dispatch) -------
+    // Hit-test the render tree at the pointer (logical px) and return the path of
+    // render objects under it (innermost first).
+    hitTestAt(lx, ly) {
+        let result = new HitTestResult();
+        this.renderView.hitTest(result, new Offset(lx, ly));
+        return result;
+    }
+    dispatchEvent(result, eventObj) {
+        for (let i = 0; i < len(result.path); i++) {
+            let t = result.path[i].target;
+            if (has(t, "handleEvent")) { t.handleEvent(eventObj); }
+        }
+    }
+    onEvent(e) {
+        let lx = e.nx * this.lw; let ly = e.ny * this.lh;
+        let result = this.hitTestAt(lx, ly);
+        let ev = { type: e.type, dx: lx, dy: ly, key: e.key, deltaY: e.deltaY };
+        this.dispatchEvent(result, ev);
+        // A minimal tap recognizer: a press then release over the same listener
+        // (with an onTap) fires the tap.
+        if (e.type == "pointerdown") {
+            this.downTargets = [];
+            for (let i = 0; i < len(result.path); i++) { let t = result.path[i].target; if (has(t, "handlers")) { if (has(t.handlers, "onTap")) { push(this.downTargets, t); } } }
+        }
+        if (e.type == "pointerup") {
+            for (let i = 0; i < len(result.path); i++) {
+                let t = result.path[i].target;
+                if (has(t, "handlers")) { if (has(t.handlers, "onTap")) { if (this.inDownTargets(t)) { t.handlers.onTap(); } } }
+            }
+            this.downTargets = [];
+        }
+        // setState / pointer handlers may have dirtied the tree; produce a frame.
+        if (this._needsFrame > 0.5) { this.drawFrame(); }
+    }
+    inDownTargets(t) { for (let i = 0; i < len(this.downTargets); i++) { if (sameRef(this.downTargets[i], t)) { return true; } } return false; }
     onFrame(dt) {
         let moving = this.ticker.advance();
         if (moving > 0.5) { this.scheduleFrame(); }

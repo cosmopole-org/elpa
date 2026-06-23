@@ -65,6 +65,15 @@ class ListenerWidget extends SingleChildRenderObjectWidget {
     createRenderObject(context) { return new RenderPointerListener(this.handlers, this.behavior); }
     updateRenderObject(context, ro) { ro.handlers = this.handlers; ro.behavior = this.behavior; }
 }
+// GestureDetector: a Listener whose `onTap` is fired by the binding's tap
+// recognizer (press + release over the same detector). Defaults to opaque hit
+// behaviour so the whole area is tappable.
+class GestureDetectorWidget extends SingleChildRenderObjectWidget {
+    constructor(p) { super(p); this.handlers = p; this.behavior = "opaque"; if (has(p, "behavior")) { this.behavior = p.behavior; } }
+    typeName() { return "GestureDetector"; }
+    createRenderObject(context) { return new RenderPointerListener(this.handlers, this.behavior); }
+    updateRenderObject(context, ro) { ro.handlers = this.handlers; ro.behavior = this.behavior; }
+}
 
 // ------------------------------------------------------------ Text widget -----
 class TextWidget extends LeafRenderObjectWidget {
@@ -155,6 +164,7 @@ function Opacity(p) { return new OpacityWidget(p); }
 function Transform(p) { return new TransformWidget(p); }
 function ClipRRect(p) { return new ClipRRectWidget(p); }
 function Listener(p) { return new ListenerWidget(p); }
+function GestureDetector(p) { return new GestureDetectorWidget(p); }
 function Text(data, style) { return new TextWidget(data, style); }
 function Column(p) { let q = p; if (isNull(p)) { q = {}; } q.direction = "vertical"; return new FlexWidget(q); }
 function Row(p) { let q = p; if (isNull(p)) { q = {}; } q.direction = "horizontal"; return new FlexWidget(q); }
