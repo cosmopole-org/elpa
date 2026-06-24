@@ -85,6 +85,11 @@ jobs:
       - name: Install flutter_rust_bridge_codegen
         run: cargo install --locked flutter_rust_bridge_codegen --version "${FRB_VERSION}"
 
+      # cargo-ndk cross-compiles the bridge crate with the Android NDK toolchain
+      # and lays the resulting .so files out under jniLibs/<abi>/ for us.
+      - name: Install cargo-ndk
+        run: cargo install --locked cargo-ndk
+
       - name: Activate ffigen
         run: dart pub global activate ffigen
 
@@ -107,8 +112,24 @@ jobs:
 
           flutter pub get
 
-          # cargokit cross-compiles flutter/rust for each Android ABI as part of
-          # this build. Output: build/app/outputs/flutter-apk/app-release.apk.
+          # Cross-compile the Rust bridge crate for each Android ABI and drop the
+          # shared libraries into android/app/src/main/jniLibs/<abi>/, where Gradle
+          # bundles them into the APK automatically. This is the step that was
+          # missing: a plain `flutter create` does NOT add flutter_rust_bridge's
+          # cargokit build hooks (only `flutter_rust_bridge_codegen integrate`
+          # does), so without this no `libelpa_bridge.so` ships and the bridge's
+          # `init()` fails at launch — a blank screen. The lib name (`elpa_bridge`)
+          # matches the loader stem FRB derives from the crate's lib target.
+          #
+          # ABIs mirror the default `flutter build apk` fat-APK set (arm64-v8a,
+          # armeabi-v7a, x86_64); the `frb_generated.rs` enabled above is compiled
+          # in via the default `frb` feature.
+          ( cd rust && cargo ndk \
+              -t arm64-v8a -t armeabi-v7a -t x86_64 \
+              -o ../android/app/src/main/jniLibs \
+              build --release )
+
+          # Output: build/app/outputs/flutter-apk/app-release.apk.
           flutter build apk --release
 
       - name: Upload APK artifact
