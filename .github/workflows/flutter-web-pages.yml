@@ -153,6 +153,14 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    # Serialize deployments GLOBALLY (across all branches) and queue rather than
+    # cancel: there is a single `github-pages` environment, and two deploy jobs
+    # running at once make `actions/deploy-pages` 409-conflict and fail instantly
+    # (the 2-second, no-runner failure that kept this branch's fix from going
+    # live). Queuing lets each deploy complete; the last to run is what's served.
+    concurrency:
+      group: github-pages-deploy
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
