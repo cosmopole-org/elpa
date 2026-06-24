@@ -208,7 +208,7 @@ pub const BUILTINS: &[&str] = &[
     // foundation — object
     "keys", "values", "entries", "has", "get", "setKey", "delKey", "merge", "__setIndex",
     // foundation — array
-    "push", "pop", "shift", "unshift", "slice", "concat", "reverse", "contains", "indexOf",
+    "push", "emit", "pop", "shift", "unshift", "slice", "concat", "reverse", "contains", "indexOf",
     "join", "range", "first", "last", "sort", "fill",
     // foundation — string
     "upper", "lower", "trim", "split", "substring", "charAt", "replace", "repeat", "startsWith",
@@ -220,9 +220,16 @@ pub const BUILTINS: &[&str] = &[
     "cell", "cellGet", "cellSet",
 ];
 
+/// Set form of [`BUILTINS`] for O(1) membership tests. `is_builtin` is called on
+/// every identifier resolution that misses the scope chain — including the hot
+/// `push`/`len`/math builtins the renderer hammers each frame — so a linear scan
+/// of ~150 names showed up in frame profiles. Built once, then hashed.
+static BUILTIN_SET: once_cell::sync::Lazy<std::collections::HashSet<&'static str>> =
+    once_cell::sync::Lazy::new(|| BUILTINS.iter().copied().collect());
+
 /// Whether `name` resolves to a native builtin.
 pub fn is_builtin(name: &str) -> bool {
-    BUILTINS.contains(&name)
+    BUILTIN_SET.contains(name)
 }
 
 /// Invoke a builtin by name. Returns the result value or a guest-visible error
@@ -532,6 +539,23 @@ pub fn invoke(name: &str, args: &[Val]) -> Result<Val, String> {
             arity(name, args, 2)?;
             let a = expect_array(name, &args[0])?;
             a.borrow_mut().data.push(args[1].clone());
+            Ok(args[0].clone())
+        }
+        // Append every trailing argument to `args[0]` in one call. The renderer's
+        // hot path emits a fixed 24-float SDF instance per primitive; doing that as
+        // 24 separate `push` calls paid the VM's per-call dispatch (frame setup,
+        // arg-array build, native trampoline) 24 times per primitive. `emit` pays
+        // it once, appending the whole instance in a single native call — a large
+        // paint-throughput win with thousands of primitives per frame.
+        "emit" => {
+            at_least(name, args, 1)?;
+            let a = expect_array(name, &args[0])?;
+            let mut b = a.borrow_mut();
+            b.data.reserve(args.len() - 1);
+            for v in &args[1..] {
+                b.data.push(v.clone());
+            }
+            drop(b);
             Ok(args[0].clone())
         }
         "pop" => {

@@ -408,13 +408,14 @@ impl Operation for CallFunction {
                 self.param_count = 2;
                 self.is_native = true;
             } else if callee.typ == 252 {
-                // Native standard-library builtin. Its arity is the number of
-                // arguments the call site provides; we name the formal params
-                // `arg0..argN` so the generic "params filled" finish check fires.
+                // Native standard-library builtin. The finish check gates on the
+                // call-site argument count (`param_count`), and the builtin reads
+                // its arguments positionally from the provided-args array — the
+                // formal parameter *names* are never consulted. So we skip building
+                // the `arg0..argN` name list entirely (it allocated one `String`
+                // per argument on every native call, the hottest path in the VM).
                 let name = callee.as_string();
-                let provided = self.param_count;
-                let params: Vec<String> = (0..provided).map(|i| format!("arg{i}")).collect();
-                self.func = Some(Rc::new(RefCell::new(Function::new(name, 0, 0, params))));
+                self.func = Some(Rc::new(RefCell::new(Function::new(name, 0, 0, Vec::new()))));
                 self.is_native = true;
             } else {
                 panic!("elpian error: the specified data is not runnable");
@@ -4311,20 +4312,33 @@ impl Executor {
                             continue;
                         } else {
                             // A native call: either a standard-library builtin
-                            // (named function) or the `askHost` seam (unnamed).
-                            let builtin_name = regs[0].as_func().borrow().name.clone();
-                            if !builtin_name.is_empty() && stdlib::is_builtin(&builtin_name) {
-                                let provided = regs[3].as_array().borrow().data.clone();
-                                self.registers.pop();
-                                match stdlib::invoke(&builtin_name, &provided) {
+                            // (named function, typ 252) or the `askHost` seam
+                            // (unnamed, typ 255). The two construction sites are the
+                            // only producers of a native function value, so a
+                            // non-empty name unambiguously means "builtin" — no need
+                            // to re-scan the builtin table here (it ran already at
+                            // resolve time). We dispatch straight off the borrowed
+                            // name and the borrowed argument slice, cloning neither
+                            // the name `String` nor the argument `Vec` on this path.
+                            let func = regs[0].as_func();
+                            let is_builtin_call = !func.borrow().name.is_empty();
+                            if is_builtin_call {
+                                let func_ref = func.borrow();
+                                let arg_arr = regs[3].as_array();
+                                let arg_ref = arg_arr.borrow();
+                                let outcome = stdlib::invoke(&func_ref.name, &arg_ref.data);
+                                match outcome {
                                     Ok(result) => {
+                                        drop(arg_ref);
+                                        drop(func_ref);
+                                        self.registers.pop();
                                         let _ = self.governor.charge_memory(result.approx_size());
                                         main_reg = Some(result);
                                         is_reg_state_final = false;
                                         continue;
                                     }
                                     Err(e) => {
-                                        self.trap = Some(format!("{builtin_name}: {e}"));
+                                        self.trap = Some(format!("{}: {e}", func_ref.name));
                                         continue;
                                     }
                                 }

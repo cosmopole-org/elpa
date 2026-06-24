@@ -60,6 +60,12 @@ class WidgetsBinding {
         // Hit-test bookkeeping for gesture dispatch.
         this.downListeners = []; this.downTargets = [];
         this.downX = 0.0; this.downY = 0.0; this.dragDist = 0.0;
+        // The SDF pipeline descriptors (shader/layout/pipeline) are constant for
+        // the app's lifetime. Build the (sizeable) nested descriptor tree once and
+        // reuse it every frame instead of reconstructing ~20 objects per submit —
+        // the host caches GPU resources by id, so re-sending the identical tree is
+        // free, and the VM no longer rebuilds it on the hot frame path.
+        this._pipeRes = 0;
     }
 
     // Schedule a frame (Flutter's SchedulerBinding.scheduleFrame). The host pumps
@@ -128,7 +134,8 @@ class WidgetsBinding {
     submit(inst) {
         this.frameN = this.frameN + 1;
         let bg = this.clearColor;
-        let res = concat(concat(sdfPipelineResources(), this.font.atlasTexRes()), concat(this.frameBindings(), [
+        if (this._pipeRes == 0) { this._pipeRes = sdfPipelineResources(); }
+        let res = concat(concat(this._pipeRes, this.font.atlasTexRes()), concat(this.frameBindings(), [
             bufF32("elpa.fl.inst", ["VERTEX", "COPY_DST"], inst),
         ]));
         let pass = { op: "renderPass", id: "elpa.fl.pass",
