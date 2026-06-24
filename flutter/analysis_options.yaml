@@ -1,0 +1,11 @@
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  exclude:
+    # flutter_rust_bridge-generated bindings are a build artifact.
+    - lib/src/rust/**
+
+linter:
+  rules:
+    prefer_const_constructors: true
+    avoid_print: true
