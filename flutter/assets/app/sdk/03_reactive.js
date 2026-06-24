@@ -21,7 +21,7 @@
 /// implement `build()`.
 class Component extends Widget {
   constructor(scopeKey) {
-    super("Fragment");
+    super("Fragment", NIL);
     this.key = scopeKey;
     this.state = {};
     this._rev = 0;

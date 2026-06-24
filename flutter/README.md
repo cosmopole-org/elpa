@@ -118,7 +118,7 @@ It is a set of modules concatenated into one VM program (`lib/main.dart`
 |--------|------------------|
 | `00_core.js` | `Host` (typed `askHost` facade), `EventBus` (closures ⇄ wire handler ids), `BuildEnv`. |
 | `01_theme.js` | `Theme` — Telegram dark/light palettes, spacing, radii, typography, avatar colours. |
-| `02_widgets.js` | `Widget` base + fluent widget classes (Text, Column, Container, ListView, Button, Field, Avatar, …). |
+| `02_widgets.js` | `Widget` base + declarative widget classes (Text, Column, Container, ListView, Button, Field, Avatar, …) — each takes a config object with named props, `child`/`children` and inline `on*` handlers, like a Flutter widget tree. |
 | `03_reactive.js` | `Component` (isolated, self-patching render scope), `Signal`, `Store`. |
 | `04_timing.js` | `Scheduler` (host-frame-driven `setTimeout`/`setInterval`), `Animation`, easing. |
 | `05_graphics.js` | `Gpu`/`FrameBuilder` over the wgpu pipe, `Scene3D`/`Camera`/`Mesh`/`Material`, `Native3DView`. |

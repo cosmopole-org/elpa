@@ -246,11 +246,10 @@ class Scene3D {
 /// The native, wgpu-rendered Elpa widget: a zero-copy texture (native) or canvas
 /// (web) painted by Elpa's own renderer and composited inline by Flutter. A
 /// `Scene3D` renders into the surface this view is bound to.
+/// `new Native3DView({ textureId, canvasId, width, height })`
 class Native3DView extends Widget {
-  constructor() {
-    super("ElpaNative");
+  constructor(config) {
+    super("ElpaNative", config);
+    this._take(config, ["textureId", "canvasId", "width", "height"]);
   }
-  texture(id) { this._props.textureId = id; return this; }
-  canvas(id) { this._props.canvasId = id; return this; }
-  size(w, h) { this._props.width = w; this._props.height = h; return this; }
 }

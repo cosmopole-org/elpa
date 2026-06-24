@@ -3,8 +3,15 @@
 // -----------------------------------------------------------------------------
 // A realistic, Telegram-style messenger built entirely on the Elpa SDK (see
 // `assets/app/sdk/`). It runs on the Elpian VM and drives the Flutter UI through
-// the message pipe. It exercises every part of the SDK:
+// the message pipe. The UI is declared as a widget tree — the same shape as a
+// Flutter `build()` — using the SDK's declarative widgets:
 //
+//   new Scaffold({
+//     backgroundColor: c.background,
+//     body: new Column({ crossAxisAlignment: "stretch", children: [ ... ] }),
+//   })
+//
+// It exercises every part of the SDK:
 //   * Navigation  — a stack router: chat list -> chat -> back, list -> settings,
 //                   list -> contacts -> new chat.
 //   * Components  — isolated, repaint-scoped pieces (chat list, message list,
@@ -15,9 +22,6 @@
 //   * Widgets     — avatars, bubbles with read receipts, unread badges, a real
 //                   text composer, switches, dividers, scrolling lists.
 //   * Theme       — Telegram dark/light palettes, switchable live from Settings.
-//
-// The whole UI is authored as objects (`new Column([...])`), never hand-written
-// JSON — that is the point of the SDK.
 // =============================================================================
 
 var app = new App();
@@ -38,7 +42,6 @@ function clockLabel() {
 }
 function noop() {}
 
-function theme() { return app.theme; }
 function colors() { return app.theme.colors; }
 
 // ---- Data model -------------------------------------------------------------
@@ -129,19 +132,23 @@ function nextReply(chat) {
 }
 
 // =============================================================================
-// Reusable UI pieces
+// Reusable UI pieces — declared as widget trees
 // =============================================================================
 
 function unreadBadge(chat) {
   let c = colors();
   if (chat.unread <= 0) {
-    if (chat.pinned) return new Icon("pin").size(16).color(c.textMuted);
-    return new SizedBox(0, 0);
+    if (chat.pinned) return new Icon("pin", { size: 16, color: c.textMuted });
+    return new SizedBox({ width: 0, height: 0 });
   }
   let bg = chat.muted ? c.textMuted : c.unreadBadge;
-  return new Container(
-    new Center(new Text(str(chat.unread)).size(12).bold().color("#FFFFFF"))
-  ).height(20).pad({ left: 7, top: 0, right: 7, bottom: 0 }).color(bg).radius(10);
+  return new Container({
+    height: 20,
+    padding: { left: 7, top: 0, right: 7, bottom: 0 },
+    color: bg,
+    radius: 10,
+    child: new Center({ child: new Text(str(chat.unread), { size: 12, bold: true, color: "#FFFFFF" }) }),
+  });
 }
 
 // One row in the chat list: avatar, name (+ badges), preview, time, unread.
@@ -154,36 +161,51 @@ function chatRow(chat) {
   }
   if (chat.typing) previewText = "typing…";
 
-  let avatar = new Avatar(chat.name, 54);
-  if (chat.online) avatar.online(c.online);
-
   let titleChildren = [
-    new Flexible(new Text(chat.name).size(16).bold().color(c.textPrimary).oneLine()).flex(1),
+    new Flexible({ flex: 1, child: new Text(chat.name, { size: 16, bold: true, color: c.textPrimary, oneLine: true }) }),
   ];
-  if (chat.verified) push(titleChildren, new Padding({ left: 4, top: 0, right: 0, bottom: 0 }, new Icon("verified").size(16).color(c.primary)));
-  if (chat.muted) push(titleChildren, new Padding({ left: 4, top: 0, right: 0, bottom: 0 }, new Icon("mute").size(15).color(c.textMuted)));
-  push(titleChildren, new SizedBox(8, 0));
-  push(titleChildren, new Text(chat.timeLabel).size(12).color(c.textSecondary));
-  let titleRow = new Row(titleChildren).crossAxis("center");
+  if (chat.verified) {
+    push(titleChildren, new Padding({ padding: { left: 4, top: 0, right: 0, bottom: 0 }, child: new Icon("verified", { size: 16, color: c.primary }) }));
+  }
+  if (chat.muted) {
+    push(titleChildren, new Padding({ padding: { left: 4, top: 0, right: 0, bottom: 0 }, child: new Icon("mute", { size: 15, color: c.textMuted }) }));
+  }
+  push(titleChildren, new SizedBox({ width: 8 }));
+  push(titleChildren, new Text(chat.timeLabel, { size: 12, color: c.textSecondary }));
 
   let previewColor = chat.typing ? c.primary : c.textSecondary;
-  let subtitleRow = new Row([
-    new Flexible(new Text(previewText).size(14).color(previewColor).oneLine()).flex(1),
-    new SizedBox(8, 0),
-    unreadBadge(chat),
-  ]).crossAxis("center");
+  let textCol = new Column({
+    crossAxisAlignment: "start",
+    shrink: true,
+    children: [
+      new Row({ crossAxisAlignment: "center", children: titleChildren }),
+      new SizedBox({ height: 4 }),
+      new Row({
+        crossAxisAlignment: "center",
+        children: [
+          new Flexible({ flex: 1, child: new Text(previewText, { size: 14, color: previewColor, oneLine: true }) }),
+          new SizedBox({ width: 8 }),
+          unreadBadge(chat),
+        ],
+      }),
+    ],
+  });
 
-  let textCol = new Column([titleRow, new SizedBox(0, 4), subtitleRow]).crossAxis("start").shrink();
-
-  let row = new Row([
-    avatar,
-    new SizedBox(12, 0),
-    new Expanded(textCol),
-  ]).crossAxis("center");
-
-  return new Tappable(
-    new Container(new Padding({ left: 14, top: 8, right: 12, bottom: 8 }, row))
-  ).onTap(() => openChat(chat)).withKey("chatrow." + str(chat.id));
+  return new Tappable({
+    key: "chatrow." + str(chat.id),
+    onTap: () => openChat(chat),
+    child: new Container({
+      padding: { left: 14, top: 8, right: 12, bottom: 8 },
+      child: new Row({
+        crossAxisAlignment: "center",
+        children: [
+          new Avatar({ name: chat.name, diameter: 54, online: chat.online ? c.online : NIL }),
+          new SizedBox({ width: 12 }),
+          new Expanded({ child: textCol }),
+        ],
+      }),
+    }),
+  });
 }
 
 // A single chat bubble with timestamp and (for outgoing) read receipts.
@@ -193,72 +215,96 @@ function bubble(msg) {
   let bg = isMine ? c.bubbleOut : c.bubbleIn;
   let fg = isMine ? c.bubbleOutText : c.bubbleInText;
 
-  let metaChildren = [new Text(msg.timeLabel).size(11).color(isMine ? "#A8C7E8" : c.textSecondary)];
+  let metaChildren = [new Text(msg.timeLabel, { size: 11, color: isMine ? "#A8C7E8" : c.textSecondary })];
   if (isMine) {
     let isRead = msg.status === "read";
-    push(metaChildren, new SizedBox(4, 0));
-    push(metaChildren, new Icon(isRead ? "done_all" : "check").size(14).color(isRead ? "#5FD0F3" : "#A8C7E8"));
+    push(metaChildren, new SizedBox({ width: 4 }));
+    push(metaChildren, new Icon(isRead ? "done_all" : "check", { size: 14, color: isRead ? "#5FD0F3" : "#A8C7E8" }));
   }
-  let meta = new Row(metaChildren).shrink().crossAxis("center");
 
-  let body = new Column([
-    new Text(msg.text).size(15.5).color(fg),
-    new SizedBox(0, 3),
-    new Align("centerEnd", meta),
-  ]).crossAxis("start").shrink();
-
-  let box = new Container(new Padding({ left: 11, top: 7, right: 11, bottom: 6 }, body)).color(bg).radius(15);
+  let box = new Container({
+    color: bg,
+    radius: 15,
+    padding: { left: 11, top: 7, right: 11, bottom: 6 },
+    child: new Column({
+      crossAxisAlignment: "start",
+      shrink: true,
+      children: [
+        new Text(msg.text, { size: 15.5, color: fg }),
+        new SizedBox({ height: 3 }),
+        new Align({ alignment: "centerEnd", child: new Row({ shrink: true, crossAxisAlignment: "center", children: metaChildren }) }),
+      ],
+    }),
+  });
 
   // Cap the bubble width with a flex pair so long text wraps instead of spanning
   // the whole row; short bubbles shrink to fit.
   let line;
   if (isMine) {
-    line = new Row([new Spacer().flex(1), new Flexible(box).flex(5)]);
+    line = new Row({ children: [new Spacer({ flex: 1 }), new Flexible({ flex: 5, child: box })] });
   } else {
-    line = new Row([new Flexible(box).flex(5), new Spacer().flex(1)]);
+    line = new Row({ children: [new Flexible({ flex: 5, child: box }), new Spacer({ flex: 1 })] });
   }
-  return new Padding({ left: 8, top: 2, right: 8, bottom: 2 }, line);
+  return new Padding({ padding: { left: 8, top: 2, right: 8, bottom: 2 }, child: line });
 }
 
 function dateChip(label) {
-  let c = colors();
-  return new Center(
-    new Padding({ left: 0, top: 8, right: 0, bottom: 8 },
-      new Container(new Padding({ left: 12, top: 4, right: 12, bottom: 4 },
-        new Text(label).size(12).color("#FFFFFF"))
-      ).color("#22000000").radius(12))
-  );
+  return new Center({
+    child: new Padding({
+      padding: { left: 0, top: 8, right: 0, bottom: 8 },
+      child: new Container({
+        color: "#22000000",
+        radius: 12,
+        padding: { left: 12, top: 4, right: 12, bottom: 4 },
+        child: new Text(label, { size: 12, color: "#FFFFFF" }),
+      }),
+    }),
+  });
 }
 
 // A top app bar styled like Telegram's: a coloured bar that pads under the status
 // bar (SafeArea top) and lays its leading/title/actions out in a row.
 function appBar(children) {
   let c = colors();
-  return new Container(
-    new SafeArea(
-      new Padding({ left: 4, top: 4, right: 6, bottom: 6 },
-        new Row(children).crossAxis("center"))
-    ).edges(true, false, true, true)
-  ).color(c.appBar);
+  return new Container({
+    color: c.appBar,
+    child: new SafeArea({
+      top: true, bottom: false, left: true, right: true,
+      child: new Padding({
+        padding: { left: 4, top: 4, right: 6, bottom: 6 },
+        child: new Row({ crossAxisAlignment: "center", children: children }),
+      }),
+    }),
+  });
 }
 
 function settingsRow(iconName, label, trailing, onTap) {
   let c = colors();
-  let row = new Row([
-    new Icon(iconName).size(24).color(c.primary),
-    new SizedBox(18, 0),
-    new Expanded(new Text(label).size(16).color(c.textPrimary)),
-    isNull(trailing) ? new SizedBox(0, 0) : trailing,
-  ]).crossAxis("center");
-  let content = new Container(new Padding({ left: 16, top: 14, right: 16, bottom: 14 }, row));
+  let row = new Row({
+    crossAxisAlignment: "center",
+    children: [
+      new Icon(iconName, { size: 24, color: c.primary }),
+      new SizedBox({ width: 18 }),
+      new Expanded({ child: new Text(label, { size: 16, color: c.textPrimary }) }),
+      isNull(trailing) ? new SizedBox({ width: 0, height: 0 }) : trailing,
+    ],
+  });
+  let content = new Container({ padding: { left: 16, top: 14, right: 16, bottom: 14 }, child: row });
   if (isNull(onTap)) return content;
-  return new Tappable(content).onTap(onTap).withKey("set." + label);
+  return new Tappable({ key: "set." + label, onTap: onTap, child: content });
 }
 
 function sectionLabel(text) {
   let c = colors();
-  return new Container(new Padding({ left: 16, top: 14, right: 16, bottom: 6 },
-    new Text(upper(text)).size(13).bold().color(c.primary))).color(c.surface);
+  return new Container({
+    color: c.surface,
+    padding: { left: 16, top: 14, right: 16, bottom: 6 },
+    child: new Text(upper(text), { size: 13, bold: true, color: c.primary }),
+  });
+}
+
+function settingsDivider() {
+  return new Divider({ height: 0.5, color: colors().divider, indent: 58 });
 }
 
 // =============================================================================
@@ -272,9 +318,9 @@ class ChatListBody extends Component {
     let rows = [];
     for (let i = 0; i < len(DATA.chats); i++) {
       push(rows, chatRow(DATA.chats[i]));
-      push(rows, new Divider().height(0.5).color(colors().divider).indent(80));
+      push(rows, new Divider({ height: 0.5, color: colors().divider, indent: 80 }));
     }
-    return new Container(new ListView(rows)).color(colors().surface);
+    return new Container({ color: colors().surface, child: new ListView({ children: rows }) });
   }
 }
 
@@ -289,8 +335,8 @@ class MessageList extends Component {
     for (let i = 0; i < len(this.chat.messages); i++) {
       push(items, bubble(this.chat.messages[i]));
     }
-    push(items, new SizedBox(0, 8));
-    return new ListView(items).pad({ left: 0, top: 6, right: 0, bottom: 6 });
+    push(items, new SizedBox({ height: 8 }));
+    return new ListView({ padding: { left: 0, top: 6, right: 0, bottom: 6 }, children: items });
   }
 }
 
@@ -313,14 +359,18 @@ class ChatStatus extends Component {
   build() {
     let c = colors();
     let isActive = this.chat.typing || this.chat.online;
-    return new Column([
-      new Text(this.chat.name).size(16).bold().color(c.textPrimary),
-      new Text(this.statusText()).size(13).color(isActive ? c.primary : c.textSecondary),
-    ]).crossAxis("start").shrink();
+    return new Column({
+      crossAxisAlignment: "start",
+      shrink: true,
+      children: [
+        new Text(this.chat.name, { size: 16, bold: true, color: c.textPrimary }),
+        new Text(this.statusText(), { size: 13, color: isActive ? c.primary : c.textSecondary }),
+      ],
+    });
   }
 }
 
-/// The message composer: attach, text field, emoji, and a send/mic button.
+/// The message composer: attach, text field, emoji, and a send button.
 class Composer extends Component {
   constructor(page) {
     super("scope.composer");
@@ -337,37 +387,49 @@ class Composer extends Component {
   }
   build() {
     let c = colors();
-    let field = new Field()
-      .hint("Message")
-      .radius(22)
-      .fill(c.inputBg)
-      .textColor(c.textPrimary)
-      .hintColor(c.textSecondary)
-      .multiline(1, 5)
-      .clearOnSubmit()
-      .clearNonce(this.state.clearNonce)
-      .onChanged((p) => { this.state.text = p.value; })
-      .onSubmitted((p) => { this.page.sendMessage(p.value); })
-      .withKey("composer.field");
+    let field = new Field({
+      key: "composer.field",
+      hint: "Message",
+      radius: 22,
+      fillColor: c.inputBg,
+      textColor: c.textPrimary,
+      hintColor: c.textSecondary,
+      minLines: 1,
+      maxLines: 5,
+      clearOnSubmit: true,
+      clearNonce: this.state.clearNonce,
+      onChanged: (p) => { this.state.text = p.value; },
+      onSubmitted: (p) => { this.page.sendMessage(p.value); },
+    });
 
-    let sendButton = new Tappable(
-      new Container(new Center(new Icon("send").size(20).color("#FFFFFF")))
-        .size(46, 46).color(c.primary).radius(23)
-    ).onTap(() => this.doSend()).withKey("composer.send");
+    let sendButton = new Tappable({
+      key: "composer.send",
+      onTap: () => this.doSend(),
+      child: new Container({
+        width: 46, height: 46, color: c.primary, radius: 23,
+        child: new Center({ child: new Icon("send", { size: 20, color: "#FFFFFF" }) }),
+      }),
+    });
 
-    let bar = new Row([
-      new IconButton("attach").color(c.textSecondary).size(24).onTap(noop).withKey("composer.attach"),
-      new Expanded(field),
-      new IconButton("emoji").color(c.textSecondary).size(24).onTap(noop).withKey("composer.emoji"),
-      new SizedBox(4, 0),
-      sendButton,
-    ]).crossAxis("center");
-
-    return new Container(
-      new SafeArea(
-        new Padding({ left: 6, top: 6, right: 8, bottom: 6 }, bar)
-      ).edges(false, true, true, true)
-    ).color(c.surface);
+    return new Container({
+      color: c.surface,
+      child: new SafeArea({
+        top: false, bottom: true, left: true, right: true,
+        child: new Padding({
+          padding: { left: 6, top: 6, right: 8, bottom: 6 },
+          child: new Row({
+            crossAxisAlignment: "center",
+            children: [
+              new IconButton({ key: "composer.attach", icon: "attach", color: c.textSecondary, size: 24, onTap: noop }),
+              new Expanded({ child: field }),
+              new IconButton({ key: "composer.emoji", icon: "emoji", color: c.textSecondary, size: 24, onTap: noop }),
+              new SizedBox({ width: 4 }),
+              sendButton,
+            ],
+          }),
+        }),
+      }),
+    });
   }
 }
 
@@ -404,22 +466,30 @@ class ChatListPage extends Page {
   build() {
     let c = colors();
     let bar = appBar([
-      new IconButton("menu").color("#FFFFFF").size(24).onTap(() => openSettings()).withKey("ab.menu"),
-      new SizedBox(8, 0),
-      new Expanded(new Text("Telegram").size(20).bold().color("#FFFFFF")),
-      new IconButton("search").color("#FFFFFF").size(24).onTap(noop).withKey("ab.search"),
-      new IconButton("more").color("#FFFFFF").size(24).onTap(noop).withKey("ab.more"),
+      new IconButton({ key: "ab.menu", icon: "menu", color: "#FFFFFF", size: 24, onTap: () => openSettings() }),
+      new SizedBox({ width: 8 }),
+      new Expanded({ child: new Text("Telegram", { size: 20, bold: true, color: "#FFFFFF" }) }),
+      new IconButton({ key: "ab.search", icon: "search", color: "#FFFFFF", size: 24, onTap: noop }),
+      new IconButton({ key: "ab.more", icon: "more", color: "#FFFFFF", size: 24, onTap: noop }),
     ]);
 
-    let fab = new Tappable(
-      new Container(new Center(new Icon("new_chat").size(24).color("#FFFFFF")))
-        .size(56, 56).color(c.primary).radius(28)
-    ).onTap(() => openContacts()).withKey("fab.compose");
+    let fab = new Tappable({
+      key: "fab.compose",
+      onTap: () => openContacts(),
+      child: new Container({
+        width: 56, height: 56, color: c.primary, radius: 28,
+        child: new Center({ child: new Icon("new_chat", { size: 24, color: "#FFFFFF" }) }),
+      }),
+    });
 
-    return new Scaffold()
-      .background(c.background)
-      .body(new Column([bar, new Expanded(this.body)]).crossAxis("stretch"))
-      .fab(fab);
+    return new Scaffold({
+      backgroundColor: c.background,
+      fab: fab,
+      body: new Column({
+        crossAxisAlignment: "stretch",
+        children: [bar, new Expanded({ child: this.body })],
+      }),
+    });
   }
 }
 
@@ -471,26 +541,27 @@ class ChatPage extends Page {
   }
   build() {
     let c = colors();
-    let avatar = new Avatar(this.chat.name, 38);
-    if (this.chat.online) avatar.online(c.online);
-
     let bar = appBar([
-      new IconButton("back").color("#FFFFFF").size(24).onTap(() => goBack()).withKey("chat.back"),
-      new SizedBox(2, 0),
-      avatar,
-      new SizedBox(10, 0),
-      new Expanded(this.status),
-      new IconButton("call").color("#FFFFFF").size(22).onTap(noop).withKey("chat.call"),
-      new IconButton("more").color("#FFFFFF").size(24).onTap(noop).withKey("chat.more"),
+      new IconButton({ key: "chat.back", icon: "back", color: "#FFFFFF", size: 24, onTap: () => goBack() }),
+      new SizedBox({ width: 2 }),
+      new Avatar({ name: this.chat.name, diameter: 38, online: this.chat.online ? c.online : NIL }),
+      new SizedBox({ width: 10 }),
+      new Expanded({ child: this.status }),
+      new IconButton({ key: "chat.call", icon: "call", color: "#FFFFFF", size: 22, onTap: noop }),
+      new IconButton({ key: "chat.more", icon: "more", color: "#FFFFFF", size: 24, onTap: noop }),
     ]);
 
-    return new Scaffold()
-      .background(c.background)
-      .body(new Column([
-        bar,
-        new Expanded(new Container(this.messages).color(c.background)),
-        this.composer,
-      ]).crossAxis("stretch"));
+    return new Scaffold({
+      backgroundColor: c.background,
+      body: new Column({
+        crossAxisAlignment: "stretch",
+        children: [
+          bar,
+          new Expanded({ child: new Container({ color: c.background, child: this.messages }) }),
+          this.composer,
+        ],
+      }),
+    });
   }
 }
 
@@ -498,58 +569,86 @@ class SettingsPage extends Page {
   constructor() { super("Settings"); }
   build() {
     let c = colors();
-    let header = new Container(
-      new SafeArea(
-        new Padding({ left: 16, top: 10, right: 16, bottom: 18 },
-          new Column([
-            new Row([
-              new IconButton("back").color("#FFFFFF").size(24).onTap(() => goBack()).withKey("set.back"),
-              new Expanded(new Text("Settings").size(20).bold().color("#FFFFFF")),
-              new IconButton("edit").color("#FFFFFF").size(22).onTap(noop).withKey("set.edit"),
-            ]).crossAxis("center"),
-            new SizedBox(0, 16),
-            new Row([
-              new Avatar(DATA.me.name, 72),
-              new SizedBox(16, 0),
-              new Column([
-                new Text(DATA.me.name).size(22).bold().color("#FFFFFF"),
-                new SizedBox(0, 4),
-                new Text(DATA.me.phone + "  ·  " + DATA.me.username).size(14).color("#CFE2F3"),
-              ]).crossAxis("start").shrink(),
-            ]).crossAxis("center"),
-          ]).crossAxis("start").shrink())
-      ).edges(true, false, true, true)
-    ).color(c.appBar);
+    let header = new Container({
+      color: c.appBar,
+      child: new SafeArea({
+        top: true, bottom: false, left: true, right: true,
+        child: new Padding({
+          padding: { left: 16, top: 10, right: 16, bottom: 18 },
+          child: new Column({
+            crossAxisAlignment: "start",
+            shrink: true,
+            children: [
+              new Row({
+                crossAxisAlignment: "center",
+                children: [
+                  new IconButton({ key: "set.back", icon: "back", color: "#FFFFFF", size: 24, onTap: () => goBack() }),
+                  new Expanded({ child: new Text("Settings", { size: 20, bold: true, color: "#FFFFFF" }) }),
+                  new IconButton({ key: "set.edit", icon: "edit", color: "#FFFFFF", size: 22, onTap: noop }),
+                ],
+              }),
+              new SizedBox({ height: 16 }),
+              new Row({
+                crossAxisAlignment: "center",
+                children: [
+                  new Avatar({ name: DATA.me.name, diameter: 72 }),
+                  new SizedBox({ width: 16 }),
+                  new Column({
+                    crossAxisAlignment: "start",
+                    shrink: true,
+                    children: [
+                      new Text(DATA.me.name, { size: 22, bold: true, color: "#FFFFFF" }),
+                      new SizedBox({ height: 4 }),
+                      new Text(DATA.me.phone + "  ·  " + DATA.me.username, { size: 14, color: "#CFE2F3" }),
+                    ],
+                  }),
+                ],
+              }),
+            ],
+          }),
+        }),
+      }),
+    });
 
-    let notifSwitch = new Switcher(DATA.notificationsOn)
-      .onChanged((p) => { DATA.notificationsOn = p.value; app.render(); })
-      .withKey("set.notifswitch");
+    let notifSwitch = new Switcher({
+      key: "set.notifswitch",
+      value: DATA.notificationsOn,
+      onChanged: (p) => { DATA.notificationsOn = p.value; app.render(); },
+    });
+    let themeSwitch = new Switcher({
+      key: "set.themeswitch",
+      value: THEME_MODE === "dark",
+      onChanged: (p) => { toggleTheme(p.value); },
+    });
 
-    let themeSwitch = new Switcher(THEME_MODE === "dark")
-      .onChanged((p) => { toggleTheme(p.value); })
-      .withKey("set.themeswitch");
+    let list = new Column({
+      crossAxisAlignment: "stretch",
+      shrink: true,
+      children: [
+        sectionLabel("Account"),
+        settingsRow("key", "Privacy and Security", NIL, noop),
+        settingsDivider(),
+        settingsRow("storage", "Data and Storage", NIL, noop),
+        settingsDivider(),
+        sectionLabel("Preferences"),
+        settingsRow("notifications", "Notifications", notifSwitch, NIL),
+        settingsDivider(),
+        settingsRow("palette", "Dark theme", themeSwitch, NIL),
+        settingsDivider(),
+        settingsRow("language", "Language", new Text("English", { size: 15, color: c.textSecondary }), noop),
+        settingsDivider(),
+        sectionLabel("More"),
+        settingsRow("help", "Help", NIL, noop),
+        settingsRow("logout", "Log Out", NIL, noop),
+      ],
+    });
 
-    let list = new Column([
-      sectionLabel("Account"),
-      settingsRow("key", "Privacy and Security", NIL, noop),
-      new Divider().height(0.5).color(c.divider).indent(58),
-      settingsRow("storage", "Data and Storage", NIL, noop),
-      new Divider().height(0.5).color(c.divider).indent(58),
-      sectionLabel("Preferences"),
-      settingsRow("notifications", "Notifications", notifSwitch, NIL),
-      new Divider().height(0.5).color(c.divider).indent(58),
-      settingsRow("palette", "Dark theme", themeSwitch, NIL),
-      new Divider().height(0.5).color(c.divider).indent(58),
-      settingsRow("language", "Language", new Text("English").size(15).color(c.textSecondary), noop),
-      new Divider().height(0.5).color(c.divider).indent(58),
-      sectionLabel("More"),
-      settingsRow("help", "Help", NIL, noop),
-      settingsRow("logout", "Log Out", NIL, noop),
-    ]).crossAxis("stretch").shrink();
-
-    return new Scaffold()
-      .background(c.surface)
-      .body(new ScrollView(new Column([header, list]).crossAxis("stretch").shrink()));
+    return new Scaffold({
+      backgroundColor: c.surface,
+      body: new ScrollView({
+        child: new Column({ crossAxisAlignment: "stretch", shrink: true, children: [header, list] }),
+      }),
+    });
   }
 }
 
@@ -558,32 +657,48 @@ class ContactsPage extends Page {
   build() {
     let c = colors();
     let bar = appBar([
-      new IconButton("back").color("#FFFFFF").size(24).onTap(() => goBack()).withKey("ct.back"),
-      new SizedBox(8, 0),
-      new Expanded(new Text("New Message").size(19).bold().color("#FFFFFF")),
-      new IconButton("search").color("#FFFFFF").size(24).onTap(noop).withKey("ct.search"),
+      new IconButton({ key: "ct.back", icon: "back", color: "#FFFFFF", size: 24, onTap: () => goBack() }),
+      new SizedBox({ width: 8 }),
+      new Expanded({ child: new Text("New Message", { size: 19, bold: true, color: "#FFFFFF" }) }),
+      new IconButton({ key: "ct.search", icon: "search", color: "#FFFFFF", size: 24, onTap: noop }),
     ]);
     let rows = [];
     for (let i = 0; i < len(DATA.chats); i++) {
       let chat = DATA.chats[i];
       let presence = chat.online ? "online" : "last seen recently";
-      let tile = new Tappable(
-        new Container(new Padding({ left: 14, top: 8, right: 14, bottom: 8 },
-          new Row([
-            new Avatar(chat.name, 48),
-            new SizedBox(14, 0),
-            new Expanded(new Column([
-              new Text(chat.name).size(16).color(c.textPrimary),
-              new SizedBox(0, 2),
-              new Text(presence).size(13).color(chat.online ? c.primary : c.textSecondary),
-            ]).crossAxis("start").shrink()),
-          ]).crossAxis("center")))
-      ).onTap(() => { goBack(); openChat(chat); }).withKey("ct." + str(chat.id));
-      push(rows, tile);
+      push(rows, new Tappable({
+        key: "ct." + str(chat.id),
+        onTap: () => { goBack(); openChat(chat); },
+        child: new Container({
+          padding: { left: 14, top: 8, right: 14, bottom: 8 },
+          child: new Row({
+            crossAxisAlignment: "center",
+            children: [
+              new Avatar({ name: chat.name, diameter: 48 }),
+              new SizedBox({ width: 14 }),
+              new Expanded({
+                child: new Column({
+                  crossAxisAlignment: "start",
+                  shrink: true,
+                  children: [
+                    new Text(chat.name, { size: 16, color: c.textPrimary }),
+                    new SizedBox({ height: 2 }),
+                    new Text(presence, { size: 13, color: chat.online ? c.primary : c.textSecondary }),
+                  ],
+                }),
+              }),
+            ],
+          }),
+        }),
+      }));
     }
-    return new Scaffold()
-      .background(c.surface)
-      .body(new Column([bar, new Expanded(new Container(new ListView(rows)).color(c.surface))]).crossAxis("stretch"));
+    return new Scaffold({
+      backgroundColor: c.surface,
+      body: new Column({
+        crossAxisAlignment: "stretch",
+        children: [bar, new Expanded({ child: new Container({ color: c.surface, child: new ListView({ children: rows }) }) })],
+      }),
+    });
   }
 }
 
