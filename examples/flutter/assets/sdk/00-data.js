@@ -111,6 +111,18 @@ fn sd_round_box(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
     return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0, 0.0))) - r;
 }
 
+// Flutter authors colours in the sRGB space (e.g. 0x2196F3). The swapchain is an
+// sRGB target, so the GPU applies the linear->sRGB encode on write; we must hand
+// it *linear* values. Decode each channel back to linear here so the encode lands
+// the pixel on the exact sRGB byte the colour asked for — otherwise mid-tones get
+// lifted toward white and the whole UI reads pale/foggy. Blending then also runs
+// in linear space, which is what makes the colours read vivid and alive.
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let lo = c / 12.92;
+    let hi = pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+    return select(hi, lo, c <= vec3<f32>(0.04045));
+}
+
 @fragment
 fn fs(o: Out) -> @location(0) vec4<f32> {
     let tex = textureSample(atlas, samp, o.uv).r;
@@ -136,7 +148,7 @@ fn fs(o: Out) -> @location(0) vec4<f32> {
         let ccov = clamp(0.5 - cd, 0.0, 1.0);
         outc = vec4<f32>(outc.rgb, outc.a * ccov);
     }
-    return outc;
+    return vec4<f32>(srgb_to_linear(outc.rgb), outc.a);
 }
 ";
 
