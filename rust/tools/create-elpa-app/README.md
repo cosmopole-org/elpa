@@ -1,25 +1,29 @@
 # create-elpa-app
 
-A command-line scaffolder for new **Elpa** applications. It generates a complete,
-self-contained project from one of three templates, vendoring the live Elpa
-engine sources out of this repository so the generated project builds on its own.
+A command-line scaffolder for new **Elpa** applications, written in Rust and part
+of the workspace. It generates a complete, self-contained project from one of
+three templates, vendoring the live Elpa engine sources out of this repository so
+the generated project builds on its own.
 
 ## Usage
 
+Run it through Cargo from anywhere in the workspace:
+
 ```bash
 # Interactive (prompts for a name and a template):
-node tools/create-elpa-app/create-elpa-app.mjs
+cargo run -p create-elpa-app
 
 # Direct:
-node tools/create-elpa-app/create-elpa-app.mjs my-app --template wgpu
-node tools/create-elpa-app/create-elpa-app.mjs my-app -t flutter --dir ./out/my-app
+cargo run -p create-elpa-app -- my-app --template wgpu
+cargo run -p create-elpa-app -- my-app -t flutter --dir ./out/my-app
 ```
 
-Or install the `create-elpa-app` bin (from this directory) and run it by name:
+(Everything after `--` is passed to the tool.) Or build it once and call the
+binary directly:
 
 ```bash
-cd tools/create-elpa-app && npm link
-create-elpa-app my-app -t wgpu-flutter
+cargo build -p create-elpa-app --release
+./target/release/create-elpa-app my-app -t wgpu-flutter
 ```
 
 ### Options
@@ -38,7 +42,10 @@ create-elpa-app my-app -t wgpu-flutter
 ### `wgpu` — pure Elpa/JS on wgpu
 A JavaScript Elpa app that runs directly on the Elpian VM and renders through
 wgpu, hosted in a native `winit` window. Ships the **Game3D** and **Material**
-SDKs; the demo combines a **3D game scene** with a **2D UI overlay**.
+SDKs; the demo has **Game3D own the wgpu surface** and render a **3D game scene**,
+then composite a **Material-styled 2D HUD over it in the same frame** (a second,
+depth-less pass that loads the 3D image and alpha-blends the panels — no second
+clear).
 
 ```
 cd <project>/app && cargo run --release
@@ -67,7 +74,7 @@ Each generated project has its own `README.md` with the full walkthrough.
 
 ## How it works
 
-The CLI is a zero-dependency Node script (`create-elpa-app.mjs`). The
+The tool is a zero-dependency Rust binary (`src/main.rs`, pure `std`). The
 `templates/` directory holds only the per-project skeleton files (with
 `__APP_NAME__` / `__APP_SNAKE__` / `__APP_TITLE__` tokens); the live engine, SDK,
 and Flutter sources are copied from the repository at generation time, so

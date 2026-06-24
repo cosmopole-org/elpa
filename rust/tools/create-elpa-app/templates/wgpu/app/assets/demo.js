@@ -1,13 +1,35 @@
-// __APP_TITLE__ — Elpa wgpu demo: a 3D scene with a 2D UI overlay.
+// __APP_TITLE__ — Elpa wgpu demo: a 3D game scene with a Material-styled 2D UI.
 //
 // This program is authored against the Game3D SDK (concatenated ahead of it by
-// build.rs). It builds a small lit 3D scene — a ground disc and a ring of
-// orbiting, spinning primitives — and a 2D heads-up UI (the SDK's overlay
-// panels: live read-outs and buttons) composited on top. Drag to orbit the
-// camera, scroll to zoom; the buttons drive the simulation.
+// build.rs). Game3D owns the wgpu surface and renders a small lit 3D scene — a
+// ground disc and a ring of orbiting, spinning primitives. Its renderer then
+// composites a **2D UI overlay into the same frame**: a second, depth-less pass
+// that `load`s the 3D image (no second clear) and alpha-blends the HUD panels on
+// top. The panels here are restyled with a **Material Design 3 palette** so the
+// 2D layer reads as Material chrome over the 3D game scene. Drag to orbit, scroll
+// to zoom; the buttons drive the simulation.
 //
-// The Material SDK is also vendored (../assets/sdk/material) if you'd rather
-// build a pure 2D Elpa app; see the project README.
+// The Material Design 3 SDK is also vendored (../assets/sdk/material) for richer
+// M3 widgets / a pure-2D Material app; see the project README.
+
+// ---- Material Design 3 palette for the composited 2D HUD ---------------------
+// The Game3D overlay exposes its shared colours as `overlay().theme`; overriding
+// it restyles every panel. These are M3 (dark) roles: surface, primary, outline,
+// on-surface, surface-variant — so the HUD is a Material-styled 2D layer drawn
+// over the 3D scene.
+overlay().theme = {
+    body:      [0.11, 0.106, 0.122, 0.92],  // M3 surface
+    title:     [0.404, 0.314, 0.643, 0.98], // M3 primary (#6750A4)
+    titleIdle: [0.18, 0.16, 0.26, 0.94],    // dimmed primary
+    border:    [0.576, 0.561, 0.60, 0.40],  // M3 outline
+    text:      [0.902, 0.882, 0.898, 1.0],  // M3 on-surface
+    dim:       [0.79, 0.77, 0.81, 1.0],     // M3 on-surface-variant
+    track:     [0.286, 0.271, 0.31, 1.0],   // M3 surface-variant
+    button:    [0.404, 0.314, 0.643, 0.98], // M3 primary (filled button)
+    grip:      [0.816, 0.737, 1.0, 0.90],   // M3 primary container accent
+};
+// M3 primary, reused for the gauges.
+let M3_PRIMARY = [0.816, 0.737, 1.0, 1.0];
 
 // ---- live simulation state, shared by the update loop and the UI buttons -----
 let sim = { fps: 60.0, paused: 0.0, spin: 1.0, hue: 0.0 };
@@ -66,13 +88,14 @@ useScene(scene);
 // A turntable camera rig: drag to orbit, wheel/pinch to zoom.
 enableOrbit({ target: v3(0.0, 0.0, 0.0), distance: 12.0, minDistance: 5.0, maxDistance: 24.0, yaw: 0.7, pitch: 0.45 });
 
-// ---- the 2D UI overlay -------------------------------------------------------
-// Floating panels with live read-outs and buttons, drawn over the 3D scene.
+// ---- the 2D UI overlay (Material-styled) -------------------------------------
+// Floating Material panels with live read-outs and buttons, composited over the
+// 3D scene in the renderer's second (alpha-blended) pass.
 addPanel({ id: "stats", title: "__APP_TITLE__", x: 16.0, y: 16.0, w: 220.0 })
     .label((g) => { return concat("FPS     ", str(floor(sim.fps))); })
     .label((g) => { return concat("BODIES  ", str(BODIES)); })
     .label((g) => { return concat("CLOCK   ", concat(str(floor(g.time)), "S")); })
-    .bar("SPIN", (g) => { return sim.spin; }, [0.45, 0.78, 1.0, 1.0]);
+    .bar("SPIN", (g) => { return sim.spin; }, M3_PRIMARY);
 
 addPanel({ id: "controls", title: "CONTROLS", x: 16.0, y: 168.0, w: 220.0 })
     .button("PAUSE / RESUME", (g) => { if (sim.paused > 0.5) { sim.paused = 0.0; } else { sim.paused = 1.0; } })

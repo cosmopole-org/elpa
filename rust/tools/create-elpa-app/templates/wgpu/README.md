@@ -27,24 +27,35 @@ A window opens with the scene. **Drag** to orbit the camera, **scroll** to zoom,
 and use the overlay buttons to pause, change the spin speed, or recolor the
 bodies.
 
-## How the demo is composed
+## How the demo is composed (2D over 3D, one frame)
 
 `app/assets/demo.js` is authored against the **Game3D SDK**: it builds a `Scene`
 (a ground disc, a ring of orbiting cubes and spheres, a centre pillar), adds two
 directional lights, attaches a turntable camera with `enableOrbit`, and registers
-an `onUpdate` callback that spins the ring every frame. The **2D UI** is the
-SDK's overlay — floating panels (`addPanel(...).label(...).bar(...).button(...)`)
-that draw live read-outs and interactive buttons on top of the 3D scene.
+an `onUpdate` callback that spins the ring every frame.
 
-### About combining Material 2D widgets with Game3D
+**Game3D owns the wgpu surface.** Its renderer draws the 3D scene into the surface
+pass (which clears), then composites the **2D UI in the *same* `gpu.submit`** — a
+second, depth-less pass that `load`s the 3D image (no second clear) and
+alpha-blends the HUD panels on top. So the 2D and 3D layers are one frame, in
+order: 3D pass → 2D pass.
 
-Both SDKs are vendored under `app/assets/sdk/`. The demo drives **Game3D**, whose
-own overlay provides the 2D UI layer, because each SDK owns the wgpu surface and
-defines the same VM lifecycle hooks (`onFrame`/`onResize`/`onEvent`) — so they
-cannot simply be concatenated into one program. To build a **pure 2D** Material
-app instead, point `build.rs` at `assets/sdk/material/` and write a `demo.js`
-that calls `runApp(...)` with a Material widget tree. The Game3D overlay is the
-ready-made path for 2D UI over a 3D scene.
+The HUD is **Material-styled**: the demo overrides `overlay().theme` with a
+Material Design 3 palette (surface, primary, outline, on-surface, surface-variant
+roles), so the floating panels —
+`addPanel(...).label(...).bar(...).button(...)` — read as Material chrome over
+the 3D game scene.
+
+### Going further with the Material SDK
+
+Both SDKs are vendored under `app/assets/sdk/`. The composited 2D layer is the
+Game3D overlay restyled to Material; to author a **pure 2D** app with the full M3
+widget catalog (`Scaffold`, `AppBar`, `TextField`, charts, …), point `build.rs`
+at `assets/sdk/material/` and write a `demo.js` that calls `runApp(...)` with a
+Material widget tree. (The two SDKs can't be concatenated into one program —
+they collide on lifecycle hooks and class names and each wants to own the
+surface — so a single VM runs one of them; here Game3D owns the surface and
+provides the composited 2D layer.)
 
 ## Editing the app
 
