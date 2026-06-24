@@ -1,0 +1,132 @@
+name: Build Flutter demo APK
+
+# Builds the **Flutter** app (the `flutter/` project: Elpa + flutter_rust_bridge +
+# Flutter, whose demo Elpa program is `flutter/assets/app/main.js`) into a release
+# Android APK, uploads it as a workflow artifact, and commits + pushes the APK to
+# the repository root as `elpa-flutter-demo.apk`.
+#
+# flutter_rust_bridge's cargokit Gradle hooks cross-compile the Rust bridge crate
+# (`flutter/rust`) for the Android ABIs automatically during `flutter build apk`,
+# so all this job adds on top of a normal Flutter Android build is the Rust
+# toolchain + Android targets and the FRB codegen step. The release build is
+# signed with the default debug key (the Flutter template's release buildType
+# falls back to it), which is enough for an installable demo APK without
+# committing any signing secrets.
+#
+# The platform runner folders (`android/`) and the FRB-generated bindings are NOT
+# committed (see flutter/.gitignore); they are regenerated on every run, mirroring
+# the manual setup documented in flutter/README.md.
+#
+# Run it from the GitHub UI (Actions → "Build Flutter demo APK" → "Run workflow")
+# or on demand; it also runs on pushes that touch the Flutter project.
+
+on:
+  push:
+    branches:
+      - main
+      - "claude/**"
+    paths:
+      - "flutter/**"
+      - ".github/workflows/flutter-android-apk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write # the job pushes the built APK back to the repo
+
+# One in-flight run per ref; a newer run supersedes an older one.
+concurrency:
+  group: build-flutter-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep the codegen tool in lock-step with the `flutter_rust_bridge` crate
+  # version pinned in flutter/rust/Cargo.lock.
+  FRB_VERSION: "2.12.0"
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      # Check out the branch (not a detached SHA) so we can push the APK back.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK + NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Rust + Android targets
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add \
+            aarch64-linux-android \
+            armv7-linux-androideabi \
+            x86_64-linux-android \
+            i686-linux-android
+
+      # The Flutter Rust bridge crate lives one level down (flutter/rust) and is
+      # excluded from the outer Cargo workspace, so it keeps its own target dir.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: flutter/rust -> target
+
+      - name: Install flutter_rust_bridge_codegen
+        run: cargo install --locked flutter_rust_bridge_codegen --version "${FRB_VERSION}"
+
+      - name: Activate ffigen
+        run: dart pub global activate ffigen
+
+      - name: Build APK
+        working-directory: flutter
+        run: |
+          set -euo pipefail
+          # Materialize the Android platform runner (gitignored; recreated each run).
+          flutter create . --platforms=android --project-name elpa_app
+
+          # Generate the Dart bindings + rust/src/frb_generated.rs from the
+          # #[frb]-annotated Rust under flutter/rust/src/api.
+          flutter_rust_bridge_codegen generate
+
+          # Enable the generated glue module (committed out as a build artifact).
+          sed -i \
+            -e 's|^// #\[cfg(feature = "frb")\]$|#[cfg(feature = "frb")]|' \
+            -e 's|^// mod frb_generated;$|mod frb_generated;|' \
+            rust/src/lib.rs
+
+          flutter pub get
+
+          # cargokit cross-compiles flutter/rust for each Android ABI as part of
+          # this build. Output: build/app/outputs/flutter-apk/app-release.apk.
+          flutter build apk --release
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: elpa-flutter-demo-apk
+          path: flutter/build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Commit APK to repository root
+        run: |
+          set -euo pipefail
+          cp flutter/build/app/outputs/flutter-apk/app-release.apk ./elpa-flutter-demo.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add elpa-flutter-demo.apk
+          if git diff --cached --quiet; then
+            echo "APK unchanged; nothing to commit."
+          else
+            git commit -m "ci: build Flutter demo Android APK [skip ci]"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
