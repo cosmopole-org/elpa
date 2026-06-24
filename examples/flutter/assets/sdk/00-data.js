@@ -53,9 +53,11 @@ struct In {
     @location(1) b: vec4<f32>,
     @location(2) fill: vec4<f32>,
     @location(3) bcol: vec4<f32>,
+    @location(4) clip: vec4<f32>,
+    @location(5) clip2: vec4<f32>,
 };
 struct Out {
-    @builtin(position) clip: vec4<f32>,
+    @builtin(position) clip_pos: vec4<f32>,
     @location(0) p: vec2<f32>,
     @location(1) @interpolate(flat) half: vec2<f32>,
     @location(2) @interpolate(flat) params: vec2<f32>,
@@ -64,6 +66,9 @@ struct Out {
     @location(5) @interpolate(flat) feather: f32,
     @location(6) uv: vec2<f32>,
     @location(7) @interpolate(flat) glyph: f32,
+    @location(8) world: vec2<f32>,
+    @location(9) @interpolate(flat) clipc: vec4<f32>,
+    @location(10) @interpolate(flat) clipp: vec2<f32>,
 };
 
 @group(0) @binding(1) var atlas: texture_2d<f32>;
@@ -85,7 +90,7 @@ fn vs(@builtin(vertex_index) vi: u32, in: In) -> Out {
     let world = in.a.xy + rotated;
     let ndc = vec2<f32>(world.x / g.viewport.x * 2.0 - 1.0, 1.0 - world.y / g.viewport.y * 2.0);
     var o: Out;
-    o.clip = vec4<f32>(ndc, 0.0, 1.0);
+    o.clip_pos = vec4<f32>(ndc, 0.0, 1.0);
     o.p = local;
     o.half = half;
     o.params = in.b.xy;
@@ -95,6 +100,9 @@ fn vs(@builtin(vertex_index) vi: u32, in: In) -> Out {
     let cuv = corners[vi] * 0.5 + vec2<f32>(0.5, 0.5);
     o.uv = mix(in.b.xy, in.b.zw, cuv);
     o.glyph = select(0.0, 1.0, isGlyph);
+    o.world = world;
+    o.clipc = in.clip;
+    o.clipp = vec2<f32>(in.clip2.x, in.clip2.y);
     return o;
 }
 
@@ -106,17 +114,29 @@ fn sd_round_box(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
 @fragment
 fn fs(o: Out) -> @location(0) vec4<f32> {
     let tex = textureSample(atlas, samp, o.uv).r;
+    var outc: vec4<f32>;
     if (o.glyph > 0.5) {
-        return vec4<f32>(o.fill.rgb, o.fill.a * tex);
+        outc = vec4<f32>(o.fill.rgb, o.fill.a * tex);
+    } else {
+        let r = min(o.params.x, min(o.half.x, o.half.y));
+        let d = sd_round_box(o.p, o.half, r);
+        let f = max(o.feather, 0.75);
+        let cov = clamp(0.5 - d / f, 0.0, 1.0);
+        let inner = d + o.params.y;
+        let icov = clamp(0.5 - inner / f, 0.0, 1.0);
+        let col = mix(o.bcol, o.fill, icov);
+        outc = vec4<f32>(col.rgb, col.a * cov);
     }
-    let r = min(o.params.x, min(o.half.x, o.half.y));
-    let d = sd_round_box(o.p, o.half, r);
-    let f = max(o.feather, 0.75);
-    let cov = clamp(0.5 - d / f, 0.0, 1.0);
-    let inner = d + o.params.y;
-    let icov = clamp(0.5 - inner / f, 0.0, 1.0);
-    let col = mix(o.bcol, o.fill, icov);
-    return vec4<f32>(col.rgb, col.a * cov);
+    // Screen-space rounded-rect clip (ClipRect / ClipRRect / scroll viewports).
+    if (o.clipp.y > 0.5) {
+        let cc = vec2<f32>(o.clipc.x, o.clipc.y);
+        let ch = vec2<f32>(o.clipc.z, o.clipc.w);
+        let crad = min(o.clipp.x, min(ch.x, ch.y));
+        let cd = sd_round_box(o.world - cc, ch, crad);
+        let ccov = clamp(0.5 - cd, 0.0, 1.0);
+        outc = vec4<f32>(outc.rgb, outc.a * ccov);
+    }
+    return outc;
 }
 ";
 
@@ -179,7 +199,9 @@ let GLYPHS = {
 // a unique id and we compare *identity* via `sameRef` — Flutter's `identical()`.
 let NEXT_OBJ_ID = 0;
 function nextObjId() { NEXT_OBJ_ID = NEXT_OBJ_ID + 1; return NEXT_OBJ_ID; }
-function hasId(x) { if (isNull(x)) { return false; } if (x == 0) { return false; } if (has(x, "_id")) { return true; } return false; }
+// `has` only accepts objects, so guard against functions / arrays / primitives
+// (e.g. comparing two animation-listener closures by identity in `sameRef`).
+function hasId(x) { if (isNull(x)) { return false; } if (x == 0) { return false; } if (typeOf(x) != "object") { return false; } if (has(x, "_id")) { return true; } return false; }
 // Reference identity: both have ids → compare ids; otherwise fall back to a
 // primitive `==` (safe: never deep-compares two cyclic objects).
 function sameRef(a, b) {

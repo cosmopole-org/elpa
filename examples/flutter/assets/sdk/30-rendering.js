@@ -87,11 +87,17 @@ class ParentData { constructor() {} detach() {} }
 class BoxParentData extends ParentData { constructor() { super(); this.offset = new Offset(0.0, 0.0); } }
 class FlexParentData extends BoxParentData { constructor() { super(); this.flex = 0.0; this.fit = "tight"; } }
 class StackParentData extends BoxParentData {
-    constructor() { super(); this.top = -1.0; this.right = -1.0; this.bottom = -1.0; this.left = -1.0; this.width = -1.0; this.height = -1.0; }
+    constructor() {
+        super();
+        this.left = 0.0; this.top = 0.0; this.right = 0.0; this.bottom = 0.0; this.width = 0.0; this.height = 0.0;
+        // Explicit "is set" flags so legitimate *negative* coordinates (e.g. an
+        // off-screen drawer at left: -300) are honoured (Flutter stores null/value).
+        this.hl = 0.0; this.ht = 0.0; this.hr = 0.0; this.hb = 0.0; this.hw = 0.0; this.hh = 0.0;
+    }
     isPositioned() {
-        if (this.top >= 0.0) { return true; } if (this.right >= 0.0) { return true; }
-        if (this.bottom >= 0.0) { return true; } if (this.left >= 0.0) { return true; }
-        if (this.width >= 0.0) { return true; } if (this.height >= 0.0) { return true; }
+        if (this.hl > 0.5) { return true; } if (this.ht > 0.5) { return true; }
+        if (this.hr > 0.5) { return true; } if (this.hb > 0.5) { return true; }
+        if (this.hw > 0.5) { return true; } if (this.hh > 0.5) { return true; }
         return false;
     }
 }
@@ -501,14 +507,14 @@ class RenderStack extends RenderBox {
     }
     layoutPositioned(ch, pd) {
         let minW = 0.0; let maxW = INFTY; let minH = 0.0; let maxH = INFTY;
-        if (pd.width >= 0.0) { minW = pd.width; maxW = pd.width; }
-        else { if (pd.left >= 0.0) { if (pd.right >= 0.0) { minW = maxD(0.0, this.size.width - pd.left - pd.right); maxW = minW; } } }
-        if (pd.height >= 0.0) { minH = pd.height; maxH = pd.height; }
-        else { if (pd.top >= 0.0) { if (pd.bottom >= 0.0) { minH = maxD(0.0, this.size.height - pd.top - pd.bottom); maxH = minH; } } }
+        if (pd.hw > 0.5) { minW = pd.width; maxW = pd.width; }
+        else { if (pd.hl > 0.5) { if (pd.hr > 0.5) { minW = maxD(0.0, this.size.width - pd.left - pd.right); maxW = minW; } } }
+        if (pd.hh > 0.5) { minH = pd.height; maxH = pd.height; }
+        else { if (pd.ht > 0.5) { if (pd.hb > 0.5) { minH = maxD(0.0, this.size.height - pd.top - pd.bottom); maxH = minH; } } }
         ch.layout(new BoxConstraints(minW, maxW, minH, maxH), 1.0);
         let x = 0.0; let y = 0.0;
-        if (pd.left >= 0.0) { x = pd.left; } else { if (pd.right >= 0.0) { x = this.size.width - pd.right - ch.size.width; } }
-        if (pd.top >= 0.0) { y = pd.top; } else { if (pd.bottom >= 0.0) { y = this.size.height - pd.bottom - ch.size.height; } }
+        if (pd.hl > 0.5) { x = pd.left; } else { if (pd.hr > 0.5) { x = this.size.width - pd.right - ch.size.width; } }
+        if (pd.ht > 0.5) { y = pd.top; } else { if (pd.hb > 0.5) { y = this.size.height - pd.bottom - ch.size.height; } }
         pd.offset = new Offset(x, y);
     }
     paint(context, off) {
@@ -607,12 +613,18 @@ class RenderOpacity extends RenderProxyBox {
     }
 }
 
-// ---- RenderTransform (rotate / scale around a center) ----
+// ---- RenderTransform (rotate / scale around a center, or translate) ----
 class RenderTransform extends RenderProxyBox {
     constructor(kind, a, b) { super(); this.kind = kind; this.a = a; this.b = b; }
     paint(context, off) {
         if (this.child == 0) { return 0; }
-        let canvas = context.canvas; let cx = off.dx + this.size.width / 2.0; let cy = off.dy + this.size.height / 2.0;
+        let canvas = context.canvas;
+        if (this.kind == "translate") {
+            canvas.save(); canvas.translate(this.a, this.b);
+            context.paintChild(this.child, off);
+            canvas.restore(); return 0;
+        }
+        let cx = off.dx + this.size.width / 2.0; let cy = off.dy + this.size.height / 2.0;
         canvas.save(); canvas.translate(cx, cy);
         if (this.kind == "rotate") { canvas.rotate(this.a); }
         if (this.kind == "scale") { canvas.scale(this.a, this.b); }
@@ -622,17 +634,46 @@ class RenderTransform extends RenderProxyBox {
     }
 }
 
-// ---- RenderClipRRect (a proxy; the SDF backend has no stencil clip) ----
+// ---- RenderClipRect / RenderClipRRect / RenderClipOval ----
+// Clips the child to this box's bounds (a rounded rect on the SDF backend). The
+// painter intersects the active clip; save/restore scope it to the subtree.
 class RenderClipRRect extends RenderProxyBox {
     constructor(radius) { super(); this.radius = radius; }
+    paint(context, off) {
+        if (this.child == 0) { return 0; }
+        let canvas = context.canvas; canvas.save();
+        canvas.clipRRect(rrectFromRectAndRadius(rectLTWH(off.dx, off.dy, this.size.width, this.size.height), radiusCircular(this.radius)));
+        context.paintChild(this.child, off);
+        canvas.restore();
+    }
+}
+class RenderClipRect extends RenderProxyBox {
+    constructor() { super(); }
+    paint(context, off) {
+        if (this.child == 0) { return 0; }
+        let canvas = context.canvas; canvas.save();
+        canvas.clipRect(rectLTWH(off.dx, off.dy, this.size.width, this.size.height));
+        context.paintChild(this.child, off);
+        canvas.restore();
+    }
+}
+class RenderClipOval extends RenderProxyBox {
+    constructor() { super(); }
+    paint(context, off) {
+        if (this.child == 0) { return 0; }
+        let canvas = context.canvas; canvas.save();
+        canvas.clipOval(rectLTWH(off.dx, off.dy, this.size.width, this.size.height));
+        context.paintChild(this.child, off);
+        canvas.restore();
+    }
 }
 
 // ---- RenderPointerListener (Listener / GestureDetector backing) ----
 class RenderPointerListener extends RenderProxyBox {
-    constructor(handlers, behavior) { super(); this.handlers = handlers; this.behavior = behavior; }
+    constructor(handlers, behavior) { super(); this.handlers = handlers; this.behavior = behavior; this._wantsPointer = 1.0; }
     hitTestSelf(pos) { if (this.behavior == "opaque") { return true; } if (this.behavior == "translucent") { return true; } return false; }
     // Called by the binding when a pointer event lands on this listener.
-    handleEvent(event) {
+    handleEvent(event, local) {
         let h = this.handlers;
         if (event.type == "pointerdown") { if (has(h, "onPointerDown")) { h.onPointerDown(event); } }
         if (event.type == "pointerup") { if (has(h, "onPointerUp")) { h.onPointerUp(event); } }

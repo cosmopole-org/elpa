@@ -24,11 +24,13 @@ function sdfPipelineResources() {
         { kind: "pipelineLayout", id: "elpa.fl.layout", bind_group_layouts: ["elpa.fl.bgl"] },
         { kind: "renderPipeline", id: "elpa.fl.pipe", layout: "elpa.fl.layout",
           vertex: { module: "elpa.fl.shader", entry_point: "vs", buffers: [{
-              array_stride: 64, step_mode: "instance", attributes: [
+              array_stride: 96, step_mode: "instance", attributes: [
                   { format: "float32x4", offset: 0, shader_location: 0 },
                   { format: "float32x4", offset: 16, shader_location: 1 },
                   { format: "float32x4", offset: 32, shader_location: 2 },
-                  { format: "float32x4", offset: 48, shader_location: 3 }] }] },
+                  { format: "float32x4", offset: 48, shader_location: 3 },
+                  { format: "float32x4", offset: 64, shader_location: 4 },
+                  { format: "float32x4", offset: 80, shader_location: 5 }] }] },
           fragment: { module: "elpa.fl.shader", entry_point: "fs", targets: [{
               format: SURFACE_FMT,
               blend: { color: { src_factor: "src-alpha", dst_factor: "one-minus-src-alpha", operation: "add" },
@@ -56,7 +58,8 @@ class WidgetsBinding {
         // Step-1 fallback: a direct paint callback.
         this.paintFn = 0;
         // Hit-test bookkeeping for gesture dispatch.
-        this.downListeners = [];
+        this.downListeners = []; this.downTargets = [];
+        this.downX = 0.0; this.downY = 0.0; this.dragDist = 0.0;
     }
 
     // Schedule a frame (Flutter's SchedulerBinding.scheduleFrame). The host pumps
@@ -135,7 +138,7 @@ class WidgetsBinding {
                 { cmd: "setBindGroup", index: 0, bind_group: "elpa.fl.gb" },
                 { cmd: "setPipeline", pipeline: "elpa.fl.pipe" },
                 { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.fl.inst", offset: 0 },
-                { cmd: "draw", vertex_count: 6, instance_count: len(inst) / 16, first_vertex: 0, first_instance: 0 },
+                { cmd: "draw", vertex_count: 6, instance_count: len(inst) / 24, first_vertex: 0, first_instance: 0 },
             ] };
         askHost("gpu.submit", [{ resources: res, commands: concat(this.font.atlasUploadCmds(), [pass]) }]);
     }
@@ -150,8 +153,8 @@ class WidgetsBinding {
     }
     dispatchEvent(result, eventObj) {
         for (let i = 0; i < len(result.path); i++) {
-            let t = result.path[i].target;
-            if (has(t, "handleEvent")) { t.handleEvent(eventObj); }
+            let entry = result.path[i]; let t = entry.target;
+            if (has(t, "_wantsPointer")) { t.handleEvent(eventObj, entry.localPosition); }
         }
     }
     onEvent(e) {
@@ -162,13 +165,21 @@ class WidgetsBinding {
         // A minimal tap recognizer: a press then release over the same listener
         // (with an onTap) fires the tap.
         if (e.type == "pointerdown") {
-            this.downTargets = [];
+            this.downTargets = []; this.downX = lx; this.downY = ly; this.dragDist = 0.0;
             for (let i = 0; i < len(result.path); i++) { let t = result.path[i].target; if (has(t, "handlers")) { if (has(t.handlers, "onTap")) { push(this.downTargets, t); } } }
         }
+        if (e.type == "pointermove") {
+            let dx = lx - this.downX; let dy = ly - this.downY; let d = sqrt(dx * dx + dy * dy);
+            if (d > this.dragDist) { this.dragDist = d; }
+        }
         if (e.type == "pointerup") {
-            for (let i = 0; i < len(result.path); i++) {
-                let t = result.path[i].target;
-                if (has(t, "handlers")) { if (has(t.handlers, "onTap")) { if (this.inDownTargets(t)) { t.handlers.onTap(); } } }
+            // A drag past the touch slop cancels the tap (Flutter's gesture arena:
+            // a scroll/drag wins over a tap once the pointer moves far enough).
+            if (this.dragDist < 12.0) {
+                for (let i = 0; i < len(result.path); i++) {
+                    let t = result.path[i].target;
+                    if (has(t, "handlers")) { if (has(t.handlers, "onTap")) { if (this.inDownTargets(t)) { t.handlers.onTap(); } } }
+                }
             }
             this.downTargets = [];
         }
@@ -177,7 +188,11 @@ class WidgetsBinding {
     }
     inDownTargets(t) { for (let i = 0; i < len(this.downTargets); i++) { if (sameRef(this.downTargets[i], t)) { return true; } } return false; }
     onFrame(dt) {
+        // Drive every active AnimationController with the real elapsed dt (ms) —
+        // frame-rate-independent, smooth motion (Flutter's SchedulerBinding).
+        let active = SCHED.tick(dt);
         let moving = this.ticker.advance();
+        if (active > 0.5) { this.scheduleFrame(); }
         if (moving > 0.5) { this.scheduleFrame(); }
         if (this._needsFrame > 0.5) { this.drawFrame(); }
     }

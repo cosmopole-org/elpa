@@ -17,8 +17,15 @@
 //!   `BuildOwner`, `Key`, the `updateChild`/`updateChildren` reconciliation,
 //!   `StatelessWidget`/`StatefulWidget`+`State.setState`, `RenderObjectElement`
 //!   (leaf/single/multi child), `InheritedWidget`, `ParentDataWidget`.
-//! * **catalog + Material** ([`50-widgets.js`]) — the widget catalog and a small
-//!   Material catalog.
+//! * **animation** ([`45-animation.js`]) — a `SchedulerBinding` that ticks every
+//!   `AnimationController` on the real frame dt, the `Curves` catalog,
+//!   `Tween`/`CurvedAnimation`, `AnimatedBuilder`/`TweenAnimationBuilder`, the
+//!   explicit transitions and the implicitly-animated widgets.
+//! * **catalog + scrolling + Material** ([`50-widgets.js`], [`52-scroll.js`],
+//!   [`55-material.js`]) — the layout catalog, the drag+fling scroll stack
+//!   (`ListView`/`GridView`/`SingleChildScrollView` with clipping + culling), and
+//!   a broad Material catalog (Scaffold/Drawer/FAB/BottomNav, Card/ListTile, the
+//!   buttons, Switch/Checkbox/Radio/Slider, progress indicators, Chip, TabBar, …).
 //! * **binding** ([`60-binding.js`]) — `WidgetsFlutterBinding` + `runApp`: the
 //!   build→layout→paint→composite→submit frame pipeline and the host entry points.
 //!
@@ -33,14 +40,16 @@ pub const SDK_ENGINE_JS: &str = include_str!("../assets/sdk/10-engine.js");
 pub const SDK_UI_JS: &str = include_str!("../assets/sdk/20-ui.js");
 pub const SDK_RENDERING_JS: &str = include_str!("../assets/sdk/30-rendering.js");
 pub const SDK_WIDGET_JS: &str = include_str!("../assets/sdk/40-widget.js");
+pub const SDK_ANIMATION_JS: &str = include_str!("../assets/sdk/45-animation.js");
 pub const SDK_WIDGETS_JS: &str = include_str!("../assets/sdk/50-widgets.js");
+pub const SDK_SCROLL_JS: &str = include_str!("../assets/sdk/52-scroll.js");
 pub const SDK_MATERIAL_JS: &str = include_str!("../assets/sdk/55-material.js");
 pub const SDK_BINDING_JS: &str = include_str!("../assets/sdk/60-binding.js");
 
 /// The framework as one JavaScript source (the modules concatenated). The VM
 /// hoists every `class`/`function`, so this is just textual concatenation.
 pub fn module_js() -> String {
-    format!("{SDK_DATA_JS}\n{SDK_ENGINE_JS}\n{SDK_UI_JS}\n{SDK_RENDERING_JS}\n{SDK_WIDGET_JS}\n{SDK_WIDGETS_JS}\n{SDK_MATERIAL_JS}\n{SDK_BINDING_JS}")
+    format!("{SDK_DATA_JS}\n{SDK_ENGINE_JS}\n{SDK_UI_JS}\n{SDK_RENDERING_JS}\n{SDK_WIDGET_JS}\n{SDK_ANIMATION_JS}\n{SDK_WIDGETS_JS}\n{SDK_SCROLL_JS}\n{SDK_MATERIAL_JS}\n{SDK_BINDING_JS}")
 }
 
 /// The interactive demo application, as JavaScript source. Uses [`module_js`].
