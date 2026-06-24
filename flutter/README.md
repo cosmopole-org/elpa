@@ -140,11 +140,29 @@ flutter pub get
 flutter run            # add -d chrome / -d linux / -d macos / a device id
 ```
 
-The native crate links automatically on each platform via flutter_rust_bridge's
-Cargo integration (it adds the cargokit hooks during `flutter create` /
-`codegen integrate`). To build with the GPU native-widget path, enable the feature:
-`--dart-define=... ` is not needed; instead build the Rust crate with
-`--features gpu` through the generated cargokit config.
+Getting the native crate **into** each platform build is a separate step —
+`flutter create` does **not** wire it up on its own (only
+`flutter_rust_bridge_codegen integrate`, which scaffolds the cargokit hooks,
+does). The CI workflows therefore build and place the library themselves:
+
+- **Android** (`.github/workflows/flutter-android-apk.yml`): `cargo ndk` cross-
+  compiles the crate for each ABI into `android/app/src/main/jniLibs/<abi>/`,
+  which Gradle bundles automatically. The library is named `libelpa_bridge.so`,
+  matching the loader stem FRB derives from the crate's `lib` target.
+- **Web** (`.github/workflows/flutter-web-pages.yml`):
+  `flutter_rust_bridge_codegen build-web` compiles the crate to wasm under
+  `web/pkg`. That wasm is multi-threaded (shared memory), so the page must be
+  **cross-origin isolated**; on GitHub Pages a `coi-serviceworker.js` (see
+  `tools/`) injects the required COOP/COEP headers client-side, and the build
+  uses `--no-web-resources-cdn` to keep CanvasKit same-origin.
+
+If you'd rather have the standard cargokit integration build the library on every
+`flutter run`/`flutter build`, run `flutter_rust_bridge_codegen integrate` once
+and commit the generated `rust_builder/` package.
+
+To build with the GPU native-widget path, build the Rust crate with
+`--features gpu` (the default build runs headless and drives the UI purely
+through the DSL pipe).
 
 ## Tests
 
