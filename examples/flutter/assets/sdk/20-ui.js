@@ -160,8 +160,11 @@ class Canvas {
     translate(dx, dy) { this.painter.translate(dx, dy); }
     scale(sx, sy) { this.painter.scale(sx, sy); }
     rotate(t) { this.painter.rotate(t); }
-    clipRect(rect) { return 0; }
-    clipRRect(rrect) { return 0; }
+    // Clipping is a real screen-space rounded-rect intersection on the SDF
+    // backend now (the painter carries the active clip on every instance).
+    clipRect(rect) { this.painter.setClip(rect.cx(), rect.cy(), rect.width / 2.0, rect.height / 2.0, 0.0); }
+    clipRRect(rr) { this.painter.setClip(rr.rect.cx(), rr.rect.cy(), rr.rect.width / 2.0, rr.rect.height / 2.0, rr.radius.r); }
+    clipOval(rect) { this.painter.setClip(rect.cx(), rect.cy(), rect.width / 2.0, rect.height / 2.0, min(rect.width, rect.height) / 2.0); }
 
     drawColor(c) {
         // Fill an enormous rect; the binding clears to the scaffold colour, so this
@@ -216,7 +219,7 @@ class Canvas {
     fillLinear(rect, radius, g) {
         let bx0 = g.begin.dx; let by0 = g.begin.dy; let bx1 = g.end.dx; let by1 = g.end.dy;
         let horiz = 1.0; if (abs(by1 - by0) > abs(bx1 - bx0)) { horiz = 0.0; }
-        let bands = 20; let cx = rect.cx(); let cy = rect.cy(); let hw = rect.width / 2.0; let hh = rect.height / 2.0;
+        let bands = 12; let cx = rect.cx(); let cy = rect.cy(); let hw = rect.width / 2.0; let hh = rect.height / 2.0;
         this.painter.rrect(cx, cy, hw, hh, radius.r, 0.0, 0.0, gradColorAt(g.stops, 0.0), CLEAR);
         for (let i = 0; i < bands; i++) {
             let t0 = num(i) / bands; let t1 = (num(i) + 1.0) / bands; let tm = (t0 + t1) / 2.0;
@@ -232,7 +235,7 @@ class Canvas {
     }
     fillRadial(rect, g) {
         let cx = rect.cx(); let cy = rect.cy(); let radius = min(rect.width, rect.height) / 2.0;
-        let rings = 22;
+        let rings = 14;
         for (let i = 0; i < rings; i++) {
             let t = 1.0 - num(i) / rings; let rr = radius * (1.0 - num(i) / rings);
             this.painter.circle(cx, cy, rr + 0.6, gradColorAt(g.stops, t));

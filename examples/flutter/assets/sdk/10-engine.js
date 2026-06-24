@@ -21,39 +21,77 @@ class Painter {
         this.m = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
         this.alpha = 1.0;
         this.stack = [];
+        // Active screen-space rounded-rect clip (off → 0). A ClipRect/ClipRRect
+        // or scroll viewport sets it; every emitted instance carries it, and the
+        // fragment shader multiplies coverage by the clip SDF.
+        this.clipOn = 0.0; this.clCx = 0.0; this.clCy = 0.0; this.clHw = 1.0e9; this.clHh = 1.0e9; this.clR = 0.0;
+        // Cached scale / rotation derived from the matrix. The matrix is constant
+        // across most of the tree (just the dpr scale), so deriving sx/sy/rot once
+        // per matrix change — not per primitive — removes 2 sqrt + 1 atan2 from the
+        // hot path of every emitted instance (a big paint-throughput win).
+        this.sx = 1.0; this.sy = 1.0; this.sa = 1.0; this.rot = 0.0;
     }
-    reset(out) { this.out = out; this.m = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]; this.alpha = 1.0; this.stack = []; }
+    reset(out) {
+        this.out = out; this.m = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]; this.alpha = 1.0; this.stack = [];
+        this.clipOn = 0.0; this.clCx = 0.0; this.clCy = 0.0; this.clHw = 1.0e9; this.clHh = 1.0e9; this.clR = 0.0;
+        this._recompute();
+    }
+    _recompute() {
+        let m = this.m;
+        this.sx = sqrt(m[0] * m[0] + m[1] * m[1]); this.sy = sqrt(m[2] * m[2] + m[3] * m[3]);
+        this.sa = (this.sx + this.sy) * 0.5; this.rot = atan2(m[1], m[0]);
+    }
 
-    // ---- transform / opacity stack -----------------------------------------
+    // ---- transform / opacity / clip stack ----------------------------------
     save() {
-        push(this.stack, [this.m[0], this.m[1], this.m[2], this.m[3], this.m[4], this.m[5], this.alpha]);
+        push(this.stack, [this.m[0], this.m[1], this.m[2], this.m[3], this.m[4], this.m[5], this.alpha,
+            this.clipOn, this.clCx, this.clCy, this.clHw, this.clHh, this.clR]);
     }
     restore() {
         if (len(this.stack) <= 0) { return 0; }
         let s = pop(this.stack);
         this.m = [s[0], s[1], s[2], s[3], s[4], s[5]]; this.alpha = s[6];
+        this.clipOn = s[7]; this.clCx = s[8]; this.clCy = s[9]; this.clHw = s[10]; this.clHh = s[11]; this.clR = s[12];
+        this._recompute();
         return 0;
     }
+    // Intersect the active clip with a rounded rect given in *local* coords
+    // (the SDF backend clips axis-aligned screen-space boxes; rotation in a clip
+    // is approximated by its bounds). Nested clips intersect their AABBs.
+    setClip(cx, cy, hw, hh, r) {
+        let p = this.xpt(cx, cy); let sx = this.sx; let sy = this.sy; let sa = this.sa;
+        let ncx = p[0]; let ncy = p[1]; let nhw = hw * sx; let nhh = hh * sy; let nr = r * sa;
+        if (this.clipOn > 0.5) {
+            let l = max(this.clCx - this.clHw, ncx - nhw); let rg = min(this.clCx + this.clHw, ncx + nhw);
+            let t = max(this.clCy - this.clHh, ncy - nhh); let bt = min(this.clCy + this.clHh, ncy + nhh);
+            ncx = (l + rg) * 0.5; ncy = (t + bt) * 0.5; nhw = max(0.0, (rg - l) * 0.5); nhh = max(0.0, (bt - t) * 0.5);
+        }
+        this.clipOn = 1.0; this.clCx = ncx; this.clCy = ncy; this.clHw = nhw; this.clHh = nhh; this.clR = nr;
+    }
+    // Append the active clip (2 vec4s) to an instance; called by every primitive.
+    pushClip() {
+        let o = this.out;
+        push(o, this.clCx); push(o, this.clCy); push(o, this.clHw); push(o, this.clHh);
+        push(o, this.clR); push(o, this.clipOn); push(o, 0.0); push(o, 0.0);
+    }
     translate(dx, dy) { let m = this.m; m[4] = m[4] + m[0] * dx + m[2] * dy; m[5] = m[5] + m[1] * dx + m[3] * dy; }
-    scale(sx, sy) { let m = this.m; m[0] = m[0] * sx; m[1] = m[1] * sx; m[2] = m[2] * sy; m[3] = m[3] * sy; }
+    scale(sx, sy) { let m = this.m; m[0] = m[0] * sx; m[1] = m[1] * sx; m[2] = m[2] * sy; m[3] = m[3] * sy; this._recompute(); }
     rotate(t) {
         let c = cos(t); let s = sin(t); let m = this.m;
         let a0 = m[0]; let b0 = m[1]; let c0 = m[2]; let d0 = m[3];
         m[0] = a0 * c + c0 * s; m[1] = b0 * c + d0 * s; m[2] = a0 * (-s) + c0 * c; m[3] = b0 * (-s) + d0 * c;
+        this._recompute();
     }
     setAlpha(a) { this.alpha = this.alpha * a; }
     // Map a local point through the transform.
     xpt(x, y) { let m = this.m; return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]]; }
-    xsx() { let m = this.m; return sqrt(m[0] * m[0] + m[1] * m[1]); }
-    xsy() { let m = this.m; return sqrt(m[2] * m[2] + m[3] * m[3]); }
-    xrot() { let m = this.m; return atan2(m[1], m[0]); }
     xcol(c) { return [c[0], c[1], c[2], c[3] * this.alpha]; }
 
     // A rounded-rect SDF instance in local coords: centre, half-size, radius,
     // border, rotation, feather, fill rgba, border rgba.
     rrect(cx, cy, hw, hh, r, border, rot, fill, bcol) {
-        let p = this.xpt(cx, cy); let sx = this.xsx(); let sy = this.xsy(); let sa = (sx + sy) * 0.5;
-        this.raw(p[0], p[1], hw * sx, hh * sy, r * sa, border * sa, rot + this.xrot(), this.xcol(fill), this.xcol(bcol));
+        let p = this.xpt(cx, cy);
+        this.raw(p[0], p[1], hw * this.sx, hh * this.sy, r * this.sa, border * this.sa, rot + this.rot, this.xcol(fill), this.xcol(bcol));
     }
     raw(cx, cy, hw, hh, r, border, rot, fill, bcol) {
         let o = this.out;
@@ -61,26 +99,29 @@ class Painter {
         push(o, r); push(o, border); push(o, rot); push(o, 1.0);
         push(o, fill[0]); push(o, fill[1]); push(o, fill[2]); push(o, fill[3]);
         push(o, bcol[0]); push(o, bcol[1]); push(o, bcol[2]); push(o, bcol[3]);
+        this.pushClip();
     }
     // A soft drop shadow (BoxShadow): a grown, offset, heavily-feathered rect.
     shadow(cx, cy, hw, hh, r, grow, dx, dy, blur, col) {
-        let p = this.xpt(cx + dx, cy + dy); let sx = this.xsx(); let sy = this.xsy(); let sa = (sx + sy) * 0.5;
+        let p = this.xpt(cx + dx, cy + dy); let sx = this.sx; let sy = this.sy; let sa = this.sa;
         let c = this.xcol(col);
         let o = this.out;
         push(o, p[0]); push(o, p[1]); push(o, (hw + grow) * sx); push(o, (hh + grow) * sy);
         push(o, (r + grow) * sa); push(o, 0.0); push(o, 0.0); push(o, blur * sa);
         push(o, c[0]); push(o, c[1]); push(o, c[2]); push(o, c[3]);
         push(o, 0.0); push(o, 0.0); push(o, 0.0); push(o, 0.0);
+        this.pushClip();
     }
     // A textured glyph quad. b carries the atlas UV rect; bcol.x = 2 flags glyph.
     glyph(cx, cy, hw, hh, u0, v0, u1, v1, col) {
-        let p = this.xpt(cx, cy); let sx = this.xsx(); let sy = this.xsy();
+        let p = this.xpt(cx, cy); let sx = this.sx; let sy = this.sy;
         let c = this.xcol(col);
         let o = this.out;
         push(o, p[0]); push(o, p[1]); push(o, hw * sx); push(o, hh * sy);
         push(o, u0); push(o, v0); push(o, u1); push(o, v1);
         push(o, c[0]); push(o, c[1]); push(o, c[2]); push(o, c[3]);
         push(o, 2.0); push(o, 0.0); push(o, 0.0); push(o, 0.0);
+        this.pushClip();
     }
     // A stroked line as a rounded capsule between (ax,ay) and (bx,by).
     line(ax, ay, bx, by, thick, col) {
