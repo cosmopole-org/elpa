@@ -32,9 +32,11 @@ permissions:
   pages: write
   id-token: write
 
-# Allow only one in-flight Pages deployment; newer pushes supersede older runs.
+# Serialize Pages runs per ref so a newer push to THIS branch supersedes its own
+# older run, without a Pages build on another branch cancelling this one (a global
+# `pages` group cancels cross-branch, which kept killing this deploy mid-build).
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 env:

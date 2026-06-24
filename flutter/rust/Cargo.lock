@@ -474,6 +474,7 @@ dependencies = [
 name = "elpa_bridge"
 version = "0.1.0"
 dependencies = [
+ "console_error_panic_hook",
  "elpa",
  "elpian-vm",
  "flutter_rust_bridge",

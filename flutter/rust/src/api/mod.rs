@@ -23,7 +23,11 @@ use crate::engine::{channel, ElpaEngine, OutMessage, Pointer};
 /// flutter_rust_bridge default init hook (lets codegen set up its runtime).
 #[frb(init)]
 pub fn init_app() {
-    // Nothing global to initialize; the VM registry is lazy.
+    // On web, make a Rust panic print its message + location to the browser
+    // console rather than aborting as an opaque `RuntimeError: unreachable`.
+    #[cfg(target_arch = "wasm32")]
+    console_error_panic_hook::set_once();
+    // Otherwise nothing global to initialize; the VM registry is lazy.
 }
 
 /// A message crossing the pipe, as Dart sees it. `payload` is raw JSON text the
