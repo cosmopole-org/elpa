@@ -1,0 +1,11 @@
+# flutter_rust_bridge codegen configuration.
+#
+# Run `flutter_rust_bridge_codegen generate` from this directory to (re)produce
+# the Dart bindings in `lib/src/rust/` and the Rust glue in `rust/src/frb_generated.rs`
+# from the `#[frb]`-annotated functions under `rust/src/api/`.
+rust_input: crate::api
+rust_root: rust/
+dart_output: lib/src/rust
+dart_entrypoint_class_name: ElpaRust
+# Keep the generated Dart out of analysis noise; it is a build artifact.
+dart_format_line_length: 100

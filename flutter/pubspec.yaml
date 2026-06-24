@@ -1,0 +1,27 @@
+name: elpa_app
+description: "Elpa + Rust + Flutter: a cross-platform shell that runs app logic on the Elpian VM and renders it as a real Flutter UI over a high-performance message pipe (with an optional zero-copy wgpu native widget)."
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+  flutter: ">=3.19.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # The flutter_rust_bridge runtime; the codegen version MUST match the Rust
+  # `flutter_rust_bridge` crate version (see README).
+  flutter_rust_bridge: ^2.0.0
+  meta: ^1.11.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  ffigen: ^13.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/app/

@@ -51,12 +51,26 @@ static VMS: Lazy<Mutex<HashMap<String, VM>>> = Lazy::new(|| Mutex::new(HashMap::
 /// * `vm.import` — import an external Elpian module (from a project asset or the
 ///   network) and run it so it can register definitions, expanding the engine's
 ///   drawing vocabulary at runtime.
+/// * `host.send` / `host.request` — the embedder-defined custom messaging pipe.
+///   `host.send(channel, message)` pushes a message out to the host
+///   (fire-and-forget); `host.request(channel, message)` makes a synchronous
+///   round-trip that returns the host's reply. The host -> guest direction is
+///   delivered by [`deliver_host_message`].
 /// * `log` — diagnostics.
 fn all_host_apis() -> Vec<String> {
     // Every native host name the VM may emit must appear here, or a call to it
     // is not treated as a native `askHost` target.
     [
         "log",
+        // Custom, bidirectional host messaging. The guest pushes messages out to
+        // the embedding host (`host.send`, fire-and-forget) or makes a synchronous
+        // round-trip that returns the host's reply (`host.request`). The matching
+        // inbound direction (host -> guest) is delivered by the embedder via
+        // [`deliver_host_message`], which invokes the guest's [`HOST_MESSAGE_HANDLER`]
+        // function. Together these form the application-defined pipe an embedding
+        // app (e.g. a Flutter host) uses to talk to the JS running on the VM.
+        "host.send",
+        "host.request",
         "gpu.submit",
         "gpu.writeBuffer",
         "gpu.writeTexture",
@@ -266,6 +280,28 @@ pub fn execute_vm_func_with_input(
         }
         None => VmExecResult::done("\"vm_not_found\""),
     }
+}
+
+/// Name of the guest function the host invokes to deliver an inbound custom
+/// message (the host -> guest leg of the messaging pipe). An app that wants to
+/// receive messages from the embedder defines `function onHostMessage(msg) {…}`;
+/// it is optional — delivering to a VM that does not define it is a harmless
+/// no-op, exactly like an undefined `onEvent`.
+pub const HOST_MESSAGE_HANDLER: &str = "onHostMessage";
+
+/// Deliver a custom message **into** the VM (host -> guest) by invoking the
+/// guest's [`HOST_MESSAGE_HANDLER`] with `message_json` as its single argument.
+///
+/// This is the inbound half of the embedder-defined messaging pipe; the outbound
+/// half is the guest calling the `host.send` / `host.request` host APIs, which
+/// the embedder services in its host-call dispatch. `message_json` is a plain
+/// JSON value (e.g. `{"channel":"nav","data":{…}}`) — the same shape `onEvent`
+/// receives — and `cb_id` correlates any async continuation, like the other
+/// `execute_vm_func*` entry points. Returns the usual [`VmExecResult`], so the
+/// embedder pumps any host calls the handler makes (a re-render, a reply) through
+/// the same continue/loop it uses for events.
+pub fn deliver_host_message(machine_id: String, message_json: String, cb_id: i64) -> VmExecResult {
+    execute_vm_func_with_input(machine_id, HOST_MESSAGE_HANDLER.to_string(), message_json, cb_id)
 }
 
 /// Resume a VM after a host call, injecting the call's return value.

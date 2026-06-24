@@ -37,10 +37,12 @@
 
 pub mod event;
 pub mod headless;
+pub mod host_message;
 pub mod surface;
 
 pub use event::InputEvent;
 pub use headless::HeadlessBackend;
+pub use host_message::{HostMessage, RequestHandler};
 pub use surface::{Insets, SurfaceInfo};
 
 // Re-export the core types a host/example needs.
@@ -106,6 +108,13 @@ pub struct Elpa<B: GpuBackend> {
     /// clock, randomness) servicing the VM's capability-gated `fs.*`/`net.*`/
     /// `time.*`/`random.*` calls. Togglable and bounded; see [`HostEnv`].
     env: HostEnv,
+    /// Outbound custom messages the guest pushed via `host.send`, awaiting the
+    /// embedder. Drained with [`Elpa::take_outbound_messages`]. This is the
+    /// guest → host leg of the messaging pipe (see [`host_message`]).
+    outbound: Vec<HostMessage>,
+    /// Optional host responder for `host.request` synchronous round-trips. When
+    /// unset, a `host.request` resolves to null.
+    request_handler: Option<RequestHandler>,
 }
 
 impl<B: GpuBackend> Elpa<B> {
@@ -157,6 +166,8 @@ impl<B: GpuBackend> Elpa<B> {
             assets: HashMap::new(),
             fetcher: None,
             env: HostEnv::default(),
+            outbound: Vec::new(),
+            request_handler: None,
         }
     }
 
@@ -188,7 +199,7 @@ impl<B: GpuBackend> Elpa<B> {
     pub fn resume(&mut self) {
         let Elpa {
             runtime, renderer, surface, last_frame, last_stats, log, defs, layers, scope_stats,
-            assets, fetcher, env,
+            assets, fetcher, env, outbound, request_handler,
         } = self;
         let mid = runtime.machine_id().to_string();
         let mut result = elpian_vm::api::resume_execution(mid.clone());
@@ -199,7 +210,7 @@ impl<B: GpuBackend> Elpa<B> {
             let reply = match elpa_protocol::HostCall::parse(&result.host_call_data) {
                 Ok(hc) => handle_call(
                     &hc, renderer, surface, last_frame, last_stats, log, defs, layers, scope_stats,
-                    assets, fetcher, env,
+                    assets, fetcher, env, outbound, request_handler,
                 ),
                 Err(_) => reply_null(),
             };
@@ -339,13 +350,13 @@ impl<B: GpuBackend> Elpa<B> {
         let id = format!("elpa-import-{}", IMPORT_COUNTER.fetch_add(1, Ordering::Relaxed));
         let Elpa {
             renderer, surface, last_frame, last_stats, log, defs, layers, scope_stats, assets,
-            fetcher, env, ..
+            fetcher, env, outbound, request_handler, ..
         } = self;
         match runtime_from_source(id, ast_json) {
             Some(mut rt) => {
                 pump_vm(
                     &mut rt, Start::Main, renderer, surface, last_frame, last_stats, log, defs,
-                    layers, scope_stats, assets, fetcher, env,
+                    layers, scope_stats, assets, fetcher, env, outbound, request_handler,
                 );
                 rt.dispose();
                 true
@@ -427,6 +438,46 @@ impl<B: GpuBackend> Elpa<B> {
         std::mem::take(&mut self.log)
     }
 
+    // ---- Custom messaging pipe (guest <-> host) -----------------------------
+
+    /// Deliver a custom message **into** the running app (host → guest) by
+    /// invoking its `onHostMessage({channel, message})` and pumping whatever it
+    /// does in response — a re-render via `gpu.submit`, a reply via `host.send`,
+    /// further `host.request`s — through the same host-call loop that services
+    /// events. `payload_json` is the raw JSON text of the message value; it is
+    /// spliced into the delivered object unescaped, so the guest receives a
+    /// structured value, not a string to re-parse. This is the inbound half of
+    /// the pipe an embedder (e.g. a Flutter host) uses to drive the app.
+    pub fn post_message(&mut self, channel: &str, payload_json: &str) {
+        let input = host_message::inbound_input(channel, payload_json);
+        self.drive(Start::Func { name: elpian_vm::api::HOST_MESSAGE_HANDLER, input: &input });
+    }
+
+    /// Drain the outbound messages the guest pushed via `host.send` since the
+    /// last drain (the guest → host leg of the pipe). The embedder calls this
+    /// after each turn (start / event / frame / inbound message) and forwards the
+    /// messages to its UI layer. Returns them in emission order.
+    pub fn take_outbound_messages(&mut self) -> Vec<HostMessage> {
+        std::mem::take(&mut self.outbound)
+    }
+
+    /// Whether any outbound messages are queued (cheap check to avoid an
+    /// allocation when the embedder only forwards on demand).
+    pub fn has_outbound_messages(&self) -> bool {
+        !self.outbound.is_empty()
+    }
+
+    /// Install the responder for `host.request` synchronous round-trips. It is
+    /// called with the request's `channel` and raw-JSON `message`, and must
+    /// return the **typed JSON** reply injected as the call's return value. A
+    /// host without a responder resolves every request to null.
+    pub fn set_request_handler(
+        &mut self,
+        handler: impl FnMut(&str, &str) -> String + 'static,
+    ) {
+        self.request_handler = Some(Box::new(handler));
+    }
+
     pub fn renderer(&self) -> &Renderer<B> {
         &self.renderer
     }
@@ -439,11 +490,11 @@ impl<B: GpuBackend> Elpa<B> {
         // Disjoint borrows of the instance's fields for the dispatch closure.
         let Elpa {
             runtime, renderer, surface, last_frame, last_stats, log, defs, layers, scope_stats,
-            assets, fetcher, env,
+            assets, fetcher, env, outbound, request_handler,
         } = self;
         pump_vm(
             runtime, start, renderer, surface, last_frame, last_stats, log, defs, layers,
-            scope_stats, assets, fetcher, env,
+            scope_stats, assets, fetcher, env, outbound, request_handler,
         );
     }
 }
@@ -479,11 +530,13 @@ fn pump_vm<B: GpuBackend>(
     assets: &HashMap<String, String>,
     fetcher: &Option<AssetFetcher>,
     env: &mut HostEnv,
+    outbound: &mut Vec<HostMessage>,
+    request_handler: &mut Option<RequestHandler>,
 ) {
     rt.pump(start, |hc| {
         handle_call(
             hc, renderer, surface, last_frame, last_stats, log, defs, layers, scope_stats, assets,
-            fetcher, env,
+            fetcher, env, outbound, request_handler,
         )
     });
 }
@@ -511,6 +564,8 @@ fn handle_call<B: GpuBackend>(
     assets: &HashMap<String, String>,
     fetcher: &Option<AssetFetcher>,
     env: &mut HostEnv,
+    outbound: &mut Vec<HostMessage>,
+    request_handler: &mut Option<RequestHandler>,
 ) -> String {
     // Environmental interfaces (fs.*, net.*, time.*, random.*) are serviced by
     // the host environment; everything else falls through to the GPU/log/import
@@ -519,6 +574,26 @@ fn handle_call<B: GpuBackend>(
         return reply;
     }
     match hc.api_name.as_str() {
+        // ---- Custom messaging pipe (the host.* API) -------------------------
+        // Fire-and-forget guest -> host post: enqueue for the embedder to drain
+        // via `take_outbound_messages`. Returns null immediately (no blocking).
+        "host.send" => {
+            if let Some(msg) = host_message::parse_message(hc) {
+                outbound.push(msg);
+            }
+            reply_null()
+        }
+        // Synchronous guest -> host round-trip: hand the message to the host's
+        // installed responder and return its reply as the call's value. With no
+        // responder installed the request resolves to null, so guest code that
+        // tolerates a missing host stays correct.
+        "host.request" => match host_message::parse_message(hc) {
+            Some(msg) => match request_handler {
+                Some(handler) => handler(&msg.channel, &msg.payload),
+                None => reply_null(),
+            },
+            None => reply_null(),
+        },
         "gpu.submit" => {
             if let Some(frame) = frame_from_submit(hc) {
                 // Two-stage host expansion before rendering: first resolve scope
@@ -591,7 +666,8 @@ fn handle_call<B: GpuBackend>(
                             Some(mut rt) => {
                                 pump_vm(
                                     &mut rt, Start::Main, renderer, surface, last_frame, last_stats,
-                                    log, defs, layers, scope_stats, assets, fetcher, env,
+                                    log, defs, layers, scope_stats, assets, fetcher, env, outbound,
+                                    request_handler,
                                 );
                                 rt.dispose();
                             }
@@ -1105,5 +1181,87 @@ mod tests {
         assert!(app.thaw_layer("drawer"));
         assert!(!app.layers().contains("drawer"));
         assert!(!app.renderer().is_layer("elpa.layer.drawer.paint"));
+    }
+
+    // ---- Custom messaging pipe (guest <-> host) ------------------------------
+
+    fn js_app(src: &str) -> Elpa<HeadlessBackend> {
+        Elpa::new_from_js(HeadlessBackend::default(), SurfaceInfo::new(64, 64, 1.0), src)
+            .expect("JS app compiles")
+    }
+
+    #[test]
+    fn guest_send_is_queued_for_the_host() {
+        // On start the app posts one message out; the host drains it after the turn.
+        let mut app = js_app(r#"askHost("host.send", ["boot", { ready: true }]);"#);
+        assert!(!app.has_outbound_messages());
+        app.start();
+        assert!(app.has_outbound_messages());
+        let msgs = app.take_outbound_messages();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].channel, "boot");
+        assert_eq!(msgs[0].payload, r#"{"ready":true}"#);
+        // Draining empties the queue.
+        assert!(app.take_outbound_messages().is_empty());
+    }
+
+    #[test]
+    fn host_post_invokes_guest_handler_which_replies_out() {
+        // The app echoes the inbound channel back out through the pipe.
+        let mut app = js_app(
+            r#"function onHostMessage(msg) { askHost("host.send", ["echo", msg.channel]); }"#,
+        );
+        app.start();
+        assert!(app.take_outbound_messages().is_empty(), "no message before delivery");
+
+        app.post_message("nav", r#"{"to":"home"}"#);
+        let msgs = app.take_outbound_messages();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].channel, "echo");
+        // The handler read msg.channel ("nav") and sent it back as the payload.
+        assert_eq!(msgs[0].payload, r#""nav""#);
+    }
+
+    #[test]
+    fn host_request_round_trips_a_reply_into_the_guest() {
+        // The handler does a synchronous request, then forwards the reply out so
+        // the test can observe the value the host injected.
+        let mut app = js_app(
+            r#"function onHostMessage(msg) {
+                 let r = askHost("host.request", ["db", { q: 1 }]);
+                 askHost("host.send", ["reply", r]);
+               }"#,
+        );
+        // The host responds to every request with a bare-JSON value (the VM types it).
+        app.set_request_handler(|channel, message| {
+            assert_eq!(channel, "db");
+            assert_eq!(message, r#"{"q":1}"#);
+            "\"pong\"".to_string()
+        });
+        app.start();
+        app.post_message("q", "null");
+        let msgs = app.take_outbound_messages();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].channel, "reply");
+        assert_eq!(msgs[0].payload, r#""pong""#, "guest received the host's reply");
+    }
+
+    #[test]
+    fn host_request_without_handler_resolves_null() {
+        let mut app = js_app(
+            r#"function onHostMessage(msg) {
+                 let r = askHost("host.request", ["x", 0]);
+                 askHost("host.send", ["got", r]);
+               }"#,
+        );
+        app.start();
+        app.post_message("x", "null");
+        let msgs = app.take_outbound_messages();
+        // With no responder the request still resolves (the guest does not hang)
+        // and the handler runs to completion, forwarding the empty reply. The VM
+        // represents the absent value as undefined rather than a real reply.
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].channel, "got");
+        assert_ne!(msgs[0].payload, r#""pong""#, "no responder -> not a real reply");
     }
 }

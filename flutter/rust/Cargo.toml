@@ -1,0 +1,40 @@
+[package]
+name = "elpa_bridge"
+version = "0.1.0"
+edition = "2021"
+description = "flutter_rust_bridge boundary for embedding Elpa in a Flutter app: drives the Elpian VM, pipes the custom guest<->host messaging channel to Dart, and (optionally) exposes Elpa's wgpu rendering as a zero-copy Flutter Texture."
+
+[lib]
+# `cdylib`/`staticlib` are what Flutter links on each platform; `lib` keeps the
+# crate usable from `cargo test` and from the codegen tool.
+crate-type = ["cdylib", "staticlib", "lib"]
+
+[features]
+# `frb` (default) compiles the flutter_rust_bridge boundary. Turn it off
+# (`--no-default-features`) to build/test just the engine core in plain Rust.
+default = ["frb"]
+frb = ["dep:flutter_rust_bridge"]
+# `gpu` swaps the headless backend for a live wgpu backend so Elpa can paint into
+# a texture Flutter samples (the native-widget, zero-copy path). See render.rs.
+gpu = ["elpa/wgpu", "dep:wgpu"]
+
+[dependencies]
+# Elpa: the unified VM + renderer + backend instance. Path dep on the workspace
+# crate one directory up (../../rust/crates/elpa).
+elpa = { path = "../../rust/crates/elpa" }
+elpian-vm = { path = "../../rust/crates/elpian-vm" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+once_cell = "1.19"
+flutter_rust_bridge = { version = "2", optional = true }
+wgpu = { version = "29", optional = true, default-features = false }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+
+# flutter_rust_bridge's macros gate generated code on `cfg(frb_expand)`, which
+# Cargo doesn't know about; acknowledge it so the build is warning-clean.
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(frb_expand)'] }

@@ -1,0 +1,24 @@
+# Flutter / Dart
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+pubspec.lock
+*.iml
+.idea/
+
+# Generated platform runners (recreate with `flutter create .`)
+/android/
+/ios/
+/linux/
+/macos/
+/windows/
+/web/
+
+# flutter_rust_bridge-generated bindings (recreate with codegen)
+/lib/src/rust/
+/rust/src/frb_generated.rs
+
+# Rust
+/rust/target/
