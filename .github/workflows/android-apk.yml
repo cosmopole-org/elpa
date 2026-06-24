@@ -4,8 +4,8 @@ name: Build APK
 # commits the signed release APK to the root of the repository: the Liquid Glass
 # calculator as `elpa-calculator.apk` (the default), the Material app as
 # `elpa.apk`, the Game3D engine demo as `elpa-game3d.apk`, the Liquid Glass
-# showcase as `elpa-liquidglass.apk`, the Web SDK showcase as `elpa-websdk.apk`
-# (chosen by the `app` input).
+# showcase as `elpa-liquidglass.apk`, the Web SDK showcase as `elpa-websdk.apk`,
+# the Flutter SDK demo as `elpa-flutter.apk` (chosen by the `app` input).
 #
 # Run it from the GitHub UI (Actions → "Build APK" → "Run workflow", pick the
 # app) or via the API/CLI
@@ -23,6 +23,7 @@ on:
           - game3d
           - liquidglass
           - websdk
+          - flutter
         default: calculator
 
 permissions:
@@ -80,6 +81,7 @@ jobs:
           cargo run -p elpa-game3d --bin build_bytecode
           cargo run -p elpa-liquidglass --bin build_bytecode
           cargo run -p elpa-websdk --bin build_bytecode
+          cargo run -p elpa-flutter --bin build_bytecode
 
       # A throwaway keystore generated per run. cargo-apk reads the path and
       # password from these env vars (no secrets committed to the repo).
@@ -105,6 +107,7 @@ jobs:
           if [ "${{ inputs.app }}" = "game3d" ]; then FEATURES="--features game3d"; fi
           if [ "${{ inputs.app }}" = "liquidglass" ]; then FEATURES="--features liquidglass"; fi
           if [ "${{ inputs.app }}" = "websdk" ]; then FEATURES="--features websdk"; fi
+          if [ "${{ inputs.app }}" = "flutter" ]; then FEATURES="--features flutter"; fi
           # `--lib` packages the Android cdylib (this crate also has a desktop bin).
           cargo apk build --release --lib $FEATURES
 
@@ -125,6 +128,7 @@ jobs:
           if [ "${{ inputs.app }}" = "calculator" ]; then DEST=elpa-calculator.apk; fi
           if [ "${{ inputs.app }}" = "material" ]; then DEST=elpa.apk; fi
           if [ "${{ inputs.app }}" = "websdk" ]; then DEST=elpa-websdk.apk; fi
+          if [ "${{ inputs.app }}" = "flutter" ]; then DEST=elpa-flutter.apk; fi
           cp examples/native/target/release/apk/elpa_native_example.apk "./$DEST"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
