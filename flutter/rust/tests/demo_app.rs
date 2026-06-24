@@ -53,3 +53,35 @@ fn demo_app_drives_independent_render_scopes() {
     assert!(out[0].payload.contains("\"key\":\"clock\""), "tick patches the clock scope");
     assert!(out[0].payload.contains(": 1"), "clock frame counter advanced");
 }
+
+/// The Flutter shell drives lifecycle handlers the demo deliberately does NOT
+/// define — `onResize`/`onEvent` (the shell reports the surface size and forwards
+/// raw pointer events on every build), while the demo only implements
+/// `onHostMessage`/`onFrame`. Invoking an undefined handler must be a harmless
+/// no-op, not a VM panic: a panic mid-turn poisons the VM and silently freezes
+/// the app, which is exactly what froze the counters and clock in the live demo.
+#[test]
+fn undefined_lifecycle_handlers_are_harmless_no_ops() {
+    let mut engine = ElpaEngine::from_js(DEMO, 1080, 1920, 2.0).expect("demo compiles");
+    engine.start();
+
+    // The shell's `_syncSurface` reports size + safe-area on first build, driving
+    // `onResize` (undefined in the demo). It must not crash or emit anything.
+    assert!(engine.resize(720, 1280, 2.0).is_empty(), "undefined onResize is a no-op");
+    assert!(engine.safe_area(96.0, 0.0, 48.0, 0.0).is_empty(), "undefined onResize is a no-op");
+
+    // The shell forwards raw pointer events to `onEvent` (also undefined). No-op.
+    use elpa_bridge::engine::Pointer;
+    assert!(engine.pointer(Pointer::Down, 10.0, 10.0, 0).is_empty(), "undefined onEvent is a no-op");
+    assert!(engine.pointer(Pointer::Up, 10.0, 10.0, 0).is_empty(), "undefined onEvent is a no-op");
+
+    // Crucially, the VM is NOT poisoned by those calls: the handlers it *does*
+    // define still run and drive their scoped patches afterwards.
+    let out = engine.post_event(r#"{"handler":"incA"}"#);
+    assert_eq!(out.len(), 1, "tap still works after undefined-handler calls");
+    assert!(out[0].payload.contains("A: 1"), "A still increments");
+
+    let out = engine.frame(16.0);
+    assert_eq!(out.len(), 1, "tick still works after undefined-handler calls");
+    assert!(out[0].payload.contains("\"key\":\"clock\""), "clock still advances");
+}

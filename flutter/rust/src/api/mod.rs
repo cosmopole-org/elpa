@@ -20,14 +20,28 @@ use once_cell::sync::Lazy;
 
 use crate::engine::{channel, ElpaEngine, OutMessage, Pointer};
 
-/// flutter_rust_bridge default init hook (lets codegen set up its runtime).
-#[frb(init)]
-pub fn init_app() {
-    // On web, make a Rust panic print its message + location to the browser
-    // console rather than aborting as an opaque `RuntimeError: unreachable`.
-    #[cfg(target_arch = "wasm32")]
-    console_error_panic_hook::set_once();
-    // Otherwise nothing global to initialize; the VM registry is lazy.
+/// One-time process initialization, run lazily from the (synchronous) engine
+/// entry points rather than through a `#[frb(init)]` hook.
+///
+/// Why not `#[frb(init)]`: flutter_rust_bridge dispatches an `#[frb(init)]`
+/// function as a *normal* (non-sync) task, which on its `executeRustInitializers`
+/// path spins up the bridge's `WorkerPool`. On the web that pool tries to
+/// `postMessage` the wasm `Memory` to a worker, and for this app's
+/// **single-threaded** wasm (built without `+atomics`, so the memory is not
+/// shared) that fails with `DataCloneError: #<Memory> could not be cloned` and
+/// panics during startup — leaving the demo a blank screen. This whole app uses
+/// only `#[frb(sync)]` calls, so no worker pool is ever needed; initializing from
+/// a sync entry point keeps the pool from ever being constructed.
+fn ensure_init() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        // On web, make a Rust panic print its message + location to the browser
+        // console rather than aborting as an opaque `RuntimeError: unreachable`.
+        #[cfg(target_arch = "wasm32")]
+        console_error_panic_hook::set_once();
+        // Otherwise nothing global to initialize; the VM registry is lazy.
+    });
 }
 
 /// A message crossing the pipe, as Dart sees it. `payload` is raw JSON text the
@@ -125,18 +139,21 @@ pub fn channel_event() -> String {
 /// source is outside the supported JS subset.
 #[frb(sync)]
 pub fn create_from_js(js_source: String, width: u32, height: u32, scale: f64) -> Option<u64> {
+    ensure_init();
     ElpaEngine::from_js(&js_source, width, height, scale).map(insert)
 }
 
 /// Create an engine from Elpian AST JSON.
 #[frb(sync)]
 pub fn create_from_ast(ast_json: String, width: u32, height: u32, scale: f64) -> Option<u64> {
+    ensure_init();
     ElpaEngine::from_ast(&ast_json, width, height, scale).map(insert)
 }
 
 /// Create an engine from prebuilt VM bytecode (the shipped/deployed path).
 #[frb(sync)]
 pub fn create_from_bytecode(bytecode: Vec<u8>, width: u32, height: u32, scale: f64) -> Option<u64> {
+    ensure_init();
     ElpaEngine::from_bytecode(bytecode, width, height, scale).map(insert)
 }
 

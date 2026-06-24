@@ -1456,7 +1456,23 @@ impl Executor {
                             );
                         }
                     } else {
-                        panic!("elpian error: global function not found");
+                        // The host may invoke an *optional* lifecycle handler the
+                        // app didn't define (e.g. `onEvent`, `onResize`, `onFrame`,
+                        // `onHostMessage`). Per the documented contract this is a
+                        // harmless no-op — so complete the turn with no value rather
+                        // than panicking. Panicking here poisons the VM mutex, after
+                        // which every subsequent call fails ("cannot recursively
+                        // acquire mutex"), silently freezing a host that simply drove
+                        // a handler the app chose not to implement.
+                        self.processing = false;
+                        return (
+                            0x01,
+                            cb_id,
+                            Val {
+                                typ: 0,
+                                data: Payload::Null,
+                            },
+                        );
                     }
                 }
             }
