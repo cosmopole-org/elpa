@@ -75,18 +75,31 @@ Reserved channels (Rust is the source of truth; Dart reads them at startup):
 | `flutter.define` | app → UI | register a reusable custom widget |
 | `flutter.event` | UI → app | a tap / change / gesture (carries the callback id) |
 
-## Caching — why the whole UI is not rebuilt each frame
+## Caching & scoping — why the whole UI is not rebuilt each frame
 
-- **Revision memoization** — a DSL node carrying a `rev` reuses its previously-built
-  `Widget` while `rev` is unchanged, so Flutter short-circuits that branch's rebuild.
-  An app bumps `rev` only where state changed.
-- **Boundaries** — a node marked `"boundary": true` becomes a self-contained
-  `StatefulWidget` wrapped in a `RepaintBoundary`; changes inside it neither rebuild
-  nor repaint the rest of the tree, and it can be invalidated in isolation.
+- **Render scopes (true per-widget rerenders)** — a node marked `"boundary": true`
+  becomes an `ElpaScope`: a self-contained `StatefulWidget`, wrapped in a
+  `RepaintBoundary`, registered by key in a `ScopeRegistry`. A `flutter.patch` (or
+  `flutter.invalidate`) addressed to that key is routed straight to *that scope's
+  own* `setState` — **the shell never rebuilds**. Flutter marks only that Element
+  dirty and the `RepaintBoundary` confines the repaint, so a state change in one
+  scope rerenders only it; sibling and ancestor scopes are neither rebuilt nor
+  repainted. (If no scope is mounted for the key, the shell falls back to a full
+  rebuild, so the model stays correct.)
+- **Revision memoization** — within any scope, a node carrying a `rev` reuses its
+  previously-built `Widget` while `rev` is unchanged, so Flutter short-circuits that
+  branch's rebuild. An app bumps `rev` only where state changed.
 - **Keyed identity** — every node has a stable `key`, so reordering reuses elements
   and their state rather than recreating them.
 - **Lazy lists** — `ListView` builds children through `itemBuilder`, so off-screen
   rows are never built.
+
+The demo (`assets/app/main.js`) is built around this: two counters and an animated
+clock, each its own scope. Tapping a counter patches only that counter's scope; the
+clock patches itself every frame — none of these rebuild the others or the shell.
+The Rust end-to-end test (`rust/tests/demo_app.rs`) asserts each action emits exactly
+one scoped patch, and the Dart widget test (`test/elpa_shell_test.dart`) proves a
+patch to one scope leaves a sibling's build count unchanged.
 
 ## The native Elpa widget (zero-copy wgpu)
 

@@ -93,6 +93,59 @@ void main() {
     expect(bridge.posted.last.$2, contains('"handler":"go"'));
   });
 
+  testWidgets('a scoped patch rebuilds only its scope, not its sibling',
+      (tester) async {
+    // A build-counting probe so we can observe exactly which scopes rebuilt.
+    final builds = <String, int>{};
+    final registry = ElpaWidgetRegistry(<String, ElpaNodeBuilder>{
+      'Probe': (context, node, scope) {
+        final key = node.key ?? '?';
+        builds[key] = (builds[key] ?? 0) + 1;
+        return Text(node.propString('label'), textDirection: TextDirection.ltr);
+      },
+    });
+    final scopes = ScopeRegistry();
+    final buildScope = ElpaBuildScope(
+      registry: registry,
+      cache: WidgetCache(),
+      scopes: scopes,
+      dispatch: (_, __) {},
+    );
+
+    DslNode probe(String key, String label) =>
+        DslNode(type: 'Probe', key: key, boundary: true, props: {'label': label});
+
+    await tester.pumpWidget(Directionality(
+      textDirection: TextDirection.ltr,
+      child: Column(children: [
+        ElpaScope(key: const ValueKey('A'), node: probe('A', 'A0'), scope: buildScope),
+        ElpaScope(key: const ValueKey('B'), node: probe('B', 'B0'), scope: buildScope),
+      ]),
+    ));
+
+    expect(builds, {'A': 1, 'B': 1}, reason: 'both scopes built once initially');
+    expect(scopes.has('A') && scopes.has('B'), isTrue, reason: 'both registered');
+
+    // Patch only scope A. The registry drives A's own setState directly.
+    final handled = scopes.update('A', probe('A', 'A1'));
+    expect(handled, isTrue, reason: 'A is mounted, so the update is isolated');
+    await tester.pump();
+
+    expect(builds['A'], 2, reason: 'scope A rebuilt');
+    expect(builds['B'], 1, reason: 'scope B was NOT rebuilt');
+    expect(find.text('A1'), findsOneWidget);
+    expect(find.text('B0'), findsOneWidget);
+
+    // Invalidating a scope rebuilds only it as well.
+    scopes.invalidate('B');
+    await tester.pump();
+    expect(builds['A'], 2, reason: 'A untouched by B invalidation');
+    expect(builds['B'], 2, reason: 'B rebuilt by invalidation');
+
+    // An update for an unmounted key is not handled (caller falls back).
+    expect(scopes.update('missing', probe('missing', 'x')), isFalse);
+  });
+
   test('WidgetCache reuses a widget while rev is stable', () {
     final cache = WidgetCache();
     const a = SizedBox(width: 1);
