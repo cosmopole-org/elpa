@@ -63,7 +63,7 @@ jobs:
           rustup target add wasm32-unknown-unknown
           # flutter_rust_bridge `build-web` shells out to
           # `wasm-pack build ... -- -Z build-std=std,panic_abort` pinned to the
-          # nightly toolchain so it can rebuild std with wasm atomics. That needs
+          # nightly toolchain (it rebuilds std for the wasm target). That needs
           # the nightly toolchain, its rust-src component, and the wasm target.
           rustup toolchain install nightly --profile minimal
           rustup component add rust-src --toolchain nightly
@@ -89,23 +89,6 @@ jobs:
       - name: Materialize Flutter web runner
         run: flutter create . --platforms=web --project-name elpa_app
 
-      # The Rust bridge is compiled to *multi-threaded* wasm (shared memory +
-      # atomics — that's why the nightly rust-src/build-std setup above exists),
-      # which only instantiates on a cross-origin-isolated page. GitHub Pages
-      # can't send the required COOP/COEP headers, so register a service worker
-      # that adds them client-side; without it `RustElpaBridge.init()` throws
-      # (`SharedArrayBuffer is not defined`) before `runApp` and the app renders
-      # a blank screen.
-      - name: Enable cross-origin isolation (COOP/COEP service worker)
-        run: |
-          cp tools/coi-serviceworker.js web/coi-serviceworker.js
-          # Force `require-corp` (not `credentialless`) for cross-browser support;
-          # paired with --no-web-resources-cdn below this keeps every resource
-          # same-origin, so isolation holds on Chrome, Firefox and Safari alike.
-          sed -i \
-            's#</head>#  <script>window.coi = { coepCredentialless: () => false };</script>\n  <script src="coi-serviceworker.js"></script>\n</head>#' \
-            web/index.html
-
       # Generate the Dart bindings (lib/src/rust/**) and rust/src/frb_generated.rs
       # from the #[frb]-annotated Rust under flutter/rust/src/api.
       - name: Generate flutter_rust_bridge bindings
@@ -122,22 +105,30 @@ jobs:
 
       # Compile the Rust bridge crate to WebAssembly for the browser (writes into
       # web/pkg, where the Flutter web build picks it up).
-      - name: Build Rust bridge for web (wasm)
-        run: flutter_rust_bridge_codegen build-web --release
+      #
+      # IMPORTANT: build *single-threaded*. FRB's build-web defaults to
+      # `-C target-feature=+atomics,...` + shared memory (a multi-threaded wasm),
+      # which (a) only instantiates on a cross-origin-isolated page — impossible
+      # to guarantee on GitHub Pages — and (b) runs FRB's *synchronous* FFI on the
+      # browser's main thread, where any blocking cross-thread wait hits
+      # `Atomics.wait` (forbidden on the main thread) and traps with
+      # `RuntimeError: unreachable`, leaving the app blank. This whole app uses
+      # only `#[frb(sync)]` calls, so threads buy nothing; overriding RUSTFLAGS to
+      # drop `+atomics` yields a self-contained single-threaded module that loads
+      # on any static host with no special headers.
+      - name: Build Rust bridge for web (wasm, single-threaded)
+        run: |
+          flutter_rust_bridge_codegen build-web --release \
+            --wasm-pack-rustflags "-C target-feature=+bulk-memory,+mutable-globals"
 
       - name: Fetch Dart dependencies
         run: flutter pub get
 
       # Produces build/web/ (index.html, main.dart.js, the wasm bundle, assets).
       # --base-href makes every asset URL resolve under the project Pages path.
-      # --no-web-resources-cdn bundles CanvasKit locally instead of fetching it
-      # from gstatic.com, so every request stays same-origin and the page can be
-      # cross-origin isolated under COEP: require-corp (see the COOP/COEP step).
-      # --pwa-strategy=none disables Flutter's own service worker: it registers at
-      # the same scope as our COOP/COEP worker and would otherwise replace it,
-      # dropping the isolation headers and breaking the threaded wasm.
+      # The single-threaded wasm needs no special headers, so a plain build works.
       - name: Build Flutter web (release)
-        run: flutter build web --release --no-web-resources-cdn --pwa-strategy=none --base-href "/${{ github.event.repository.name }}/"
+        run: flutter build web --release --base-href "/${{ github.event.repository.name }}/"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

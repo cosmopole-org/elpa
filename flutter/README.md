@@ -151,10 +151,12 @@ does). The CI workflows therefore build and place the library themselves:
   matching the loader stem FRB derives from the crate's `lib` target.
 - **Web** (`.github/workflows/flutter-web-pages.yml`):
   `flutter_rust_bridge_codegen build-web` compiles the crate to wasm under
-  `web/pkg`. That wasm is multi-threaded (shared memory), so the page must be
-  **cross-origin isolated**; on GitHub Pages a `coi-serviceworker.js` (see
-  `tools/`) injects the required COOP/COEP headers client-side, and the build
-  uses `--no-web-resources-cdn` to keep CanvasKit same-origin.
+  `web/pkg`. It is built **single-threaded** (`--wasm-pack-rustflags` dropping
+  `+atomics`): FRB's default is a multi-threaded, shared-memory module that only
+  loads on a cross-origin-isolated page *and* traps (`RuntimeError: unreachable`)
+  when its synchronous FFI blocks on the browser's main thread. This app makes
+  only `#[frb(sync)]` calls, so a single-threaded module is both correct and
+  hostable on any static host (GitHub Pages) with no special headers.
 
 If you'd rather have the standard cargokit integration build the library on every
 `flutter run`/`flutter build`, run `flutter_rust_bridge_codegen integrate` once
