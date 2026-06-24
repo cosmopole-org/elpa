@@ -1,21 +1,65 @@
-// The demo Elpa application.
+// The demo Elpa application — multi-widget, multi-scope.
 //
 // It runs entirely on the Elpian VM and drives the Flutter UI through the
-// messaging pipe: it streams a widget-tree description on the `flutter.render`
-// channel and receives user events on `flutter.event`. No Dart code knows what
-// this app does — the UI is data, authored here.
+// messaging pipe. The UI is split into independent **render scopes** (nodes
+// marked `boundary: true`): two counters and an animated clock. Each scope is
+// updated on its own channel with `flutter.patch`, so a change to one scope
+// rerenders ONLY that scope — the others (and the shell) are untouched.
 //
-// Caching is demonstrated via `rev`: the count Text bumps its `rev` every render
-// so it rebuilds, while the button Row keeps `rev: 0` so Flutter reuses the
-// previously-built buttons untouched.
+//   • initial layout      → flutter.render (full tree, once)
+//   • "Increment A" tap    → flutter.patch "counterA"   (only A rebuilds)
+//   • "Increment B" tap    → flutter.patch "counterB"   (only B rebuilds)
+//   • every animation tick → flutter.patch "clock"      (only the clock rebuilds)
 
-var count = 0;
+var a = 0;
+var b = 0;
+var ticks = 0;
 
-function ui() {
+// One counter, as a self-contained render scope (boundary). Its key is the scope
+// address the host patches; `rev` lets the inner Text memoize across rebuilds.
+function counterScope(key, label, value, handler) {
+  return {
+    type: "Column",
+    key: key,
+    boundary: true,
+    rev: value,
+    props: { mainAxisAlignment: "center", crossAxisAlignment: "center", shrink: true },
+    children: [
+      {
+        type: "Text",
+        key: key + ".text",
+        rev: value,
+        props: { text: label + ": " + value, style: { size: 28.0, bold: true } }
+      },
+      { type: "SizedBox", props: { height: 8.0 } },
+      {
+        type: "Button",
+        key: key + ".btn",
+        props: { label: "Increment " + label },
+        events: { onTap: handler }
+      }
+    ]
+  };
+}
+
+// An animated render scope: it repaints every frame but, being its own scope,
+// never forces the counters or the shell to rebuild.
+function clockScope() {
+  return {
+    type: "Text",
+    key: "clock",
+    boundary: true,
+    rev: ticks,
+    props: { text: "frames rendered in the clock scope: " + ticks, style: { size: 14.0 } }
+  };
+}
+
+// The full layout, composed of the scopes above plus static chrome.
+function fullUi() {
   return {
     type: "Scaffold",
     key: "root",
-    props: { title: "Elpa + Rust + Flutter" },
+    props: { title: "Elpa multi-scope demo" },
     children: [
       {
         type: "Center",
@@ -24,26 +68,20 @@ function ui() {
           {
             type: "Column",
             key: "col",
-            props: { mainAxisAlignment: "center", crossAxisAlignment: "center" },
+            props: { mainAxisAlignment: "center", crossAxisAlignment: "center", shrink: true },
             children: [
               {
                 type: "Text",
-                key: "count",
-                rev: count,
-                props: { text: "Count: " + count, style: { size: 32.0, bold: true } }
+                key: "header",
+                rev: 0,
+                props: { text: "Each counter is its own render scope", style: { size: 16.0, bold: true } }
               },
               { type: "SizedBox", props: { height: 24.0 } },
-              {
-                type: "Row",
-                key: "buttons",
-                rev: 0,
-                props: { mainAxisAlignment: "center", shrink: true },
-                children: [
-                  { type: "Button", key: "dec", props: { label: " - " }, events: { onTap: "dec" } },
-                  { type: "SizedBox", props: { width: 16.0 } },
-                  { type: "Button", key: "inc", props: { label: " + " }, events: { onTap: "inc" } }
-                ]
-              }
+              counterScope("counterA", "A", a, "incA"),
+              { type: "SizedBox", props: { height: 16.0 } },
+              counterScope("counterB", "B", b, "incB"),
+              { type: "SizedBox", props: { height: 24.0 } },
+              clockScope()
             ]
           }
         ]
@@ -52,18 +90,35 @@ function ui() {
   };
 }
 
-function render() {
-  askHost("host.send", ["flutter.render", ui()]);
+function send(channel, message) {
+  askHost("host.send", [channel, message]);
 }
 
-// First frame.
-render();
+function patch(key, node) {
+  send("flutter.patch", { key: key, node: node });
+}
 
-// Inbound events from Flutter (taps) arrive here.
+// Initial full render, then ask the shell to run the animation ticker (which
+// only drives the clock scope).
+send("flutter.render", fullUi());
+send("flutter.tick", { on: true });
+
+// Inbound taps from Flutter: patch just the affected scope.
 function onHostMessage(msg) {
   if (msg.channel === "flutter.event") {
     var handler = msg.message.handler;
-    if (handler === "inc") { count = count + 1; render(); }
-    else if (handler === "dec") { count = count - 1; render(); }
+    if (handler === "incA") {
+      a = a + 1;
+      patch("counterA", counterScope("counterA", "A", a, "incA"));
+    } else if (handler === "incB") {
+      b = b + 1;
+      patch("counterB", counterScope("counterB", "B", b, "incB"));
+    }
   }
+}
+
+// Each animation tick repaints only the clock scope.
+function onFrame(dt) {
+  ticks = ticks + 1;
+  patch("clock", clockScope());
 }

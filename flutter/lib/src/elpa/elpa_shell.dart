@@ -41,6 +41,7 @@ class ElpaShell extends StatefulWidget {
 class _ElpaShellState extends State<ElpaShell> with SingleTickerProviderStateMixin {
   late final ElpaWidgetRegistry _registry;
   late final WidgetCache _cache;
+  late final ScopeRegistry _scopes;
   late final ElpaBuildScope _scope;
   late final Ticker _ticker;
   final _subs = <StreamSubscription<dynamic>>[];
@@ -57,9 +58,11 @@ class _ElpaShellState extends State<ElpaShell> with SingleTickerProviderStateMix
     super.initState();
     _registry = buildDefaultRegistry();
     _cache = WidgetCache();
+    _scopes = ScopeRegistry();
     _scope = ElpaBuildScope(
       registry: _registry,
       cache: _cache,
+      scopes: _scopes,
       dispatch: _dispatchEvent,
     );
     _ticker = createTicker(_onTick);
@@ -90,12 +93,22 @@ class _ElpaShellState extends State<ElpaShell> with SingleTickerProviderStateMix
   }
 
   void _onPatch(Map<String, Object?> json) {
-    // A patch replaces the subtree identified by `key` with `node`, leaving the
-    // rest of the tree (and its cached widgets) untouched.
+    // A patch replaces the subtree identified by `key` with `node`. When that key
+    // is a mounted render scope, the update is routed straight to *its* State —
+    // only that scope rebuilds and repaints; the shell does not `setState`. The
+    // root model is mirrored (no rebuild) so a later full render stays coherent
+    // and never clobbers the in-place update.
     final key = json['key'] as String?;
     final nodeJson = json['node'];
     if (key == null || _root == null || nodeJson is! Map) return;
     final replacement = DslNode.fromJson(nodeJson.cast<String, Object?>());
+
+    if (_scopes.update(key, replacement)) {
+      _root = _replaceByKey(_root!, key, replacement);
+      return;
+    }
+
+    // No scope mounted for this key: fall back to a full-tree rebuild.
     setState(() {
       _cache.invalidate(key);
       _root = _replaceByKey(_root!, key, replacement);
@@ -105,7 +118,12 @@ class _ElpaShellState extends State<ElpaShell> with SingleTickerProviderStateMix
   void _onInvalidate(Map<String, Object?> json) {
     final key = json['key'] as String?;
     if (key == null) return;
-    setState(() => _cache.invalidate(key));
+    _cache.invalidate(key);
+    // Prefer an isolated scope rebuild; only fall back to a shell rebuild if no
+    // scope owns the key.
+    if (!_scopes.invalidate(key)) {
+      setState(() {});
+    }
   }
 
   void _onDefine(Map<String, Object?> json) {
