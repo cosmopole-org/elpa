@@ -68,12 +68,6 @@ class Painter {
         }
         this.clipOn = 1.0; this.clCx = ncx; this.clCy = ncy; this.clHw = nhw; this.clHh = nhh; this.clR = nr;
     }
-    // Append the active clip (2 vec4s) to an instance; called by every primitive.
-    pushClip() {
-        let o = this.out;
-        push(o, this.clCx); push(o, this.clCy); push(o, this.clHw); push(o, this.clHh);
-        push(o, this.clR); push(o, this.clipOn); push(o, 0.0); push(o, 0.0);
-    }
     translate(dx, dy) { let m = this.m; m[4] = m[4] + m[0] * dx + m[2] * dy; m[5] = m[5] + m[1] * dx + m[3] * dy; }
     scale(sx, sy) { let m = this.m; m[0] = m[0] * sx; m[1] = m[1] * sx; m[2] = m[2] * sy; m[3] = m[3] * sy; this._recompute(); }
     rotate(t) {
@@ -94,34 +88,28 @@ class Painter {
         this.raw(p[0], p[1], hw * this.sx, hh * this.sy, r * this.sa, border * this.sa, rot + this.rot, this.xcol(fill), this.xcol(bcol));
     }
     raw(cx, cy, hw, hh, r, border, rot, fill, bcol) {
-        let o = this.out;
-        push(o, cx); push(o, cy); push(o, hw); push(o, hh);
-        push(o, r); push(o, border); push(o, rot); push(o, 1.0);
-        push(o, fill[0]); push(o, fill[1]); push(o, fill[2]); push(o, fill[3]);
-        push(o, bcol[0]); push(o, bcol[1]); push(o, bcol[2]); push(o, bcol[3]);
-        this.pushClip();
+        // One `emit` appends the whole 24-float instance (16 SDF floats + the
+        // 8-float active clip) in a single native call — far cheaper than 24
+        // separate `push` calls on the per-primitive hot path.
+        emit(this.out, cx, cy, hw, hh, r, border, rot, 1.0,
+            fill[0], fill[1], fill[2], fill[3], bcol[0], bcol[1], bcol[2], bcol[3],
+            this.clCx, this.clCy, this.clHw, this.clHh, this.clR, this.clipOn, 0.0, 0.0);
     }
     // A soft drop shadow (BoxShadow): a grown, offset, heavily-feathered rect.
     shadow(cx, cy, hw, hh, r, grow, dx, dy, blur, col) {
         let p = this.xpt(cx + dx, cy + dy); let sx = this.sx; let sy = this.sy; let sa = this.sa;
         let c = this.xcol(col);
-        let o = this.out;
-        push(o, p[0]); push(o, p[1]); push(o, (hw + grow) * sx); push(o, (hh + grow) * sy);
-        push(o, (r + grow) * sa); push(o, 0.0); push(o, 0.0); push(o, blur * sa);
-        push(o, c[0]); push(o, c[1]); push(o, c[2]); push(o, c[3]);
-        push(o, 0.0); push(o, 0.0); push(o, 0.0); push(o, 0.0);
-        this.pushClip();
+        emit(this.out, p[0], p[1], (hw + grow) * sx, (hh + grow) * sy,
+            (r + grow) * sa, 0.0, 0.0, blur * sa, c[0], c[1], c[2], c[3], 0.0, 0.0, 0.0, 0.0,
+            this.clCx, this.clCy, this.clHw, this.clHh, this.clR, this.clipOn, 0.0, 0.0);
     }
     // A textured glyph quad. b carries the atlas UV rect; bcol.x = 2 flags glyph.
     glyph(cx, cy, hw, hh, u0, v0, u1, v1, col) {
         let p = this.xpt(cx, cy); let sx = this.sx; let sy = this.sy;
         let c = this.xcol(col);
-        let o = this.out;
-        push(o, p[0]); push(o, p[1]); push(o, hw * sx); push(o, hh * sy);
-        push(o, u0); push(o, v0); push(o, u1); push(o, v1);
-        push(o, c[0]); push(o, c[1]); push(o, c[2]); push(o, c[3]);
-        push(o, 2.0); push(o, 0.0); push(o, 0.0); push(o, 0.0);
-        this.pushClip();
+        emit(this.out, p[0], p[1], hw * sx, hh * sy, u0, v0, u1, v1,
+            c[0], c[1], c[2], c[3], 2.0, 0.0, 0.0, 0.0,
+            this.clCx, this.clCy, this.clHw, this.clHh, this.clR, this.clipOn, 0.0, 0.0);
     }
     // A stroked line as a rounded capsule between (ax,ay) and (bx,by).
     line(ax, ay, bx, by, thick, col) {
