@@ -1,0 +1,126 @@
+name: Deploy Flutter demo to GitHub Pages
+
+# Builds the **Flutter** app (the `flutter/` project: Elpa + flutter_rust_bridge +
+# Flutter, whose demo Elpa program is `flutter/assets/app/main.js`) for the web
+# and publishes it to GitHub Pages. The Dart entry point compiles to `main.dart.js`
+# and the Rust bridge crate (`flutter/rust`) is compiled to WebAssembly via
+# flutter_rust_bridge's `build-web`, so the whole app — demo `main.js` and all —
+# runs live in the browser at:
+#   https://<owner>.github.io/<repo>/
+#
+# The platform runner folders (`web/`) and the FRB-generated bindings are NOT
+# committed (see flutter/.gitignore); this workflow regenerates them on every run
+# with `flutter create` + `flutter_rust_bridge_codegen generate`, mirroring the
+# manual setup documented in flutter/README.md.
+#
+# One-time setup in the repo: Settings → Pages → "Build and deployment" →
+# Source = "GitHub Actions". (No branch needs selecting; this workflow deploys.)
+
+on:
+  push:
+    branches:
+      - main
+      - "claude/**"
+    paths:
+      - "flutter/**"
+      - ".github/workflows/flutter-web-pages.yml"
+  workflow_dispatch:
+
+# Permissions required by the Pages deployment.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one in-flight Pages deployment; newer pushes supersede older runs.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  # Keep the codegen tool in lock-step with the `flutter_rust_bridge` crate
+  # version pinned in flutter/rust/Cargo.lock.
+  FRB_VERSION: "2.12.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: flutter
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install Rust + wasm target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add wasm32-unknown-unknown
+
+      # The Flutter Rust bridge crate lives one level down (flutter/rust) and is
+      # excluded from the outer Cargo workspace, so it keeps its own target dir.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: flutter/rust -> target
+
+      # FRB's `build-web` drives `wasm-pack` to produce the browser-loadable wasm.
+      - name: Install wasm-pack
+        run: cargo install --locked wasm-pack
+
+      - name: Install flutter_rust_bridge_codegen
+        run: cargo install --locked flutter_rust_bridge_codegen --version "${FRB_VERSION}"
+
+      - name: Activate ffigen
+        run: dart pub global activate ffigen
+
+      # Materialize the web platform runner (gitignored; recreated each run).
+      - name: Materialize Flutter web runner
+        run: flutter create . --platforms=web --project-name elpa_app
+
+      # Generate the Dart bindings (lib/src/rust/**) and rust/src/frb_generated.rs
+      # from the #[frb]-annotated Rust under flutter/rust/src/api.
+      - name: Generate flutter_rust_bridge bindings
+        run: flutter_rust_bridge_codegen generate
+
+      # The generated glue module is committed out (a build artifact); enable it
+      # now that codegen has produced it. See flutter/rust/src/lib.rs.
+      - name: Enable generated bridge module
+        run: |
+          sed -i \
+            -e 's|^// #\[cfg(feature = "frb")\]$|#[cfg(feature = "frb")]|' \
+            -e 's|^// mod frb_generated;$|mod frb_generated;|' \
+            rust/src/lib.rs
+
+      # Compile the Rust bridge crate to WebAssembly for the browser (writes into
+      # web/pkg, where the Flutter web build picks it up).
+      - name: Build Rust bridge for web (wasm)
+        run: flutter_rust_bridge_codegen build-web --release
+
+      - name: Fetch Dart dependencies
+        run: flutter pub get
+
+      # Produces build/web/ (index.html, main.dart.js, the wasm bundle, assets).
+      # --base-href makes every asset URL resolve under the project Pages path.
+      - name: Build Flutter web (release)
+        run: flutter build web --release --base-href "/${{ github.event.repository.name }}/"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: flutter/build/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
