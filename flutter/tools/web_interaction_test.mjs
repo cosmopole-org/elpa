@@ -1,12 +1,12 @@
 // End-to-end *interaction* test for the built Flutter web app.
 //
 // The sibling `web_smoke_test.mjs` only proves the bridge doesn't trap at
-// startup. It cannot catch a UI that renders but is frozen — e.g. the demo's
-// counters/clock silently not updating because a driven-but-undefined lifecycle
-// handler panicked and poisoned the VM, or because the bridge's worker pool blew
-// up on a later turn. This test drives the real demo and asserts the UI actually
-// changes: tapping "Increment A" makes "A: 0" become "A: 1", and the animation
-// clock advances past 0.
+// startup. It cannot catch a UI that renders but is frozen — e.g. the demo
+// silently not responding because a driven-but-undefined lifecycle handler
+// panicked and poisoned the VM, or because the bridge's worker pool blew up on a
+// later turn. This test drives the real Telegram-style demo and asserts the UI
+// actually changes: the chat list renders, and tapping a chat opens its
+// conversation (a full live re-render driven by the SDK navigator).
 //
 // Flutter web paints to a canvas, so we enable Flutter's semantics tree and read
 // the rendered text from the accessibility DOM (no GPU screenshot needed). Run
@@ -80,32 +80,31 @@ const readText = () => page.evaluate(() => {
 const fail = (msg) => { console.error(`[interaction] FAIL — ${msg}`); process.exitCode = 1; };
 
 const before = await readText();
-console.log('[interaction] initial:', before.slice(0, 160));
+console.log('[interaction] initial:', before.slice(0, 200));
 if (fatal.length) { fail('startup trap:\n  - ' + fatal.join('\n  - ')); }
-else if (!/A:\s*0/.test(before)) fail('demo did not render ("A: 0" not found)');
+else if (!/Telegram/i.test(before)) fail('demo did not render the chat list ("Telegram" not found)');
+else if (!/Alice/i.test(before)) fail('seeded chats did not render ("Alice" not found)');
 
-// Tap "Increment A": locate its semantics node, else fall back to coordinates.
+// Tap the "Alice Johnson" chat row: locate its semantics node, else fall back to
+// a coordinate near the top of the list.
 const target = await page.evaluate(() => {
   const n = [...document.querySelectorAll('flt-semantics, [aria-label]')]
-    .find((e) => /Increment A/i.test(e.getAttribute('aria-label') || '') || /Increment A/i.test(e.textContent || ''));
+    .find((e) => /Alice/i.test(e.getAttribute('aria-label') || '') || /Alice/i.test(e.textContent || ''));
   if (!n) return null;
   const r = n.getBoundingClientRect();
   return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
 });
 if (target) await page.mouse.click(target.x, target.y);
-else await page.mouse.click(195, 470);
-await page.waitForTimeout(1500);
+else await page.mouse.click(195, 180);
+await page.waitForTimeout(1800);
 
 const afterTap = await readText();
-console.log('[interaction] after tap:', afterTap.slice(0, 160));
-if (!/A:\s*1/.test(afterTap)) fail('tapping "Increment A" did not update the counter to "A: 1"');
-
-// The animation clock must advance past 0 on its own.
-await page.waitForTimeout(2500);
-const afterClock = await readText();
-const m = afterClock.match(/clock scope:\s*(\d+)/);
-console.log('[interaction] clock frames:', m ? m[1] : '(not found)');
-if (!m || Number(m[1]) <= 0) fail('the animation clock did not advance past 0');
+console.log('[interaction] after tap:', afterTap.slice(0, 200));
+// The conversation shows a message that is NOT the chat-list preview (the list
+// shows only the last message), so it proves the conversation actually opened.
+if (!/review|Are we still on|Message/i.test(afterTap)) {
+  fail('tapping the chat did not open the conversation (no conversation content found)');
+}
 
 if (fatal.length && process.exitCode !== 1) fail('bridge trapped:\n  - ' + fatal.join('\n  - '));
 
@@ -115,5 +114,5 @@ server.close();
 if (process.exitCode === 1) {
   console.error('[interaction] one or more interaction checks failed.');
 } else {
-  console.log('[interaction] PASS — counters and clock update live in a real browser.');
+  console.log('[interaction] PASS — the chat list renders and a chat opens live in a real browser.');
 }

@@ -43,14 +43,15 @@ proxy UI controller and renderer for Rust/Elpa code:
 | `rust/src/engine.rs` | The Elpa engine wrapper + message-pipe transport (pure Rust, unit-tested). |
 | `rust/src/api/mod.rs` | The FRB surface: a `u64`-handle registry; `#[frb(sync)]` drive calls. |
 | `rust/src/render.rs` | The optional wgpu zero-copy native-widget integration. |
-| `rust/tests/demo_app.rs` | End-to-end test running the shipped `assets/app/main.js`. |
+| `rust/tests/demo_app.rs` | End-to-end test running the shipped SDK + messenger demo bundle. |
 | `lib/src/elpa/bridge.dart` | The `ElpaBridge` interface the UI depends on (generation-independent). |
 | `lib/src/elpa/bridge_rust.dart` | The adapter to the FRB-generated bindings. |
 | `lib/src/elpa/engine.dart` / `message_pipe.dart` | The Dart engine + per-channel pipe. |
 | `lib/src/elpa/dsl/` | The DSL node model, widget builders, and caching/boundary machinery. |
 | `lib/src/elpa/native/elpa_texture.dart` | The zero-copy `Texture` / `HtmlElementView` widget. |
 | `lib/src/elpa/elpa_shell.dart` | The shell that turns the DSL stream into a cached Flutter tree. |
-| `assets/app/main.js` | The demo Elpa app (UI authored as JS, driven over the pipe). |
+| `assets/app/sdk/` | The **Elpa SDK**: an OO authoring layer (core/theme/widgets/reactive/timing/graphics/navigation/app). |
+| `assets/app/main.js` | The demo Elpa app — a Telegram-style messenger built on the SDK, driven over the pipe. |
 
 ## The messaging pipe
 
@@ -94,12 +95,35 @@ Reserved channels (Rust is the source of truth; Dart reads them at startup):
 - **Lazy lists** — `ListView` builds children through `itemBuilder`, so off-screen
   rows are never built.
 
-The demo (`assets/app/main.js`) is built around this: two counters and an animated
-clock, each its own scope. Tapping a counter patches only that counter's scope; the
-clock patches itself every frame — none of these rebuild the others or the shell.
-The Rust end-to-end test (`rust/tests/demo_app.rs`) asserts each action emits exactly
-one scoped patch, and the Dart widget test (`test/elpa_shell_test.dart`) proves a
-patch to one scope leaves a sibling's build count unchanged.
+The demo (`assets/app/main.js`) is a Telegram-style messenger built on the **Elpa
+SDK** (`assets/app/sdk/`): a chat list, conversations with message bubbles and read
+receipts, a real text composer, settings with a live dark/light theme switch, and
+navigation between them. Each live region is its own render scope — the message
+list, the chat-header status (animated "typing…"), the composer, and the chat list
+itself — so sending a message patches only the message scope, and an incoming
+message patches only the affected list row. Timing rides the host frame pump (the
+SDK `Scheduler`): peer replies arrive on a timer and the typing indicator animates.
+The Rust end-to-end test (`rust/tests/demo_app.rs`) compiles the exact SDK + app
+bundle and asserts the scoped-patch contract; the Dart widget test
+(`test/elpa_shell_test.dart`) proves a patch to one scope leaves a sibling's build
+count unchanged.
+
+### The Elpa SDK
+
+App logic is authored against an object-oriented SDK rather than hand-written JSON.
+It is a set of modules concatenated into one VM program (`lib/main.dart`
+`kAppSources`):
+
+| Module | What it provides |
+|--------|------------------|
+| `00_core.js` | `Host` (typed `askHost` facade), `EventBus` (closures ⇄ wire handler ids), `BuildEnv`. |
+| `01_theme.js` | `Theme` — Telegram dark/light palettes, spacing, radii, typography, avatar colours. |
+| `02_widgets.js` | `Widget` base + declarative widget classes (Text, Column, Container, ListView, Button, Field, Avatar, …) — each takes a config object with named props, `child`/`children` and inline `on*` handlers, like a Flutter widget tree. |
+| `03_reactive.js` | `Component` (isolated, self-patching render scope), `Signal`, `Store`. |
+| `04_timing.js` | `Scheduler` (host-frame-driven `setTimeout`/`setInterval`), `Animation`, easing. |
+| `05_graphics.js` | `Gpu`/`FrameBuilder` over the wgpu pipe, `Scene3D`/`Camera`/`Mesh`/`Material`, `Native3DView`. |
+| `06_navigation.js` | `Page`, `Navigator` — a stack router with lifecycle hooks. |
+| `07_app.js` | `App` — the runtime that owns the services and drives render/patch. |
 
 ## The native Elpa widget (zero-copy wgpu)
 

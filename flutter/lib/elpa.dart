@@ -18,3 +18,4 @@ export 'src/elpa/dsl/cache.dart';
 export 'src/elpa/dsl/widget_builder.dart';
 export 'src/elpa/native/elpa_texture.dart';
 export 'src/elpa/widgets/elpa_host_widget.dart';
+export 'src/elpa/widgets/elpa_text_field.dart';
