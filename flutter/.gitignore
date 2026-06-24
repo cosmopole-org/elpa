@@ -20,5 +20,8 @@ pubspec.lock
 /lib/src/rust/
 /rust/src/frb_generated.rs
 
+# Node (the web smoke / interaction tests install Playwright on demand)
+/node_modules/
+
 # Rust
 /rust/target/

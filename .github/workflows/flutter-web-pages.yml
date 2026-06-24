@@ -145,6 +145,16 @@ jobs:
           npx playwright install --with-deps chromium
           node tools/web_smoke_test.mjs "/${{ github.event.repository.name }}/"
 
+      # End-to-end interaction guard: the smoke test only proves the bridge
+      # doesn't trap at startup. This drives the real demo and fails if the UI
+      # renders but is frozen — tapping "Increment A" must update the counter and
+      # the animation clock must advance. It catches regressions a startup-only
+      # check misses (e.g. a driven-but-undefined lifecycle handler poisoning the
+      # VM, or the bridge's worker pool blowing up on a later turn).
+      - name: Interaction-test the web build (headless browser)
+        working-directory: flutter
+        run: node tools/web_interaction_test.mjs "/${{ github.event.repository.name }}/"
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
