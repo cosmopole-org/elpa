@@ -152,8 +152,8 @@ pub fn dispose(handle: u64) -> bool {
 
 /// Forward a pointer event (logical coordinates); returns emitted UI messages.
 #[frb(sync)]
-pub fn pointer(handle: u64, phase: FfiPointer, x: f64, y: f64, button: i64) -> Vec<FfiMessage> {
-    with(handle, |e| into_ffi(e.pointer(phase.into(), x, y, button))).unwrap_or_default()
+pub fn pointer(handle: u64, phase: FfiPointer, x: f64, y: f64, button: i32) -> Vec<FfiMessage> {
+    with(handle, |e| into_ffi(e.pointer(phase.into(), x, y, button as i64))).unwrap_or_default()
 }
 
 /// Forward a scroll/wheel event.

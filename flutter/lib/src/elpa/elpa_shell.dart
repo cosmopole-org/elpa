@@ -16,6 +16,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/gestures.dart' show PointerSignalEvent, PointerScrollEvent;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
