@@ -1,9 +1,10 @@
 name: Build Flutter demo APK
 
 # Builds the **Flutter** app (the `flutter/` project: Elpa + flutter_rust_bridge +
-# Flutter, whose demo Elpa program is `flutter/assets/app/main.js`) into a release
-# Android APK, uploads it as a workflow artifact, and commits + pushes the APK to
-# the repository root as `elpa-flutter-demo.apk`.
+# Flutter, whose demo Elpa program is `flutter/assets/app/main.js`) into release
+# Android APKs — one per ABI via `--split-per-abi` — uploads them as workflow
+# artifacts, and commits + pushes each APK to the repository root as
+# `elpa-flutter-demo-<abi>.apk` (e.g. `elpa-flutter-demo-arm64-v8a.apk`).
 #
 # flutter_rust_bridge's cargokit Gradle hooks cross-compile the Rust bridge crate
 # (`flutter/rust`) for the Android ABIs automatically during `flutter build apk`,
@@ -129,25 +130,33 @@ jobs:
               -o ../android/app/src/main/jniLibs \
               build --release )
 
-          # Output: build/app/outputs/flutter-apk/app-release.apk.
-          flutter build apk --release
+          # Build one APK per ABI instead of a single fat APK. Outputs:
+          #   build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          #   build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+          #   build/app/outputs/flutter-apk/app-x86_64-release.apk
+          flutter build apk --release --split-per-abi
 
-      - name: Upload APK artifact
+      - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: elpa-flutter-demo-apk
-          path: flutter/build/app/outputs/flutter-apk/app-release.apk
+          name: elpa-flutter-demo-apks
+          path: flutter/build/app/outputs/flutter-apk/app-*-release.apk
 
-      - name: Commit APK to repository root
+      - name: Commit APKs to repository root
         run: |
           set -euo pipefail
-          cp flutter/build/app/outputs/flutter-apk/app-release.apk ./elpa-flutter-demo.apk
+          # Copy each per-ABI APK to the repo root as elpa-flutter-demo-<abi>.apk.
+          # flutter names them app-<abi>-release.apk (e.g. app-arm64-v8a-release.apk).
+          for apk in flutter/build/app/outputs/flutter-apk/app-*-release.apk; do
+            abi=$(basename "$apk" | sed -E 's/^app-(.*)-release\.apk$/\1/')
+            cp "$apk" "./elpa-flutter-demo-${abi}.apk"
+            git add "elpa-flutter-demo-${abi}.apk"
+          done
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add elpa-flutter-demo.apk
           if git diff --cached --quiet; then
-            echo "APK unchanged; nothing to commit."
+            echo "APKs unchanged; nothing to commit."
           else
-            git commit -m "ci: build Flutter demo Android APK [skip ci]"
+            git commit -m "ci: build Flutter demo Android APKs (per ABI) [skip ci]"
             git push origin HEAD:${{ github.ref_name }}
           fi
