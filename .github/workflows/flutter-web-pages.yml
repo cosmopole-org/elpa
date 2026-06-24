@@ -61,6 +61,13 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup target add wasm32-unknown-unknown
+          # flutter_rust_bridge `build-web` shells out to
+          # `wasm-pack build ... -- -Z build-std=std,panic_abort` pinned to the
+          # nightly toolchain so it can rebuild std with wasm atomics. That needs
+          # the nightly toolchain, its rust-src component, and the wasm target.
+          rustup toolchain install nightly --profile minimal
+          rustup component add rust-src --toolchain nightly
+          rustup target add wasm32-unknown-unknown --toolchain nightly
 
       # The Flutter Rust bridge crate lives one level down (flutter/rust) and is
       # excluded from the outer Cargo workspace, so it keeps its own target dir.
