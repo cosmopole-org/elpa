@@ -3,12 +3,39 @@
 /// Boots the native bridge, loads the demo Elpa app's JavaScript from assets, and
 /// hands it to [ElpaApp], which runs it on the Elpian VM and renders it as a
 /// Flutter UI over the message pipe.
+///
+/// The app is authored against the **Elpa SDK** (`assets/app/sdk/*.js`): an
+/// object-oriented authoring layer (widgets, components, timing, graphics,
+/// navigation, theme). The SDK modules and the app source are concatenated into a
+/// single program in [bundledAppSource] before being compiled on the VM — the
+/// Elpian VM compiles one source unit, so the "modules" are a load-time bundle.
 library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
 import 'package:elpa_app/elpa.dart';
+
+/// The Elpa SDK modules, in dependency order, followed by the app entry point.
+/// This is the bundle manifest; the Rust end-to-end test mirrors it so both halves
+/// compile the exact same program.
+const List<String> kAppSources = [
+  'assets/app/sdk/00_core.js',
+  'assets/app/sdk/01_theme.js',
+  'assets/app/sdk/02_widgets.js',
+  'assets/app/sdk/03_reactive.js',
+  'assets/app/sdk/04_timing.js',
+  'assets/app/sdk/05_graphics.js',
+  'assets/app/sdk/06_navigation.js',
+  'assets/app/sdk/07_app.js',
+  'assets/app/main.js',
+];
+
+/// Load and concatenate the SDK modules + the app into one VM program.
+Future<String> bundledAppSource() async {
+  final parts = await Future.wait(kAppSources.map(rootBundle.loadString));
+  return parts.join('\n');
+}
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -17,7 +44,7 @@ Future<void> main() async {
     // Load the native engine (the flutter_rust_bridge dynamic library) and the
     // app's program. Both happen once at startup.
     final bridge = await RustElpaBridge.init();
-    final jsSource = await rootBundle.loadString('assets/app/main.js');
+    final jsSource = await bundledAppSource();
 
     runApp(ElpaDemoApp(bridge: bridge, jsSource: jsSource));
   } catch (error, stackTrace) {

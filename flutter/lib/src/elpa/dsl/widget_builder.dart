@@ -12,6 +12,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../native/elpa_texture.dart';
+import '../widgets/elpa_text_field.dart';
 import 'cache.dart';
 import 'dsl_node.dart';
 
@@ -25,6 +26,8 @@ ElpaWidgetRegistry buildDefaultRegistry() {
           n.propString('text'),
           textAlign: _textAlign(n.propString('align', 'start')),
           style: _textStyle(n.props['style']),
+          maxLines: (n.props['maxLines'] as num?)?.toInt(),
+          overflow: n.propBool('ellipsis') ? TextOverflow.ellipsis : null,
         ),
 
     'Column': (c, n, s) => Column(
@@ -89,6 +92,8 @@ ElpaWidgetRegistry buildDefaultRegistry() {
 
     'IconButton': (c, n, s) => IconButton(
           onPressed: _tap(n, s, 'onTap'),
+          color: _color(n.props['color']),
+          iconSize: n.props['size'] == null ? null : n.propDouble('size'),
           icon: Icon(_icon(n.propString('icon', 'star'))),
         ),
 
@@ -113,10 +118,13 @@ ElpaWidgetRegistry buildDefaultRegistry() {
     },
 
     'Scaffold': (c, n, s) => Scaffold(
+          backgroundColor: _color(n.props['backgroundColor']),
+          resizeToAvoidBottomInset: n.propBool('resizeToAvoidBottomInset', true),
           appBar: n.props['title'] == null
               ? null
               : AppBar(title: Text(n.propString('title'))),
           body: _childNamed(c, n, s, 'body') ?? _onlyChild(c, n, s),
+          bottomNavigationBar: _childNamed(c, n, s, 'bottom'),
           floatingActionButton: _childNamed(c, n, s, 'fab'),
         ),
 
@@ -126,6 +134,103 @@ ElpaWidgetRegistry buildDefaultRegistry() {
             (f) => f.name == n.propString('fit', 'cover'),
             orElse: () => BoxFit.cover,
           ),
+        ),
+
+    // ---- Extended vocabulary (icons, dividers, scrolling, input) -------------
+
+    'Icon': (c, n, s) => Icon(
+          _icon(n.propString('icon', 'star')),
+          size: n.props['size'] == null ? null : n.propDouble('size'),
+          color: _color(n.props['color']),
+        ),
+
+    'Divider': (c, n, s) => Divider(
+          height: n.props['height'] == null ? null : n.propDouble('height'),
+          thickness: n.props['thickness'] == null ? null : n.propDouble('thickness'),
+          indent: n.propDouble('indent'),
+          endIndent: n.propDouble('endIndent'),
+          color: _color(n.props['color']),
+        ),
+
+    'Spacer': (c, n, s) => Spacer(flex: (n.props['flex'] as num?)?.toInt() ?? 1),
+
+    'Align': (c, n, s) => Align(
+          alignment: _alignment(n.propString('alignment', 'center')),
+          widthFactor: (n.props['widthFactor'] as num?)?.toDouble(),
+          heightFactor: (n.props['heightFactor'] as num?)?.toDouble(),
+          child: _onlyChild(c, n, s),
+        ),
+
+    'Opacity': (c, n, s) => Opacity(
+          opacity: n.propDouble('opacity', 1),
+          child: _onlyChild(c, n, s),
+        ),
+
+    'ClipOval': (c, n, s) => ClipOval(child: _onlyChild(c, n, s)),
+
+    'ClipRRect': (c, n, s) => ClipRRect(
+          borderRadius: BorderRadius.circular(n.propDouble('radius', 8)),
+          child: _onlyChild(c, n, s),
+        ),
+
+    'SafeArea': (c, n, s) => SafeArea(
+          top: n.propBool('top', true),
+          bottom: n.propBool('bottom', true),
+          left: n.propBool('left', true),
+          right: n.propBool('right', true),
+          child: _onlyChild(c, n, s),
+        ),
+
+    'SingleChildScrollView': (c, n, s) => SingleChildScrollView(
+          scrollDirection: n.propString('axis', 'vertical') == 'horizontal'
+              ? Axis.horizontal
+              : Axis.vertical,
+          padding: n.props['padding'] == null ? null : _insets(n.props['padding']),
+          reverse: n.propBool('reverse'),
+          child: _onlyChild(c, n, s),
+        ),
+
+    'Wrap': (c, n, s) => Wrap(
+          spacing: n.propDouble('spacing'),
+          runSpacing: n.propDouble('runSpacing'),
+          alignment: switch (n.propString('alignment', 'start')) {
+            'center' => WrapAlignment.center,
+            'end' => WrapAlignment.end,
+            'spaceBetween' => WrapAlignment.spaceBetween,
+            _ => WrapAlignment.start,
+          },
+          children: s.buildChildren(c, n),
+        ),
+
+    'Positioned': (c, n, s) => Positioned(
+          left: (n.props['left'] as num?)?.toDouble(),
+          top: (n.props['top'] as num?)?.toDouble(),
+          right: (n.props['right'] as num?)?.toDouble(),
+          bottom: (n.props['bottom'] as num?)?.toDouble(),
+          width: (n.props['width'] as num?)?.toDouble(),
+          height: (n.props['height'] as num?)?.toDouble(),
+          child: _onlyChild(c, n, s),
+        ),
+
+    'Switch': (c, n, s) => Switch(
+          value: n.propBool('value'),
+          onChanged: _boolEvent(n, s, 'onChanged'),
+        ),
+
+    'TextField': (c, n, s) => ElpaTextField(
+          value: n.propString('value'),
+          hint: n.propString('hint'),
+          obscure: n.propBool('obscure'),
+          clearOnSubmit: n.propBool('clearOnSubmit'),
+          clearNonce: (n.props['clearNonce'] as num?)?.toInt() ?? 0,
+          minLines: (n.props['minLines'] as num?)?.toInt() ?? 1,
+          maxLines: (n.props['maxLines'] as num?)?.toInt() ?? 6,
+          radius: n.propDouble('radius'),
+          fillColor: _color(n.props['fillColor']),
+          textColor: _color(n.props['textColor']),
+          hintColor: _color(n.props['hintColor']),
+          onChanged: _fieldEvent(n, s, 'onChanged'),
+          onSubmitted: _fieldEvent(n, s, 'onSubmitted'),
         ),
 
     // The native, wgpu-rendered Elpa widget: a zero-copy texture (or platform
@@ -165,6 +270,20 @@ VoidCallback? _tap(DslNode n, ElpaBuildScope s, String event) {
   final id = n.events[event];
   if (id == null) return null;
   return () => s.dispatch(id, {'event': event, 'key': n.key});
+}
+
+/// A text-field event: dispatches the current text back to the app as `value`.
+ElpaFieldEvent? _fieldEvent(DslNode n, ElpaBuildScope s, String event) {
+  final id = n.events[event];
+  if (id == null) return null;
+  return (value) => s.dispatch(id, {'event': event, 'key': n.key, 'value': value});
+}
+
+/// A toggle event (Switch): dispatches the new boolean as `value`.
+ValueChanged<bool>? _boolEvent(DslNode n, ElpaBuildScope s, String event) {
+  final id = n.events[event];
+  if (id == null) return null;
+  return (value) => s.dispatch(id, {'event': event, 'key': n.key, 'value': value});
 }
 
 TextAlign _textAlign(String v) => switch (v) {
@@ -246,5 +365,39 @@ IconData _icon(String name) => switch (name) {
       'home' => Icons.home,
       'settings' => Icons.settings,
       'favorite' => Icons.favorite,
+      // Messenger / chat vocabulary.
+      'send' => Icons.send,
+      'search' => Icons.search,
+      'back' || 'arrow_back' => Icons.arrow_back,
+      'more' || 'more_vert' => Icons.more_vert,
+      'attach' || 'attach_file' => Icons.attach_file,
+      'mic' => Icons.mic,
+      'camera' => Icons.photo_camera,
+      'image' => Icons.image,
+      'emoji' => Icons.emoji_emotions_outlined,
+      'check' => Icons.check,
+      'done_all' => Icons.done_all,
+      'person' => Icons.person,
+      'people' || 'group' => Icons.people,
+      'call' => Icons.call,
+      'video_call' => Icons.videocam,
+      'edit' => Icons.edit,
+      'delete' => Icons.delete,
+      'notifications' => Icons.notifications,
+      'lock' => Icons.lock,
+      'logout' => Icons.logout,
+      'chat' => Icons.chat_bubble,
+      'pin' => Icons.push_pin,
+      'mute' => Icons.volume_off,
+      'verified' => Icons.verified,
+      'phone' => Icons.phone,
+      'key' => Icons.vpn_key,
+      'storage' => Icons.folder,
+      'palette' => Icons.palette,
+      'language' => Icons.language,
+      'help' => Icons.help_outline,
+      'saved' => Icons.bookmark,
+      'archive' => Icons.archive,
+      'new_chat' => Icons.add_comment,
       _ => Icons.star,
     };
