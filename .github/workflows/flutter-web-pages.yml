@@ -132,6 +132,19 @@ jobs:
       - name: Build Flutter web (release)
         run: flutter build web --release --base-href "/${{ github.event.repository.name }}/"
 
+      # End-to-end guard: load the built site in real headless Chromium and fail
+      # the build if the Rust bridge traps at startup — i.e. the multi-threaded
+      # flutter_rust_bridge WorkerPool panic (`#<Memory> could not be cloned` →
+      # `RuntimeError: unreachable`) that produced the blank "Elpa failed to
+      # start" screen. This proves the single-threaded wasm actually boots in a
+      # browser, on every deploy, instead of trusting that it does.
+      - name: Smoke-test the web build (headless browser)
+        working-directory: flutter
+        run: |
+          npm install --no-save playwright@1.55.0
+          npx playwright install --with-deps chromium
+          node tools/web_smoke_test.mjs "/${{ github.event.repository.name }}/"
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
