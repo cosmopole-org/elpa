@@ -334,6 +334,60 @@ impl<'s> WgpuBackend<'s> {
         }
     }
 
+    /// Read the offscreen render-target texture back to CPU as tightly-packed
+    /// `RGBA8` bytes (`width*height*4`, row-major, top-left origin). `None` for a
+    /// swapchain target (a surface is presented, not read). Blocks on the GPU copy,
+    /// so it is for tests / screenshots, not the hot path. The target's format must
+    /// be a 4-byte RGBA/BGRA unorm (the offscreen default).
+    pub fn read_target_rgba(&self) -> Option<Vec<u8>> {
+        let (texture, w, h) = match &self.target {
+            RenderTarget::Texture { texture, width, height, .. } => (texture, *width, *height),
+            RenderTarget::Surface { .. } => return None,
+        };
+        // Buffer rows must be 256-byte aligned for texture->buffer copies.
+        let unpadded = (w * 4) as usize;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
+        let padded = unpadded.div_ceil(align) * align;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("elpa-readback"),
+            size: (padded * h as usize) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc =
+            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded as u32),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.queue.submit([enc.finish()]);
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        self.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+        let data = slice.get_mapped_range();
+        let mut out = Vec::with_capacity(unpadded * h as usize);
+        for row in 0..h as usize {
+            let start = row * padded;
+            out.extend_from_slice(&data[start..start + unpadded]);
+        }
+        drop(data);
+        buffer.unmap();
+        Some(out)
+    }
+
     /// The configured color format apps must match in their pipelines (read by the
     /// app via `gpu.surfaceInfo`). Works for both a swapchain and a texture target.
     pub fn surface_format(&self) -> wgpu::TextureFormat {

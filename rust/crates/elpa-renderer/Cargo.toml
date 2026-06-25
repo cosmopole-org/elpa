@@ -22,3 +22,6 @@ base64 = { version = "0.22", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = "1.10"
+
+[dev-dependencies]
+pollster = "0.4"
