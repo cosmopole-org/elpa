@@ -4454,14 +4454,24 @@ impl Executor {
                                 }
                             } else if index.typ >= 1 && index.typ <= 3 {
                                 if indexed.typ == 9 {
-                                    let arr = indexed.as_array();
-                                    if index.typ == 1 {
-                                        arr.borrow_mut().data[index.as_i16() as usize] = data;
-                                    } else if index.typ == 2 {
-                                        arr.borrow_mut().data[index.as_i32() as usize] = data;
-                                    } else {
-                                        arr.borrow_mut().data[index.as_i64() as usize] = data;
+                                    let sidx = match index.typ {
+                                        1 => index.as_i16() as i64,
+                                        2 => index.as_i32() as i64,
+                                        _ => index.as_i64(),
+                                    };
+                                    if sidx < 0 {
+                                        panic!("elpian error: negative array index");
                                     }
+                                    let idx = sidx as usize;
+                                    let arr = indexed.as_array();
+                                    let mut b = arr.borrow_mut();
+                                    // JS semantics: assigning at or past the end grows
+                                    // the array, filling the gap with null (e.g.
+                                    // `var out = []; out[i] = v;`).
+                                    if idx >= b.data.len() {
+                                        b.data.resize(idx + 1, Val { typ: 0, data: Payload::Null });
+                                    }
+                                    b.data[idx] = data;
                                 } else {
                                     panic!(
                                     "elpian error: non object value can not be indexed by string"
