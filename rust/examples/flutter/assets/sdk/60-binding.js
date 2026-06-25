@@ -1,42 +1,19 @@
 // Elpa Flutter — WidgetsFlutterBinding + runApp (the glue to the host).
 //
 // The binding owns the engine services (Painter, FontEngine, Ticker), reads the
-// surface metrics, builds the one render pipeline, and runs the per-frame
-// pipeline that ends in `gpu.submit`. This is Flutter's RendererBinding +
+// surface metrics, and runs the per-frame pipeline that ends in `scene.submit`
+// (a Vello scene of vector ops). This is Flutter's RendererBinding +
 // WidgetsBinding: it holds the RenderView, drives drawFrame (build → layout →
 // paint → composite → submit), routes pointer events through a hit test, and
 // schedules frames for implicit animations.
 //
-// NOTE (step 1): the rendering + widgets layers are introduced in later modules.
-// This module is structured so those layers slot in: `drawFrame` resets the
-// painter, paints (today: a callback; later: the RenderView), and submits. The
-// pipeline / submit code below is the final, reused implementation.
+// `drawFrame` resets the Painter, paints the RenderView (or a direct callback),
+// then submits the recorded Vello scene; `submit` is the final implementation.
 
-// The shared SDF pipeline resources (one pipeline draws the whole UI).
-function sdfPipelineResources() {
-    return [
-        { kind: "shader", id: "elpa.fl.shader", wgsl: SDF_WGSL },
-        { kind: "bindGroupLayout", id: "elpa.fl.bgl",
-          entries: [
-              { binding: 0, visibility: ["VERTEX"], ty: "uniform" },
-              { binding: 1, visibility: ["FRAGMENT"], ty: "texture" },
-              { binding: 2, visibility: ["FRAGMENT"], ty: "sampler" }] },
-        { kind: "pipelineLayout", id: "elpa.fl.layout", bind_group_layouts: ["elpa.fl.bgl"] },
-        { kind: "renderPipeline", id: "elpa.fl.pipe", layout: "elpa.fl.layout",
-          vertex: { module: "elpa.fl.shader", entry_point: "vs", buffers: [{
-              array_stride: 96, step_mode: "instance", attributes: [
-                  { format: "float32x4", offset: 0, shader_location: 0 },
-                  { format: "float32x4", offset: 16, shader_location: 1 },
-                  { format: "float32x4", offset: 32, shader_location: 2 },
-                  { format: "float32x4", offset: 48, shader_location: 3 },
-                  { format: "float32x4", offset: 64, shader_location: 4 },
-                  { format: "float32x4", offset: 80, shader_location: 5 }] }] },
-          fragment: { module: "elpa.fl.shader", entry_point: "fs", targets: [{
-              format: SURFACE_FMT,
-              blend: { color: { src_factor: "src-alpha", dst_factor: "one-minus-src-alpha", operation: "add" },
-                       alpha: { src_factor: "one", dst_factor: "one-minus-src-alpha", operation: "add" } } }] } },
-    ];
-}
+// The kit draws through the Vello scene pipe (`scene.submit`): there is no wgpu
+// pipeline to declare — the host rasterizes the high-level vector ops the Painter
+// records. (Raw wgpu survives as the `rawWgpu` scene op, which this kit does not
+// need.)
 
 class WidgetsBinding {
     constructor() {
@@ -60,12 +37,6 @@ class WidgetsBinding {
         // Hit-test bookkeeping for gesture dispatch.
         this.downListeners = []; this.downTargets = [];
         this.downX = 0.0; this.downY = 0.0; this.dragDist = 0.0;
-        // The SDF pipeline descriptors (shader/layout/pipeline) are constant for
-        // the app's lifetime. Build the (sizeable) nested descriptor tree once and
-        // reuse it every frame instead of reconstructing ~20 objects per submit —
-        // the host caches GPU resources by id, so re-sending the identical tree is
-        // free, and the VM no longer rebuilds it on the hot frame path.
-        this._pipeRes = 0;
     }
 
     // Schedule a frame (Flutter's SchedulerBinding.scheduleFrame). The host pumps
@@ -87,7 +58,6 @@ class WidgetsBinding {
         let si = askHost("gpu.surfaceInfo", []);
         if (isNull(si)) { return 0; }
         this.pw = num(si.width); this.ph = num(si.height);
-        if (has(si, "colorFormat")) { SURFACE_FMT = si.colorFormat; }
         this.dpr = 1.0;
         if (has(si, "scaleFactor")) { this.dpr = num(si.scaleFactor); }
         if (this.dpr < 0.1) { this.dpr = 1.0; }
@@ -101,53 +71,39 @@ class WidgetsBinding {
     // root scale(dpr) so the tree lays out and paints in *logical* pixels (dp),
     // exactly as Flutter's RenderView scales by devicePixelRatio.
     drawFrame() {
-        if (this.font.atlas == 0) { this.font.loadAtlas(); }
         this.readSurface();
         this._needsFrame = 0.0;
         // Phase 1: rebuild dirty elements (build → reconcile render tree).
         if (this.buildOwner != 0) { this.buildOwner.buildScope(this.rootElement); }
-        let inst = [];
+        let ops = [];
+        this.painter.reset(ops);
+        this.painter.scale(this.dpr, this.dpr);
+        this.paintBackground();
         if (this.renderView.child != 0) {
             this.renderView.setConfiguration(this.lw, this.lh);
             this.pipelineOwner.flushLayout();
-            this.painter.reset(inst);
-            this.painter.scale(this.dpr, this.dpr);
             let ctx = new PaintingContext(new Canvas(this.painter, this.font));
             this.pipelineOwner.flushPaint(ctx);
         } else {
-            this.painter.reset(inst);
-            this.painter.scale(this.dpr, this.dpr);
             if (this.paintFn != 0) { this.paintFn(new Canvas(this.painter, this.font), new Size(this.lw, this.lh)); }
         }
-        this.submit(inst);
+        this.painter.finish();
+        this.submit(ops);
     }
 
-    frameBindings() {
-        return [
-            bufF32("elpa.fl.globals", ["UNIFORM", "COPY_DST"], [this.pw, this.ph, 0.0, 0.0]),
-            { kind: "bindGroup", id: "elpa.fl.gb", layout: "elpa.fl.bgl", entries: [
-                { binding: 0, resource: { type: "buffer", buffer: "elpa.fl.globals" } },
-                { binding: 1, resource: { type: "textureView", texture: this.font.atlasId() } },
-                { binding: 2, resource: { type: "sampler", sampler: "elpa.fl.samp" } } ] },
-        ];
+    // Clear the surface by filling the whole logical canvas with the scaffold
+    // colour as the first scene op (Vello composites the rest on top). Replaces
+    // the old render pass `load: "clear"`.
+    paintBackground() {
+        let bg = this.clearColor; let c = [bg[0], bg[1], bg[2], 1.0];
+        this.painter.rrect(this.lw / 2.0, this.lh / 2.0, this.lw / 2.0, this.lh / 2.0, 0.0, 0.0, 0.0, c, CLEAR);
     }
-    submit(inst) {
+    // Stream the recorded Vello scene to the host. The whole batch of vector ops
+    // is one `scene.submit`; the host rasterizes it with Vello (and the scene
+    // renderer skips re-presenting an unchanged frame).
+    submit(ops) {
         this.frameN = this.frameN + 1;
-        let bg = this.clearColor;
-        if (this._pipeRes == 0) { this._pipeRes = sdfPipelineResources(); }
-        let res = concat(concat(this._pipeRes, this.font.atlasTexRes()), concat(this.frameBindings(), [
-            bufF32("elpa.fl.inst", ["VERTEX", "COPY_DST"], inst),
-        ]));
-        let pass = { op: "renderPass", id: "elpa.fl.pass",
-            color_attachments: [{ view: { kind: "surface" }, load: "clear",
-                clear_color: { r: bg[0], g: bg[1], b: bg[2], a: 1.0 } }],
-            commands: [
-                { cmd: "setBindGroup", index: 0, bind_group: "elpa.fl.gb" },
-                { cmd: "setPipeline", pipeline: "elpa.fl.pipe" },
-                { cmd: "setVertexBuffer", slot: 0, buffer: "elpa.fl.inst", offset: 0 },
-                { cmd: "draw", vertex_count: 6, instance_count: len(inst) / 24, first_vertex: 0, first_instance: 0 },
-            ] };
-        askHost("gpu.submit", [{ resources: res, commands: concat(this.font.atlasUploadCmds(), [pass]) }]);
+        askHost("scene.submit", [{ resources: [], ops: ops }]);
     }
 
     // ---- pointer routing (Flutter's GestureBinding.hitTest + dispatch) -------

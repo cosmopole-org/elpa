@@ -6,8 +6,10 @@
 //! bottom-to-top as separate layers — exactly the layering of the real framework:
 //!
 //! * **`dart:ui`** ([`20-ui.js`]) — `Offset`/`Size`/`Rect`/`RRect`/`Color`/
-//!   `Paint`/`Gradient`/`Path`/`Canvas`, lowering onto the SDF raster backend
-//!   ([`10-engine.js`], Flutter's Skia/CanvasKit analog).
+//!   `Paint`/`Gradient`/`Path`/`Canvas`, lowering onto the **Vello scene
+//!   recorder** ([`10-engine.js`], Flutter's Skia/CanvasKit analog): the `Painter`
+//!   records high-level vector ops (fills / strokes / clip layers) the host
+//!   rasterizes with Vello via `scene.submit` — not a raw wgpu command tree.
 //! * **rendering** ([`30-rendering.js`]) — `BoxConstraints`, `RenderObject` /
 //!   `RenderBox` (constraints down, sizes up), `PaintingContext`, the parent-data
 //!   protocol, `RenderView`, and the concrete render boxes (ConstrainedBox,

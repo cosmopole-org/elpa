@@ -587,7 +587,6 @@ version = "0.1.0"
 dependencies = [
  "elpa",
  "elpian-vm",
- "naga 29.0.3",
  "serde_json",
 ]
 

@@ -17,8 +17,8 @@
 //                    group, Checkboxes, a sliding TabBar, and a counter.
 //
 // Every interaction runs the real Flutter loop on the Elpa VM: build → element
-// reconcile → render layout → dart:ui paint (with GPU clipping) → one cheap
-// partial gpu.submit; AnimationControllers tick on real frame dt for smooth 60fps.
+// reconcile → render layout → dart:ui paint (with Vello clip layers) → one
+// `scene.submit`; AnimationControllers tick on real frame dt for smooth 60fps.
 
 // ----------------------------------------------------------------- themes -----
 function appLightTheme() {

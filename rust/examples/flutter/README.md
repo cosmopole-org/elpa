@@ -32,9 +32,9 @@ cheap partial frame, exactly like Flutter. `Curves` are solved from cubic-bezier
 control points (plus the physical bounce/elastic curves). Scrolling is real
 drag-then-**fling** physics: a `ScrollPosition` clamps the offset to the content
 extent and a friction simulation decays the release velocity each frame; the
-viewport render objects **GPU-clip** to their bounds (the SDF instance now
-carries a rounded-rect clip the fragment shader honours) and **cull** children
-outside the viewport, so a long `ListView` repaints only its visible rows.
+viewport render objects **clip** to their bounds (a Vello clip layer — a pushed
+rounded-rect the scene composites within) and **cull** children outside the
+viewport, so a long `ListView` repaints only its visible rows.
 
 ## The demo: *Elpa Sound*
 
@@ -46,12 +46,13 @@ scrollable **Browse** `GridView`, a 40-row **Library** `ListView.builder`, and a
 **Settings** screen wiring `Switch`/`Slider`/`Radio`/`Checkbox`, a sliding
 `TabBar`, and a counter.
 
-> **Performance.** The kit paints through the same one-instanced-SDF-draw pipeline
-> as the sibling `material` kit and measures the same per-primitive cost; an
-> animation frame rebuilds only the dirty subtree, scroll viewports cull to the
-> visible rows, and the painter derives the affine scale/rotation **once per
-> matrix change** rather than per primitive. As with any immediate-mode renderer,
-> the per-frame budget scales with the number of on-screen primitives.
+> **Rendering.** The kit paints through the **Vello scene** path: the `Painter`
+> records a batch of high-level vector ops — fills, strokes, and clip/blend
+> layers — which the host rasterizes with Vello via `scene.submit` (the scene
+> renderer skips re-presenting an unchanged frame). Direct wgpu is no longer the
+> drawing mechanism; it survives as the `rawWgpu` scene op, which this 2D kit does
+> not need. An animation frame rebuilds only the dirty subtree and scroll
+> viewports cull to the visible rows, so the per-frame op count stays bounded.
 
 ## Build & test
 
