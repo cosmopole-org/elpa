@@ -61,7 +61,12 @@ env:
   # checkout stays clean (only the built APKs are committed back); APP_NAME is
   # also the Flutter --project-name / pubspec name.
   APP_NAME: wgpu_flutter_demo
-  GEN_DIR: ${{ github.workspace }}/../wgpu-flutter-app
+  # Built outside the repo tree so the checkout stays clean (only the built APKs
+  # are committed back). Use runner.temp rather than `${{ github.workspace }}/..`
+  # because actions/upload-artifact@v4 rejects glob paths containing `..`
+  # ("Relative pathing '.' and '..' is not allowed"), which is how the APKs are
+  # uploaded below.
+  GEN_DIR: ${{ runner.temp }}/wgpu-flutter-app
 
 jobs:
   android:

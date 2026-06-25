@@ -15,6 +15,11 @@ import 'package:elpa_app/src/rust/frb_generated.dart';
 import 'package:elpa_app/src/rust/api.dart' as ffi;
 
 import 'bridge.dart';
+// Converts an `int` to the type flutter_rust_bridge expects for a Rust `i64`
+// parameter (`PlatformInt64`): `int` on native, `BigInt` on web. The conditional
+// import mirrors how flutter_rust_bridge itself defines `PlatformInt64`.
+import 'raw_handle_native.dart'
+    if (dart.library.js_interop) 'raw_handle_web.dart';
 
 /// [ElpaBridge] implemented over the native engine.
 class RustElpaBridge implements ElpaBridge {
@@ -116,7 +121,14 @@ class RustElpaBridge implements ElpaBridge {
       ffi.registerSurface(
         handle: _h(handle),
         canvasId: canvasId,
-        rawHandle: rawHandle,
+        // `raw_handle` is `i64` in Rust. flutter_rust_bridge maps `i64` to a
+        // `PlatformInt64` — a plain Dart `int` on native (where `int` is 64-bit)
+        // but a `BigInt` on web (where `int` is a 53-bit JS number). Passing a
+        // plain `int` compiles on native but fails the web dart2js build, so
+        // funnel it through the platform shim that yields the right type for the
+        // current target. (The `u64` handles above are `BigInt` on both, hence
+        // the simpler `_h`.)
+        rawHandle: toRawHandle(rawHandle),
         rowStride: rowStride,
         width: width,
         height: height,
