@@ -1,0 +1,141 @@
+name: Build APK
+
+# Builds the Android APK on demand only (manual run). The `android` job then
+# commits the signed release APK to the root of the repository: the Liquid Glass
+# calculator as `elpa-calculator.apk` (the default), the Material app as
+# `elpa.apk`, the Game3D engine demo as `elpa-game3d.apk`, the Liquid Glass
+# showcase as `elpa-liquidglass.apk`, the Web SDK showcase as `elpa-websdk.apk`,
+# the Flutter SDK demo as `elpa-flutter.apk` (chosen by the `app` input).
+#
+# Run it from the GitHub UI (Actions → "Build APK" → "Run workflow", pick the
+# app) or via the API/CLI
+# (`gh workflow run "Build APK" --ref <branch> -f app=game3d`).
+
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: "Which app to package into the APK"
+        type: choice
+        options:
+          - calculator
+          - material
+          - game3d
+          - liquidglass
+          - websdk
+          - flutter
+        default: calculator
+
+permissions:
+  contents: write # the android job pushes the built APK back to the repo
+
+# One in-flight run per ref; a newer manual run supersedes an older one.
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # --- Android APK build + upload to repo root -------------------------------
+  android:
+    runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: "26.3.11579264" # NDK r26d
+    steps:
+      # Check out the branch (not a detached SHA) so we can push the APK back.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Install Rust + Android target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: examples/native -> target
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK, platform and build-tools
+        run: sdkmanager "ndk;${NDK_VERSION}" "platform-tools" "platforms;android-30" "build-tools;30.0.3"
+
+      - name: Install cargo-apk
+        run: cargo install --locked cargo-apk
+
+      # Compile the apps' JavaScript to VM bytecode *now*, at build time, into
+      # examples/*/assets/*.bc. The native example embeds the selected app's
+      # bytecode (include_bytes!) and loads it with Elpa::new_from_bytecode, so
+      # the app never runs the JS/AST front-end at startup. Both are compiled so
+      # whichever the `game3d` feature selects is present.
+      - name: Compile apps to bytecode
+        run: |
+          cargo run -p elpa-material --bin build_bytecode
+          cargo run -p elpa-game3d --bin build_bytecode
+          cargo run -p elpa-liquidglass --bin build_bytecode
+          cargo run -p elpa-websdk --bin build_bytecode
+          cargo run -p elpa-flutter --bin build_bytecode
+
+      # A throwaway keystore generated per run. cargo-apk reads the path and
+      # password from these env vars (no secrets committed to the repo).
+      - name: Generate signing keystore
+        run: |
+          keytool -genkeypair -v \
+            -keystore "${{ github.workspace }}/release.keystore" \
+            -alias elpa -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass android -keypass android \
+            -dname "CN=Elpa, OU=Example, O=Cosmopole, C=US"
+
+      - name: Build signed release APK
+        working-directory: examples/native
+        env:
+          CARGO_APK_RELEASE_KEYSTORE: ${{ github.workspace }}/release.keystore
+          CARGO_APK_RELEASE_KEYSTORE_PASSWORD: android
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/${NDK_VERSION}"
+          # No features → the calculator (the native default). Each named app
+          # selects its feature explicitly.
+          FEATURES=""
+          if [ "${{ inputs.app }}" = "material" ]; then FEATURES="--features material"; fi
+          if [ "${{ inputs.app }}" = "game3d" ]; then FEATURES="--features game3d"; fi
+          if [ "${{ inputs.app }}" = "liquidglass" ]; then FEATURES="--features liquidglass"; fi
+          if [ "${{ inputs.app }}" = "websdk" ]; then FEATURES="--features websdk"; fi
+          if [ "${{ inputs.app }}" = "flutter" ]; then FEATURES="--features flutter"; fi
+          # `--lib` packages the Android cdylib (this crate also has a desktop bin).
+          cargo apk build --release --lib $FEATURES
+
+      # Also expose it as a normal workflow artifact for direct download.
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: elpa-android-apk-${{ inputs.app }}
+          path: examples/native/target/release/apk/elpa_native_example.apk
+
+      - name: Commit APK to repository root
+        run: |
+          # Material → elpa.apk (unchanged); Game3D → elpa-game3d.apk, so the two
+          # builds don't clobber each other at the repo root.
+          DEST=elpa.apk
+          if [ "${{ inputs.app }}" = "game3d" ]; then DEST=elpa-game3d.apk; fi
+          if [ "${{ inputs.app }}" = "liquidglass" ]; then DEST=elpa-liquidglass.apk; fi
+          if [ "${{ inputs.app }}" = "calculator" ]; then DEST=elpa-calculator.apk; fi
+          if [ "${{ inputs.app }}" = "material" ]; then DEST=elpa.apk; fi
+          if [ "${{ inputs.app }}" = "websdk" ]; then DEST=elpa-websdk.apk; fi
+          if [ "${{ inputs.app }}" = "flutter" ]; then DEST=elpa-flutter.apk; fi
+          cp examples/native/target/release/apk/elpa_native_example.apk "./$DEST"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$DEST"
+          if git diff --cached --quiet; then
+            echo "APK ($DEST) unchanged; nothing to commit."
+          else
+            git commit -m "ci: build Android APK (${{ inputs.app }}) [skip ci]"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
