@@ -1,0 +1,7 @@
+{
+    "name": "__APP_SNAKE__",
+    "template": "wgpu",
+    "entry": "app/ts/main.ts",
+    "sdk": ["app/sdk/game3d"],
+    "outDir": "app/dist"
+}

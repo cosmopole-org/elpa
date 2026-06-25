@@ -1,0 +1,27 @@
+[package]
+name = "__APP_SNAKE__"
+version = "0.1.0"
+edition = "2021"
+description = "__APP_TITLE__ — an Elpa (JavaScript) app on wgpu: a 3D Game3D scene with a 2D UI overlay, hosted in a native winit window."
+
+[[bin]]
+name = "__APP_SNAKE__"
+path = "src/main.rs"
+
+[dependencies]
+# The unified Elpa instance (VM + renderer) with the live wgpu backend. Vendored
+# next to this crate under ../engine and built as its own workspace.
+elpa = { path = "../engine/elpa", features = ["wgpu"] }
+
+# Window + input + GPU surface for the desktop host.
+winit = "0.30"
+wgpu = "29"
+pollster = "0.3"
+log = "0.4"
+env_logger = "0.10"
+# Blocking HTTP, so the app can download a font by URL through Elpa's NetProvider.
+ureq = "3"
+
+[profile.release]
+opt-level = 3
+lto = true

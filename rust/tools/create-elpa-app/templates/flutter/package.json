@@ -1,0 +1,11 @@
+{
+    "name": "__APP_SNAKE__",
+    "private": true,
+    "description": "__APP_TITLE__ — an Elpa + Flutter app authored in TypeScript.",
+    "scripts": {
+        "typecheck": "tsc -p tsconfig.json"
+    },
+    "devDependencies": {
+        "typescript": "^5.4.0"
+    }
+}

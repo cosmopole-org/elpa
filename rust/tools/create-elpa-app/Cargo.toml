@@ -1,0 +1,19 @@
+[package]
+name = "create-elpa-app"
+version = "0.1.0"
+edition = "2021"
+description = "Scaffold a new Elpa application from a template (wgpu, flutter, or wgpu-flutter)."
+publish = false
+
+[[bin]]
+name = "create-elpa-app"
+path = "src/main.rs"
+
+[dependencies]
+elpian-vm = { version = "0.1.0", path = "../../crates/elpian-vm" }
+serde_json.workspace = true
+swc_core = { version = "71.0.3", features = ["ecma_parser", "ecma_ast", "ecma_visit", "ecma_codegen", "ecma_transforms_typescript", "common", "ecma_transforms_compat"] }
+swc_ecma_compat_es2015 = "=50.0.0"
+
+# Zero external dependencies: the tool is pure std so it builds fast and runs
+# anywhere a Rust toolchain exists, with no network fetch.

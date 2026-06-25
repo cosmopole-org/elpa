@@ -1,0 +1,8 @@
+{
+    "name": "__APP_SNAKE__",
+    "template": "wgpu-flutter",
+    "entry": "assets/app/ts/main.ts",
+    "sdk": ["assets/app/sdk"],
+    "outDir": "assets/app/dist",
+    "appOut": "assets/app/main.js"
+}
