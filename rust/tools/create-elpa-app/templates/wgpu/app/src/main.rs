@@ -2,8 +2,10 @@
 //!
 //! Hosts an Elpa instance in a native [`winit`] window backed by a live wgpu
 //! surface, and drives it: `requestRedraw` → `animate`, resize → `resize`,
-//! pointer/scroll/keyboard → `send_event`. The app program (the Game3D SDK plus
-//! the demo) is concatenated by `build.rs` and compiled by the VM at startup.
+//! pointer/scroll/keyboard → `send_event`. The app program is the bundle the Elpa
+//! CLI builds from the TypeScript in `app/ts/` — run `create-elpa-app build` to
+//! (re)generate `app/dist/app.js`, which this host `include_str!`s and the VM
+//! compiles at startup.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -17,8 +19,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
-/// The whole app program: Game3D SDK modules + the demo, concatenated by build.rs.
-const PROGRAM: &str = include_str!(concat!(env!("OUT_DIR"), "/program.js"));
+/// The whole app program — the prelude + Game3D SDK + the transpiled TypeScript
+/// app, bundled into one VM-subset script by `create-elpa-app build`.
+const PROGRAM: &str = include_str!("../dist/app.js");
 
 const WINDOW_TITLE: &str = "__APP_TITLE__";
 const TARGET_FRAME_TIME: Duration = Duration::from_nanos(16_666_667);

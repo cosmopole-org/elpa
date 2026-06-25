@@ -15,13 +15,15 @@ path), and the SDK are vendored into this project.
 | `engine/` | The vendored Elpa engine (VM + renderer + runtime) — a self-contained Cargo workspace. |
 | `rust/` | The `flutter_rust_bridge` native crate. `rust/src/render.rs` holds the `gpu`-gated zero-copy texture path. |
 | `lib/src/elpa/native/elpa_texture.dart` | The `ElpaNativeView` widget: a `Texture` (mobile/desktop) or `HtmlElementView` (web). |
+| `assets/app/ts/` | **The app, in TypeScript**: `scene.ts` (the `SceneController` 3D scene), `cards.ts`/`page.ts` (the 2D UI + `Native3DView`), `main.ts` (bootstrap + host hooks). |
 | `assets/app/sdk/05_graphics.js` | The graphics SDK: `Gpu`/`FrameBuilder`, `Color`, and the `Native3DView` widget. |
-| `assets/app/main.js` | **The demo** — a 2D dashboard whose hero card hosts a GPU-rendered scene in a `Native3DView`. |
+| `assets/app/main.js` | **Build output** — the prelude + transpiled app the Dart loader concatenates after the SDK. Produced by `create-elpa-app build`. |
+| `elpa.json` | The project manifest the CLI reads (entry, SDK dir, outputs). |
 
 ## How the 3D ↔ Flutter link works
 
-- `assets/app/main.js` registers a cube geometry once as a render-level GPU
-  definition and, every frame (`onFrame`), submits a surface pass over the GPU
+- `scene.ts` registers a cube geometry once as a render-level GPU definition and,
+  every frame (`main.ts`'s `onFrame` hook), submits a surface pass over the GPU
   pipe via `app.gpu.frame().surfacePass(color, draws).submit()`.
 - The frame targets the surface bound to the **`Native3DView`** placed in the 2D
   widget tree. On mobile/desktop Flutter samples it through a `Texture` backed by
@@ -42,6 +44,9 @@ builds and runs; the 3D surface lights up once you opt into `gpu`.
 cargo install flutter_rust_bridge_codegen
 dart pub global activate ffigen
 
+# 0. Bundle the TypeScript app → assets/app/main.js (init already did this once).
+create-elpa-app build
+
 # 1. Materialize the platform runners.
 flutter create . --platforms=android,ios,linux,macos,windows,web --project-name __APP_SNAKE__
 
@@ -59,17 +64,21 @@ flutter run
 
 ## The demo
 
-`assets/app/main.js` shows:
+`assets/app/ts/` shows:
 
 - a **3D scene card** — a GPU-rendered scene (a registered cube + an animated
-  clear) submitted into the `Native3DView` every frame,
-- a **controls** component to pause/resume and reset the view,
-- an **about** card.
+  clear) submitted into the `Native3DView` every frame (`scene.ts`),
+- a **controls** component to pause/resume and reset the view (`cards.ts`),
+- an **about** card (`page.ts`).
 
-Edit the `SceneController` (`prime()`/`render()`) to register your own
-geometry, pipelines and uniforms, or replace the 2D cards with your own UI. The
-2D and 3D layers update independently — the 2D cards patch their own scopes; the
-3D scene re-submits every frame.
+Edit the `SceneController` (`scene.ts`'s `prime()`/`render()`) to register your
+own geometry, pipelines and uniforms, or replace the 2D cards with your own UI.
+The 2D and 3D layers update independently — the 2D cards patch their own scopes;
+the 3D scene re-submits every frame. After editing `assets/app/ts/`, run
+`create-elpa-app build` and hot-restart.
+
+For a browser preview, `create-elpa-app install` builds the Elpa + Flutter wasm
+host once and `create-elpa-app dev` serves your bytecode against it.
 
 ---
 

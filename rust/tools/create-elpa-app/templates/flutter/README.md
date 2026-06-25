@@ -15,8 +15,11 @@ into this project, so it builds on its own.
 | `engine/` | The vendored Elpa engine (VM + renderer + runtime) — a self-contained Cargo workspace. |
 | `rust/` | The `flutter_rust_bridge` native crate that drives the VM and pipes messages to Dart. |
 | `lib/` | The Dart app: the engine adapter, the DSL → widget machinery, and the shell. |
+| `assets/app/ts/` | **The app, in TypeScript** (one component per file): `app.ts`, `ui.ts`, `cards.ts`, `page.ts`, `main.ts` (+ `elpa.d.ts` ambient SDK types). |
 | `assets/app/sdk/` | The **Elpa SDK** — an object-oriented authoring layer (widgets, components, theme, timing, navigation, graphics). |
-| `assets/app/main.js` | **The demo** — this project's app: a 2D dashboard (counter, greeter, task list, live theme switch). |
+| `assets/app/main.js` | **Build output** — the prelude + transpiled app the Dart loader concatenates after the SDK. Produced by `create-elpa-app build`. |
+| `assets/app/dist/` | `app.js` + `app.bc` (the full standalone bundle + Elpian bytecode), for the wasm host / `dev`. |
+| `elpa.json` | The project manifest the CLI reads (entry, SDK dir, outputs). |
 
 ## Setup
 
@@ -24,6 +27,9 @@ into this project, so it builds on its own.
 # Prerequisites: the Flutter SDK, a Rust toolchain, and the codegen tool.
 cargo install flutter_rust_bridge_codegen   # must match rust/Cargo.toml's flutter_rust_bridge
 dart pub global activate ffigen
+
+# 0. Bundle the TypeScript app → assets/app/main.js (init already did this once).
+create-elpa-app build
 
 # 1. Materialize the platform runner folders (android/ios/linux/macos/windows/web).
 flutter create . --platforms=android,ios,linux,macos,windows,web --project-name __APP_SNAKE__
@@ -37,6 +43,13 @@ flutter pub get
 flutter run            # add -d chrome / -d linux / -d macos / a device id
 ```
 
+### Browser preview (prebuilt wasm host)
+
+```bash
+create-elpa-app install   # build the Elpa + Flutter wasm host once (needs the Flutter + wasm toolchain)
+create-elpa-app dev       # rebuild the bytecode and serve it at http://127.0.0.1:8787
+```
+
 Getting the native crate **into** each platform build is a separate step that
 `flutter create` does not do on its own — see the upstream Flutter README in this
 repo's history for the per-platform recipes (Android `cargo ndk` → `jniLibs/`,
@@ -46,16 +59,22 @@ web `flutter_rust_bridge_codegen build-web`), or run
 
 ## The demo
 
-`assets/app/main.js` is a single-screen dashboard built on the Elpa SDK:
+`assets/app/ts/` is a single-screen dashboard built on the Elpa SDK:
 
-- a **counter** card with +/- buttons,
+- a **counter** card with +/- buttons (`cards.ts`),
 - a **greeter** card whose text field echoes a live greeting,
 - a **task list** you can add to and tick off,
-- a **dark / light theme switch** in the header.
+- a **dark / light theme switch** in the header (`page.ts` + `app.ts`).
 
 Each interactive card is an isolated **Component** (its own repaint scope), so a
 tap patches only that card — the rest of the tree is neither re-serialized nor
-repainted. Edit `assets/app/main.js` and hot-restart to iterate.
+repainted.
+
+Write idiomatic, multi-file TypeScript: SDK classes (`App`, `Component`,
+`Container`, `Text`, …) are global at runtime (typed via `elpa.d.ts`), and the
+CLI's transpiler lowers template literals, `arr.push`, `s.trim()`, `a.length`, …
+to the VM's stdlib. After editing `assets/app/ts/`, run `create-elpa-app build`
+and hot-restart to iterate.
 
 ## Tests
 

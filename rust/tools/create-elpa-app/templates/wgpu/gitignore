@@ -4,3 +4,10 @@
 /engine/target
 **/*.rs.bk
 Cargo.lock
+
+# Node / TypeScript editor tooling
+/node_modules
+
+# NOTE: app/dist/ (app.js + app.bc) is the build output the host `include_str!`s,
+# produced by `create-elpa-app build`. It is committed so `cargo run` works from
+# a fresh clone; re-run `create-elpa-app build` after editing app/ts/.
