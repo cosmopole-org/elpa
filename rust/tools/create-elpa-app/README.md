@@ -49,6 +49,37 @@ The shim is what makes "write normal TypeScript" work against a VM whose stdlib
 is global functions rather than methods. The SDK ships as plain VM-subset JS and
 is linked ahead of the app; ambient `.d.ts` files give your editor the SDK types.
 
+### Supported TypeScript
+
+Classes (incl. getters), arrow functions, `for…of`, array/object/nested
+destructuring, **default parameters**, block-scoped `let`/`const` (correctly
+shadowed — the transpiler flattens block scoping for the VM), template literals,
+`**`, ternaries, and a broad stdlib surface mapped to the VM's globals:
+
+- **arrays** — `map filter reduce forEach find findIndex some every flat
+  flatMap push pop shift unshift slice splice concat reverse sort sort(cmp)
+  join indexOf lastIndexOf includes at fill`, `Array.isArray/from/of`
+- **strings** — `toUpperCase toLowerCase trim split substring charAt charCodeAt
+  replace replaceAll repeat startsWith endsWith padStart padEnd includes slice`
+- **Math** — `floor ceil round trunc abs sign sqrt cbrt pow exp log log2 log10
+  sin cos tan asin acos atan atan2 sinh cosh tanh asinh acosh atanh hypot min
+  max random PI E`
+- **Object/JSON/coercions** — `Object.keys/values/entries/assign`,
+  `JSON.parse/stringify`, `Number String Boolean parseInt parseFloat`
+
+### Not supported (the build reports a clean error)
+
+The Elpian VM lacks the primitives these lower to (`arguments`, assignment- and
+sequence-expressions, `fn.apply`), so they are intentionally rejected rather than
+mis-compiled:
+
+- spread (`[...a]`, `f(...a)`, `{...o}`) — use `concat(...)` / explicit args
+- optional chaining (`a?.b`) — use `isNull(a) ? … : a.b`
+- nullish coalescing (`a ?? b`) — use `isNull(a) ? b : a`
+- rest parameters (`function f(...xs)`) — pass an array
+
+`console.log` is a no-op (the sandbox has no stdout).
+
 ## Project manifest (`elpa.json`)
 
 ```json

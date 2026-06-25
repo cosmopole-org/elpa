@@ -46,15 +46,33 @@ pub fn build(m: &Manifest, quiet: bool) -> Result<BuildOutput, String> {
     program.push_str("// ==== app ====\n");
     program.push_str(&app);
 
-    // 3. Compile to bytecode (validates the whole program through the VM).
-    let bytecode = elpian_vm::api::compile_js_to_bytecode(&program)
-        .ok_or("the bundle failed to compile to Elpian bytecode (a syntax/feature outside the VM subset?)")?;
-
-    // 4. Write outputs.
+    // Write the bundle first, so it's available to inspect even if the VM
+    // rejects it in the next step.
     std::fs::create_dir_all(&m.out_dir).map_err(|e| format!("mkdir {}: {e}", m.out_dir.display()))?;
     let js = m.out_dir.join("app.js");
-    let bc = m.out_dir.join("app.bc");
     std::fs::write(&js, &program).map_err(|e| format!("write {}: {e}", js.display()))?;
+
+    // 3. Compile to bytecode (validates the whole program through the VM). The
+    //    VM front-end `panic!`s on a few unsupported constructs, so guard it and
+    //    turn that into a clean diagnostic instead of aborting the CLI.
+    let prog = program.clone();
+    let compiled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        elpian_vm::api::compile_js_to_bytecode(&prog)
+    }));
+    let bytecode = match compiled {
+        Ok(Some(bc)) => bc,
+        Ok(None) | Err(_) => {
+            return Err("the bundle did not compile to Elpian bytecode — it uses a feature \
+                        outside the VM subset. `for…of` and destructuring are supported, but \
+                        spread (`...`), optional chaining (`?.`), nullish coalescing (`??`), and \
+                        default/rest parameters are not — rewrite those with explicit indexing, \
+                        `isNull(x) ? … : …`, `concat(...)`, and plain parameters."
+                .into())
+        }
+    };
+
+    // 4. Write the bytecode (the bundle js was already written above).
+    let bc = m.out_dir.join("app.bc");
     std::fs::write(&bc, &bytecode).map_err(|e| format!("write {}: {e}", bc.display()))?;
 
     // Optional: prelude + app (no SDK), for hosts that load the SDK separately.

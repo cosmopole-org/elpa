@@ -24,6 +24,8 @@ use swc_core::common::{sync::Lrc, FileName, SourceMap, SyntaxContext, GLOBALS, M
 use swc_core::ecma::ast::*;
 use swc_core::ecma::codegen::{text_writer::JsWriter, Emitter};
 use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
+use swc_core::ecma::transforms::base::hygiene::hygiene;
+use swc_core::ecma::transforms::base::resolver;
 use swc_core::ecma::transforms::typescript::strip;
 use swc_core::ecma::visit::{VisitMut, VisitMutWith};
 
@@ -141,12 +143,37 @@ fn parse(cm: &Lrc<SourceMap>, path: &Path, src: &str) -> Result<Module, String> 
         .map_err(|e| format!("parse {}: {:?}", path.display(), e.kind()))
 }
 
-/// Strip types, run the shim, drop module syntax, emit the flat statement body.
+/// Strip types, downlevel the modern syntax the VM lacks, run the shim, drop
+/// module syntax, and emit the flat statement body.
 fn lower_module(cm: &Lrc<SourceMap>, module: Module) -> String {
     let top = Mark::new();
     let unresolved = Mark::new();
     let mut program = Program::Module(module);
+
+    // Resolve identifiers so the downlevel passes generate hygienic temporaries,
+    // then strip the TypeScript types.
+    program.mutate(&mut resolver(unresolved, top, true));
     strip(unresolved, top).process(&mut program);
+
+    // Downlevel the modern syntax the VM can't parse (for-of, destructuring) into
+    // the ES5-ish forms it supports — indexed `while` loops and temporaries.
+    // Classes, arrows and template literals are left intact: the VM handles them
+    // and the shim wants them un-lowered.
+    downlevel(unresolved, &mut program);
+
+    // The VM has no block scoping (every `let`/`const` lands in one flat scope),
+    // so two nested lowered loops both named `_i`, or any user `let` shadowed in
+    // a nested block, would clobber each other. `block_scoping` rewrites
+    // block-scoped bindings to function-scoped ones with textually-unique names,
+    // which is exactly the VM's model; `hygiene` then resolves any remaining
+    // same-name clashes.
+    {
+        let unresolved = Mark::new();
+        program.mutate(&mut resolver(unresolved, Mark::new(), false));
+        swc_ecma_compat_es2015::block_scoping(unresolved).process(&mut program);
+    }
+    hygiene().process(&mut program);
+
     let mut module = match program {
         Program::Module(m) => m,
         _ => unreachable!(),
@@ -154,6 +181,27 @@ fn lower_module(cm: &Lrc<SourceMap>, module: Module) -> String {
     module.visit_mut_with(&mut Shim);
     let flat = flatten_module(module);
     emit(cm, &flat)
+}
+
+fn downlevel(_unresolved: Mark, program: &mut Program) {
+    use swc_ecma_compat_es2015 as es2015;
+
+    // Only the lowerings whose output stays fully inside the VM subset and is
+    // verified to run correctly:
+    //   * `for…of`  → an indexed `while` loop (`loose` + `assume_array`, so no
+    //                 iterator protocol / `Symbol`).
+    //   * destructuring (array, object, nested, defaults, renames) → temporaries.
+    //
+    // The other modern forms are intentionally *not* lowered, because swc's
+    // output for them relies on constructs the Elpian VM lacks — `arguments`
+    // (default / rest params), assignment-and-sequence expressions (optional
+    // chaining `?.`), `fn.apply` (call spread), or is subtly wrong for falsy
+    // values (`??`). Left un-lowered they reach the VM front-end, which the
+    // builder reports as a clean "outside the VM subset" error.
+    // `assume_array` only takes the plain indexed-loop path when `loose == false`
+    // (otherwise swc falls back to an iterator helper that needs `Symbol`).
+    es2015::for_of(es2015::for_of::Config { loose: false, assume_array: true }).process(program);
+    es2015::destructuring(es2015::destructuring::Config { loose: true }).process(program);
 }
 
 fn emit(cm: &Lrc<SourceMap>, module: &Module) -> String {
@@ -208,7 +256,46 @@ fn flatten_module(module: Module) -> Module {
 struct Shim;
 
 impl VisitMut for Shim {
+    // Default parameters: the VM has no default-param syntax, so lower
+    // `function f(a, b = expr)` to a plain param plus a guard
+    // `if (isNull(b)) { b = expr; }` at the top of the body.
+    fn visit_mut_function(&mut self, f: &mut Function) {
+        f.visit_mut_children_with(self);
+        let guards: Vec<Stmt> = f.params.iter_mut().filter_map(|p| default_guard(&mut p.pat)).collect();
+        if let Some(body) = &mut f.body {
+            prepend_stmts(&mut body.stmts, guards);
+        }
+    }
+
+    fn visit_mut_arrow_expr(&mut self, a: &mut ArrowExpr) {
+        a.visit_mut_children_with(self);
+        let guards: Vec<Stmt> = a.params.iter_mut().filter_map(default_guard).collect();
+        if guards.is_empty() {
+            return;
+        }
+        // Ensure a block body so the guards have somewhere to live.
+        if let BlockStmtOrExpr::Expr(e) = &mut *a.body {
+            let ret = Stmt::Return(ReturnStmt { span: DUMMY_SP, arg: Some(e.clone()) });
+            a.body = Box::new(BlockStmtOrExpr::BlockStmt(BlockStmt {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                stmts: vec![ret],
+            }));
+        }
+        if let BlockStmtOrExpr::BlockStmt(b) = &mut *a.body {
+            prepend_stmts(&mut b.stmts, guards);
+        }
+    }
+
     fn visit_mut_expr(&mut self, e: &mut Expr) {
+        // A comparison against `void 0` (swc's `undefined` sentinel, emitted by
+        // the default-value lowering) must be caught *before* children turn the
+        // `void 0` into a plain `null`: `x === void 0` → `isNull(x)`, which —
+        // unlike `x === null` — also matches an omitted (undefined) argument.
+        if let Some(rep) = lower_void_compare(e) {
+            *e = rep;
+        }
+
         // Transform children first so rewrites compose bottom-up.
         e.visit_mut_children_with(self);
 
@@ -222,6 +309,11 @@ impl VisitMut for Shim {
                 if let Some(rep) = lower_call(call) {
                     *e = rep;
                 }
+            }
+            // `void 0` (emitted by the optional-chaining / nullish downlevel as
+            // the `undefined` sentinel) → `null`, which the VM understands.
+            Expr::Unary(u) if u.op == UnaryOp::Void => {
+                *e = Expr::Lit(Lit::Null(Null { span: DUMMY_SP }));
             }
             // `obj.length` → len(obj); Math.PI / Math.E constants
             Expr::Member(m) => {
@@ -257,19 +349,23 @@ fn lower_call(call: &CallExpr) -> Option<Expr> {
                 MemberProp::Ident(id) => id.sym.as_str(),
                 _ => return None,
             };
-            // Namespace statics: Math.* / Object.* / JSON.*
+            // Namespace statics: Math.* / Object.* / JSON.* / Array.*
             if let Expr::Ident(ns) = &*m.obj {
+                // Constructs with no plain stdlib rename (Math.log2, Array.isArray…).
+                if let Some(rep) = namespace_special(ns.sym.as_str(), method, &args) {
+                    return Some(rep);
+                }
                 if let Some(g) = namespace_fn(ns.sym.as_str(), method) {
                     return Some(call_global(g, args));
                 }
                 // Don't fall through to method-mapping for a namespace object.
-                if matches!(ns.sym.as_str(), "Math" | "JSON" | "Object" | "console") {
+                if matches!(ns.sym.as_str(), "Math" | "JSON" | "Object" | "console" | "Array") {
                     return None;
                 }
             }
-            // `recv.toString()` → str(recv)
-            if method == "toString" && args.is_empty() {
-                return Some(call_global("str", vec![(*m.obj).clone()]));
+            // Methods that need more than a rename (charCodeAt, sort(cmp), at…).
+            if let Some(rep) = method_special(method, &m.obj, &args) {
+                return Some(rep);
             }
             // `recv.method(a, b)` → method(recv, a, b)
             if let Some(g) = method_fn(method) {
@@ -283,6 +379,52 @@ fn lower_call(call: &CallExpr) -> Option<Expr> {
         Expr::Ident(id) => global_fn(id.sym.as_str()).map(|g| call_global(g, args)),
         _ => None,
     }
+}
+
+/// Namespace calls that need a constructed expression rather than a rename.
+fn namespace_special(ns: &str, name: &str, args: &[Expr]) -> Option<Expr> {
+    let a0 = || args.first().cloned().unwrap_or_else(|| ident_expr("undefined"));
+    Some(match (ns, name) {
+        // log2(x) = ln(x)/ln(2); log10(x) = ln(x)/ln(10)
+        ("Math", "log2") => bin_div(call_global("ln", vec![a0()]), call_global("ln", vec![num_lit(2.0)])),
+        ("Math", "log10") => bin_div(call_global("ln", vec![a0()]), call_global("ln", vec![num_lit(10.0)])),
+        // Array.isArray(x) → typeOf(x) == "array"
+        ("Array", "isArray") => bin_eq(call_global("typeOf", vec![a0()]), str_lit("array")),
+        // Array.from(x) → a copy (prelude helper, also accepts a string)
+        ("Array", "from") => call_global("__from", vec![a0()]),
+        // Array.of(a, b, …) → [a, b, …]
+        ("Array", "of") => array_lit(args.to_vec()),
+        _ => return None,
+    })
+}
+
+/// Methods that need a constructed expression rather than a receiver-first rename.
+fn method_special(method: &str, recv: &Expr, args: &[Expr]) -> Option<Expr> {
+    let with_recv = |g: &str| {
+        let mut all = vec![recv.clone()];
+        all.extend(args.iter().cloned());
+        call_global(g, all)
+    };
+    Some(match method {
+        // recv.toString() → str(recv)
+        "toString" if args.is_empty() => call_global("str", vec![recv.clone()]),
+        // stdlib `replace` already replaces every occurrence.
+        "replaceAll" => with_recv("replace"),
+        // charCodeAt(i) / codePointAt(i) → ord(charAt(recv, i))
+        "charCodeAt" | "codePointAt" => {
+            let i = args.first().cloned().unwrap_or_else(|| num_lit(0.0));
+            call_global("ord", vec![call_global("charAt", vec![recv.clone(), i])])
+        }
+        // sort(cmp) needs a comparator-aware prelude sort; bare sort → stdlib.
+        "sort" if !args.is_empty() => with_recv("__sortCmp"),
+        // prelude-backed array helpers with no stdlib equivalent
+        "at" => with_recv("__at"),
+        "splice" => with_recv("__splice"),
+        "flatMap" => with_recv("__flatMap"),
+        "lastIndexOf" => with_recv("__lastIndexOf"),
+        "findLast" => with_recv("__findLast"),
+        _ => return None,
+    })
 }
 
 /// `recv.<method>(…)` → `<global>(recv, …)`. Returns the global's name.
@@ -351,6 +493,12 @@ fn namespace_fn(ns: &str, name: &str) -> Option<&'static str> {
         ("Math", "acos") => "acos",
         ("Math", "atan") => "atan",
         ("Math", "atan2") => "atan2",
+        ("Math", "sinh") => "sinh",
+        ("Math", "cosh") => "cosh",
+        ("Math", "tanh") => "tanh",
+        ("Math", "asinh") => "asinh",
+        ("Math", "acosh") => "acosh",
+        ("Math", "atanh") => "atanh",
         ("Math", "hypot") => "hypot",
         ("Math", "min") => "min",
         ("Math", "max") => "max",
@@ -358,6 +506,7 @@ fn namespace_fn(ns: &str, name: &str) -> Option<&'static str> {
         ("Object", "keys") => "keys",
         ("Object", "values") => "values",
         ("Object", "entries") => "entries",
+        ("Object", "assign") => "merge",
         ("JSON", "parse") => "jsonParse",
         ("JSON", "stringify") => "jsonStringify",
         _ => return None,
@@ -373,6 +522,34 @@ fn global_fn(name: &str) -> Option<&'static str> {
         "parseInt" => "int",
         "parseFloat" => "num",
         _ => return None,
+    })
+}
+
+/// `x === void 0` / `x == void 0` → `isNull(x)`; the `!==`/`!=` forms →
+/// `!isNull(x)`. Matches `void <anything>` on either side.
+fn lower_void_compare(e: &Expr) -> Option<Expr> {
+    let b = match e {
+        Expr::Bin(b) => b,
+        _ => return None,
+    };
+    let negate = match b.op {
+        BinaryOp::EqEq | BinaryOp::EqEqEq => false,
+        BinaryOp::NotEq | BinaryOp::NotEqEq => true,
+        _ => return None,
+    };
+    let is_void = |x: &Expr| matches!(x, Expr::Unary(u) if u.op == UnaryOp::Void);
+    let other = if is_void(&b.left) {
+        (*b.right).clone()
+    } else if is_void(&b.right) {
+        (*b.left).clone()
+    } else {
+        return None;
+    };
+    let test = call_global("isNull", vec![other]);
+    Some(if negate {
+        Expr::Unary(UnaryExpr { span: DUMMY_SP, op: UnaryOp::Bang, arg: Box::new(test) })
+    } else {
+        test
     })
 }
 
@@ -412,13 +589,34 @@ fn str_lit(s: &str) -> Expr {
     Expr::Lit(Lit::Str(Str { span: DUMMY_SP, value: s.into(), raw: None }))
 }
 
-fn bin_add(left: Expr, right: Expr) -> Expr {
-    Expr::Bin(BinExpr {
+fn num_lit(n: f64) -> Expr {
+    Expr::Lit(Lit::Num(Number { span: DUMMY_SP, value: n, raw: None }))
+}
+
+fn array_lit(items: Vec<Expr>) -> Expr {
+    Expr::Array(ArrayLit {
         span: DUMMY_SP,
-        op: BinaryOp::Add,
-        left: Box::new(left),
-        right: Box::new(right),
+        elems: items
+            .into_iter()
+            .map(|e| Some(ExprOrSpread { spread: None, expr: Box::new(e) }))
+            .collect(),
     })
+}
+
+fn bin(op: BinaryOp, left: Expr, right: Expr) -> Expr {
+    Expr::Bin(BinExpr { span: DUMMY_SP, op, left: Box::new(left), right: Box::new(right) })
+}
+
+fn bin_add(left: Expr, right: Expr) -> Expr {
+    bin(BinaryOp::Add, left, right)
+}
+
+fn bin_div(left: Expr, right: Expr) -> Expr {
+    bin(BinaryOp::Div, left, right)
+}
+
+fn bin_eq(left: Expr, right: Expr) -> Expr {
+    bin(BinaryOp::EqEq, left, right)
 }
 
 fn call_global(name: &str, args: Vec<Expr>) -> Expr {
@@ -432,6 +630,45 @@ fn call_global(name: &str, args: Vec<Expr>) -> Expr {
             .collect(),
         type_args: None,
     })
+}
+
+/// If `pat` is a defaulted simple parameter (`b = expr`), strip the default and
+/// return the guard statement `if (isNull(b)) { b = expr; }`.
+fn default_guard(pat: &mut Pat) -> Option<Stmt> {
+    let (name, default) = match pat {
+        Pat::Assign(assign) => match &*assign.left {
+            Pat::Ident(bi) => (bi.id.clone(), (*assign.right).clone()),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let bare = name.clone();
+    let assign = Expr::Assign(AssignExpr {
+        span: DUMMY_SP,
+        op: AssignOp::Assign,
+        left: AssignTarget::Simple(SimpleAssignTarget::Ident(BindingIdent { id: bare.clone(), type_ann: None })),
+        right: Box::new(default),
+    });
+    let guard = Stmt::If(IfStmt {
+        span: DUMMY_SP,
+        test: Box::new(call_global("isNull", vec![Expr::Ident(bare.clone())])),
+        cons: Box::new(Stmt::Block(BlockStmt {
+            span: DUMMY_SP,
+            ctxt: SyntaxContext::empty(),
+            stmts: vec![Stmt::Expr(ExprStmt { span: DUMMY_SP, expr: Box::new(assign) })],
+        })),
+        alt: None,
+    });
+    *pat = Pat::Ident(BindingIdent { id: bare, type_ann: None });
+    Some(guard)
+}
+
+fn prepend_stmts(body: &mut Vec<Stmt>, mut guards: Vec<Stmt>) {
+    if guards.is_empty() {
+        return;
+    }
+    guards.append(body);
+    *body = guards;
 }
 
 fn const_binding(name: &str, init: Expr) -> ModuleItem {
