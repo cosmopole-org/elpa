@@ -1,25 +1,34 @@
-name: Build Flutter demo APK
+name: Build wgpu+Flutter template demo APK
 
-# Builds the **Flutter** app (the `flutter/` project: Elpa + flutter_rust_bridge +
-# Flutter, whose demo Elpa program is `flutter/assets/app/main.js`) into release
-# Android APKs — one per ABI via `--split-per-abi` — uploads them as workflow
-# artifacts, and commits + pushes each APK to the repository root as
+# Builds the **CLI-creatable `wgpu-flutter` template** (the project
+# `create-elpa-app init -t wgpu-flutter` scaffolds) into release Android APKs —
+# one per ABI via `--split-per-abi` — so the template is exercised end-to-end in
+# its *installable* form, not just the bundled `flutter/` demo. The APKs are
+# uploaded as workflow artifacts and committed + pushed to the repository root as
 # `elpa-flutter-demo-<abi>.apk` (e.g. `elpa-flutter-demo-arm64-v8a.apk`).
 #
-# flutter_rust_bridge's cargokit Gradle hooks cross-compile the Rust bridge crate
-# (`flutter/rust`) for the Android ABIs automatically during `flutter build apk`,
-# so all this job adds on top of a normal Flutter Android build is the Rust
-# toolchain + Android targets and the FRB codegen step. The release build is
-# signed with the default debug key (the Flutter template's release buildType
+# Pipeline:
+#   1. Build the `create-elpa-app` CLI from this repo (rust/tools/create-elpa-app).
+#   2. `create-elpa-app init -t wgpu-flutter` scaffolds a self-contained project
+#      into a temp dir (vendors the engine, copies the Flutter shell + SDK, and
+#      builds the TypeScript app → assets/app/main.js).
+#   3. Build that generated project's APKs.
+#
+# A plain `flutter create` does NOT add flutter_rust_bridge's cargokit Gradle
+# hooks, so this job cross-compiles the Rust bridge crate (the project's `rust/`,
+# path-linked to the vendored `engine/`) for the Android ABIs with cargo-ndk and
+# drops the .so files into jniLibs, where Gradle bundles them. The release build
+# is signed with the default debug key (the Flutter template's release buildType
 # falls back to it), which is enough for an installable demo APK without
 # committing any signing secrets.
 #
 # The platform runner folders (`android/`) and the FRB-generated bindings are NOT
-# committed (see flutter/.gitignore); they are regenerated on every run, mirroring
-# the manual setup documented in flutter/README.md.
+# part of the scaffold; they are regenerated on every run, mirroring the manual
+# setup documented in the generated project's README.md.
 #
-# Run it from the GitHub UI (Actions → "Build Flutter demo APK" → "Run workflow")
-# or on demand; it also runs on pushes that touch the Flutter project.
+# Run it from the GitHub UI (Actions → "Build wgpu+Flutter template demo APK" →
+# "Run workflow") or on demand; it also runs on pushes that touch the template,
+# the engine, or the Flutter shell it is built from.
 
 on:
   push:
@@ -27,7 +36,12 @@ on:
       - main
       - "claude/**"
     paths:
+      # The built APK is the wgpu-flutter template built end-to-end, so it
+      # depends on the CLI + templates, the vendored engine crates, and the
+      # Flutter shell + SDK it copies from.
       - "flutter/**"
+      - "rust/crates/**"
+      - "rust/tools/create-elpa-app/**"
       - ".github/workflows/flutter-android-apk.yml"
   workflow_dispatch:
 
@@ -43,6 +57,11 @@ env:
   # Keep the codegen tool in lock-step with the `flutter_rust_bridge` crate
   # version pinned in flutter/rust/Cargo.lock.
   FRB_VERSION: "2.12.0"
+  # The project create-elpa-app scaffolds. Built outside the repo tree so the
+  # checkout stays clean (only the built APKs are committed back); APP_NAME is
+  # also the Flutter --project-name / pubspec name.
+  APP_NAME: wgpu_flutter_demo
+  GEN_DIR: ${{ github.workspace }}/../wgpu-flutter-app
 
 jobs:
   android:
@@ -77,11 +96,26 @@ jobs:
             x86_64-linux-android \
             i686-linux-android
 
-      # The Flutter Rust bridge crate lives one level down (flutter/rust) and is
-      # excluded from the outer Cargo workspace, so it keeps its own target dir.
+      # Cache the CLI workspace (rust/) — its swc-based transpiler dominates the
+      # CLI build. The generated project lives outside the checkout and does not
+      # exist yet at cache-restore time, so it is not cached here.
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: flutter/rust -> target
+          workspaces: rust
+
+      # --- Scaffold the wgpu-flutter template via the CLI -------------------
+      # Build the CLI and run `init`, which vendors the engine, copies the
+      # Flutter shell + SDK, and bundles the TypeScript app → assets/app/main.js.
+      - name: Scaffold wgpu-flutter project (create-elpa-app)
+        working-directory: rust
+        run: |
+          rm -rf "${GEN_DIR}"
+          cargo run --release -p create-elpa-app -- \
+            init "${APP_NAME}" \
+            --template wgpu-flutter \
+            --dir "${GEN_DIR}" \
+            --elpa-root "${GITHUB_WORKSPACE}" \
+            --force
 
       - name: Install flutter_rust_bridge_codegen
         run: cargo install --locked flutter_rust_bridge_codegen --version "${FRB_VERSION}"
@@ -95,14 +129,14 @@ jobs:
         run: dart pub global activate ffigen
 
       - name: Build APK
-        working-directory: flutter
+        working-directory: ${{ env.GEN_DIR }}
         run: |
           set -euo pipefail
-          # Materialize the Android platform runner (gitignored; recreated each run).
-          flutter create . --platforms=android --project-name elpa_app
+          # Materialize the Android platform runner (not part of the scaffold).
+          flutter create . --platforms=android --project-name "${APP_NAME}"
 
           # Generate the Dart bindings + rust/src/frb_generated.rs from the
-          # #[frb]-annotated Rust under flutter/rust/src/api.
+          # #[frb]-annotated Rust under the project's rust/src/api.
           flutter_rust_bridge_codegen generate
 
           # Enable the generated glue module (committed out as a build artifact).
@@ -115,12 +149,12 @@ jobs:
 
           # Cross-compile the Rust bridge crate for each Android ABI and drop the
           # shared libraries into android/app/src/main/jniLibs/<abi>/, where Gradle
-          # bundles them into the APK automatically. This is the step that was
-          # missing: a plain `flutter create` does NOT add flutter_rust_bridge's
-          # cargokit build hooks (only `flutter_rust_bridge_codegen integrate`
-          # does), so without this no `libelpa_bridge.so` ships and the bridge's
-          # `init()` fails at launch — a blank screen. The lib name (`elpa_bridge`)
-          # matches the loader stem FRB derives from the crate's lib target.
+          # bundles them into the APK automatically. This is the step a plain
+          # `flutter create` does NOT add (only `flutter_rust_bridge_codegen
+          # integrate` adds cargokit's build hooks), so without it no
+          # `libelpa_bridge.so` ships and the bridge's `init()` fails at launch —
+          # a blank screen. The lib name (`elpa_bridge`) matches the loader stem
+          # FRB derives from the crate's lib target.
           #
           # ABIs mirror the default `flutter build apk` fat-APK set (arm64-v8a,
           # armeabi-v7a, x86_64); the `frb_generated.rs` enabled above is compiled
@@ -140,23 +174,23 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: elpa-flutter-demo-apks
-          path: flutter/build/app/outputs/flutter-apk/app-*-release.apk
+          path: ${{ env.GEN_DIR }}/build/app/outputs/flutter-apk/app-*-release.apk
 
       - name: Commit APKs to repository root
         run: |
           set -euo pipefail
           # Copy each per-ABI APK to the repo root as elpa-flutter-demo-<abi>.apk.
           # flutter names them app-<abi>-release.apk (e.g. app-arm64-v8a-release.apk).
-          for apk in flutter/build/app/outputs/flutter-apk/app-*-release.apk; do
+          for apk in "${GEN_DIR}"/build/app/outputs/flutter-apk/app-*-release.apk; do
             abi=$(basename "$apk" | sed -E 's/^app-(.*)-release\.apk$/\1/')
-            cp "$apk" "./elpa-flutter-demo-${abi}.apk"
-            git add "elpa-flutter-demo-${abi}.apk"
+            cp "$apk" "${GITHUB_WORKSPACE}/elpa-flutter-demo-${abi}.apk"
+            git -C "${GITHUB_WORKSPACE}" add "elpa-flutter-demo-${abi}.apk"
           done
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git diff --cached --quiet; then
+          git -C "${GITHUB_WORKSPACE}" config user.name "github-actions[bot]"
+          git -C "${GITHUB_WORKSPACE}" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git -C "${GITHUB_WORKSPACE}" diff --cached --quiet; then
             echo "APKs unchanged; nothing to commit."
           else
-            git commit -m "ci: build Flutter demo Android APKs (per ABI) [skip ci]"
-            git push origin HEAD:${{ github.ref_name }}
+            git -C "${GITHUB_WORKSPACE}" commit -m "ci: build wgpu+Flutter template demo Android APKs (per ABI) [skip ci]"
+            git -C "${GITHUB_WORKSPACE}" push origin HEAD:${{ github.ref_name }}
           fi

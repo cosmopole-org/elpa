@@ -164,6 +164,14 @@ flutter pub get
 flutter run            # add -d chrome / -d linux / -d macos / a device id
 ```
 
+The two CI workflows below no longer build this `flutter/` project directly —
+they scaffold the **`wgpu-flutter` template** with `create-elpa-app init -t
+wgpu-flutter` (which copies this shell + SDK and vendors the engine) and build
+*that* generated project, so the CLI-creatable template is exercised end-to-end
+in both deployed forms. The mechanics described here are identical: the generated
+project is the same Flutter + FRB app, just with a different TypeScript app and
+the engine path-vendored under `engine/`.
+
 Getting the native crate **into** each platform build is a separate step —
 `flutter create` does **not** wire it up on its own (only
 `flutter_rust_bridge_codegen integrate`, which scaffolds the cargokit hooks,
