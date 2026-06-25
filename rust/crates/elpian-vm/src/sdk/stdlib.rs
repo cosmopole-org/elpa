@@ -535,10 +535,21 @@ pub fn invoke(name: &str, args: &[Val]) -> Result<Val, String> {
         }
 
         // ---- foundation: array ---------------------------------------------
+        // Variadic, matching JS `Array.prototype.push(...items)`: append every
+        // trailing argument. The transpiler rewrites `xs.push(a, b, c)` to
+        // `push(xs, a, b, c)`, so rejecting >2 args silently aborts the VM turn
+        // (a recoverable stdlib error, so no panic/log) — which is how a single
+        // `verts.push(x, y, z, ...)` could leave the whole app a blank screen.
+        // (`emit` is the same append; it stays as the hot-path alias.)
         "push" => {
-            arity(name, args, 2)?;
+            at_least(name, args, 2)?;
             let a = expect_array(name, &args[0])?;
-            a.borrow_mut().data.push(args[1].clone());
+            let mut b = a.borrow_mut();
+            b.data.reserve(args.len() - 1);
+            for v in &args[1..] {
+                b.data.push(v.clone());
+            }
+            drop(b);
             Ok(args[0].clone())
         }
         // Append every trailing argument to `args[0]` in one call. The renderer's
@@ -1270,6 +1281,10 @@ mod tests {
         assert_eq!(invoke("len", &[arr.clone()]).unwrap().as_i64(), 3);
         invoke("push", &[arr.clone(), vi64(9)]).unwrap();
         assert_eq!(invoke("len", &[arr.clone()]).unwrap().as_i64(), 4);
+        // push is variadic, like JS `Array.prototype.push(...items)` — the
+        // transpiler emits `push(xs, a, b, c)` for `xs.push(a, b, c)`.
+        invoke("push", &[arr.clone(), vi64(5), vi64(6), vi64(7)]).unwrap();
+        assert_eq!(invoke("len", &[arr.clone()]).unwrap().as_i64(), 7);
         let sorted = invoke("sort", &[varr(vec![vi64(3), vi64(1), vi64(2)])]).unwrap();
         assert_eq!(sorted.as_array().borrow().data[0].as_i64(), 1);
         let joined = invoke("join", &[varr(vec![vstr("a".into()), vstr("b".into())]), vstr("-".into())]).unwrap();
