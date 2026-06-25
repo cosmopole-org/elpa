@@ -14,8 +14,13 @@
 // the same class of regression the flutter-shell interaction test guards.
 //
 // Flutter web paints to a canvas, so we enable Flutter's semantics tree and read
-// the rendered text from the accessibility DOM (no GPU screenshot needed). The
-// CI step copies this file into the generated project's `tools/` and runs it
+// the rendered text from the accessibility DOM (no GPU screenshot needed). Under
+// headless SwiftShader, wasm instantiation + CanvasKit warm-up + the demo's
+// start() can take a while and the semantics placeholder may not exist on the
+// first try, so we *poll* (re-enabling semantics each round) instead of waiting a
+// single fixed interval, and dump the page state if the UI never shows up.
+//
+// The CI step copies this file into the generated project's `tools/` and runs it
 // from that project dir (where `playwright` and `build/web` live):
 //
 //   node tools/wgpu_flutter_web_interaction_test.mjs [baseHref]   (default "/elpa/")
@@ -58,18 +63,28 @@ const browser = await chromium.launch({
 });
 const page = await browser.newPage({ viewport: { width: 390, height: 844 }, locale: 'en-US' });
 
+// Keep a full transcript of console + page errors. `fatal` flags the known
+// startup traps; `transcript` keeps everything so a silent failure (a Dart/VM
+// exception that doesn't match a fatal pattern, leaving the UI on its spinner)
+// is still visible in the CI log.
 const fatal = [];
+const transcript = [];
 const isFatal = (s) => /panicked at|RuntimeError: unreachable|WorkerPool|could not be cloned|global function not found|recursively acquire|failed to start/i.test(s);
-page.on('console', (m) => { const t = m.text(); if (isFatal(t)) fatal.push('console: ' + t.split('\n')[0]); });
-page.on('pageerror', (e) => { const t = (e.message || '') + ' ' + (e.stack || ''); if (isFatal(t)) fatal.push('pageerror: ' + (e.message || '').split('\n')[0]); });
+const note = (line) => { transcript.push(line); if (isFatal(line)) fatal.push(line.split('\n')[0]); };
+page.on('console', (m) => note('console[' + m.type() + ']: ' + m.text().split('\n')[0]));
+page.on('pageerror', (e) => note('pageerror: ' + ((e.message || '') + ' ' + (e.stack || '')).split('\n')[0]));
 
 console.log(`[interaction] loading ${url}`);
 await page.goto(url, { waitUntil: 'load', timeout: 90000 });
-await page.waitForTimeout(15000); // wasm instantiate + CanvasKit + the demo's start()
 
-// Enable Flutter's semantics so rendered text is exposed in the DOM.
-await page.evaluate(() => document.querySelector('flt-semantics-placeholder')?.click());
-await page.waitForTimeout(2000);
+// Enabling Flutter's semantics exposes the rendered text in the DOM. The
+// placeholder only exists once the engine has mounted, so (re)click it each poll.
+const enableSemantics = () => page.evaluate(() => {
+  const el = document.querySelector('flt-semantics-placeholder')
+    || document.querySelector('[aria-label="Enable accessibility"]');
+  if (el) { el.click(); return true; }
+  return false;
+});
 
 const readText = () => page.evaluate(() => {
   const nodes = [...document.querySelectorAll('flt-semantics, [aria-label]')];
@@ -83,37 +98,80 @@ const readText = () => page.evaluate(() => {
   return out.join(' | ');
 });
 
-const fail = (msg) => { console.error(`[interaction] FAIL — ${msg}`); process.exitCode = 1; };
-
-const before = await readText();
-console.log('[interaction] initial:', before.slice(0, 240));
-if (fatal.length) { fail('startup trap:\n  - ' + fatal.join('\n  - ')); }
-else if (!/3D CONTROLS/i.test(before)) fail('demo did not render the controls card ("3D CONTROLS" not found)');
-else if (!/PAUSE/i.test(before)) fail('scene starts spinning, so the PAUSE pill should render ("PAUSE" not found)');
-else if (!/ABOUT/i.test(before)) fail('the about card did not render ("ABOUT" not found)');
-
-// Tap the PAUSE pill: locate its semantics node, else fall back to a coordinate
-// in the controls row (left pill, below the 240px scene card).
-const target = await page.evaluate(() => {
-  const n = [...document.querySelectorAll('flt-semantics, [aria-label]')]
-    .find((e) => /^PAUSE$/i.test((e.getAttribute('aria-label') || '').trim()) || /^PAUSE$/i.test((e.textContent || '').trim()));
-  if (!n) return null;
-  const r = n.getBoundingClientRect();
-  return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-});
-if (target) await page.mouse.click(target.x, target.y);
-else await page.mouse.click(90, 470);
-await page.waitForTimeout(1800);
-
-const afterTap = await readText();
-console.log('[interaction] after tap:', afterTap.slice(0, 240));
-// Pausing flips the pill label PAUSE -> RESUME via ControlsCard.setState, proving
-// the isolated scope re-rendered live.
-if (!/RESUME/i.test(afterTap)) {
-  fail('tapping PAUSE did not flip the pill to RESUME (controls scope did not re-render)');
+// Poll up to ~75s for the controls card to render (wasm + CanvasKit + start()),
+// re-enabling semantics each round and bailing early on a fatal startup trap.
+let before = '';
+let placeholderSeen = false;
+const deadline = Date.now() + 75000;
+while (Date.now() < deadline) {
+  placeholderSeen = (await enableSemantics()) || placeholderSeen;
+  await page.waitForTimeout(1500);
+  before = await readText();
+  if (/3D CONTROLS/i.test(before) || fatal.length) break;
 }
 
-if (fatal.length && process.exitCode !== 1) fail('bridge trapped:\n  - ' + fatal.join('\n  - '));
+const dumpDiagnostics = async (label) => {
+  const diag = await page.evaluate(() => ({
+    placeholder: !!(document.querySelector('flt-semantics-placeholder')
+      || document.querySelector('[aria-label="Enable accessibility"]')),
+    semanticsNodes: document.querySelectorAll('flt-semantics').length,
+    ariaNodes: document.querySelectorAll('[aria-label]').length,
+    flutterView: !!(document.querySelector('flutter-view') || document.querySelector('flt-glass-pane')),
+    bodyTextLen: (document.body.innerText || '').length,
+    bodyHtml: document.body.innerHTML.slice(0, 1000),
+  }));
+  console.error(`[interaction] ${label} diagnostics:`);
+  console.error('  placeholderEverSeen=' + placeholderSeen + ' placeholderNow=' + diag.placeholder +
+    ' flutterView=' + diag.flutterView + ' semanticsNodes=' + diag.semanticsNodes +
+    ' ariaNodes=' + diag.ariaNodes + ' bodyTextLen=' + diag.bodyTextLen);
+  console.error('  bodyHtml: ' + diag.bodyHtml.replace(/\s+/g, ' '));
+  console.error('  console transcript (tail):');
+  for (const l of transcript.slice(-25)) console.error('    ' + l);
+};
+
+const fail = async (msg) => {
+  console.error(`[interaction] FAIL — ${msg}`);
+  await dumpDiagnostics('failure');
+  process.exitCode = 1;
+};
+
+console.log('[interaction] initial:', before.slice(0, 240));
+if (fatal.length) { await fail('startup trap:\n  - ' + fatal.join('\n  - ')); }
+else if (!/3D CONTROLS/i.test(before)) await fail('demo did not render the controls card ("3D CONTROLS" not found)');
+else if (!/PAUSE/i.test(before)) await fail('scene starts spinning, so the PAUSE pill should render ("PAUSE" not found)');
+else if (!/ABOUT/i.test(before)) await fail('the about card did not render ("ABOUT" not found)');
+
+// Only drive the tap if the controls actually rendered.
+if (process.exitCode !== 1) {
+  // Tap the PAUSE pill: locate its semantics node, else fall back to a coordinate
+  // in the controls row (left pill, below the 240px scene card).
+  const target = await page.evaluate(() => {
+    const n = [...document.querySelectorAll('flt-semantics, [aria-label]')]
+      .find((e) => /^PAUSE$/i.test((e.getAttribute('aria-label') || '').trim()) || /^PAUSE$/i.test((e.textContent || '').trim()));
+    if (!n) return null;
+    const r = n.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  if (target) await page.mouse.click(target.x, target.y);
+  else await page.mouse.click(90, 470);
+
+  // Poll for the PAUSE -> RESUME flip (ControlsCard.setState re-render).
+  let afterTap = '';
+  const tapDeadline = Date.now() + 10000;
+  while (Date.now() < tapDeadline) {
+    await page.waitForTimeout(1000);
+    afterTap = await readText();
+    if (/RESUME/i.test(afterTap) || fatal.length) break;
+  }
+  console.log('[interaction] after tap:', afterTap.slice(0, 240));
+  // Pausing flips the pill label PAUSE -> RESUME via ControlsCard.setState, proving
+  // the isolated scope re-rendered live.
+  if (!/RESUME/i.test(afterTap)) {
+    await fail('tapping PAUSE did not flip the pill to RESUME (controls scope did not re-render)');
+  }
+}
+
+if (fatal.length && process.exitCode !== 1) await fail('bridge trapped:\n  - ' + fatal.join('\n  - '));
 
 await browser.close();
 server.close();
