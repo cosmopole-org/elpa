@@ -116,7 +116,9 @@ class RustElpaBridge implements ElpaBridge {
       ffi.registerSurface(
         handle: _h(handle),
         canvasId: canvasId,
-        rawHandle: rawHandle,
+        // `raw_handle` is an i64 in Rust, which flutter_rust_bridge maps to Dart
+        // `BigInt` (an OS pointer/fd can use the full 64-bit range).
+        rawHandle: BigInt.from(rawHandle),
         rowStride: rowStride,
         width: width,
         height: height,

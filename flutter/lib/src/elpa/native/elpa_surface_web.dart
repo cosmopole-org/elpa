@@ -37,8 +37,8 @@ class _WebSurfaceProvisioner implements ElpaSurfaceProvisioner {
     final canvas = (web.document.createElement('canvas') as web.HTMLCanvasElement)
       ..id = viewType
       // Backing store in physical pixels for crisp HiDPI rendering…
-      ..width = widthPx.clamp(1, 1 << 16)
-      ..height = heightPx.clamp(1, 1 << 16);
+      ..width = widthPx < 1 ? 1 : widthPx
+      ..height = heightPx < 1 ? 1 : heightPx;
     // …and a CSS box that fills the platform-view slot Flutter lays out.
     canvas.style
       ..setProperty('width', '100%')
@@ -59,8 +59,8 @@ class _WebSurfaceProvisioner implements ElpaSurfaceProvisioner {
     if (canvas == null) return false;
     // Keep the backing store sized to the latest physical size before binding.
     canvas
-      ..width = widthPx.clamp(1, 1 << 16)
-      ..height = heightPx.clamp(1, 1 << 16);
+      ..width = widthPx < 1 ? 1 : widthPx
+      ..height = heightPx < 1 ? 1 : heightPx;
     return engine.registerSurface(canvasId: canvas.id, width: widthPx, height: heightPx);
   }
 
