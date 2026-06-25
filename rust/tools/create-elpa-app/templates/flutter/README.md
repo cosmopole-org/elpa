@@ -46,7 +46,7 @@ flutter run            # add -d chrome / -d linux / -d macos / a device id
 ### Browser preview (prebuilt wasm host)
 
 ```bash
-create-elpa-app install   # build the Elpa + Flutter wasm host once (needs the Flutter + wasm toolchain)
+create-elpa-app install   # one-shot: installs the Flutter SDK + wasm toolchain, then builds the host
 create-elpa-app dev       # rebuild the bytecode and serve it at http://127.0.0.1:8787
 ```
 

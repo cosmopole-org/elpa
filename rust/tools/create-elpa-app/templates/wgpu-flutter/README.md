@@ -77,8 +77,9 @@ The 2D and 3D layers update independently — the 2D cards patch their own scope
 the 3D scene re-submits every frame. After editing `assets/app/ts/`, run
 `create-elpa-app build` and hot-restart.
 
-For a browser preview, `create-elpa-app install` builds the Elpa + Flutter wasm
-host once and `create-elpa-app dev` serves your bytecode against it.
+For a browser preview, `create-elpa-app install` sets up the Flutter SDK + wasm
+toolchain and builds the Elpa + Flutter wasm host (one shot), then
+`create-elpa-app dev` serves your bytecode against it.
 
 ---
 

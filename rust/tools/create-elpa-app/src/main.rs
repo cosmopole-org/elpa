@@ -51,9 +51,13 @@ fn dispatch(args: &[String]) -> Result<(), String> {
             serve::dev(&cwd(), port)
         }
         "install" => {
-            let force = rest.iter().any(|a| a == "--force");
+            let opts = install::InstallOpts {
+                force: rest.iter().any(|a| a == "--force"),
+                dry_run: rest.iter().any(|a| a == "--dry-run"),
+                skip_host: rest.iter().any(|a| a == "--skip-host"),
+            };
             let root = scaffold::find_elpa_root(flag_value(rest, "--elpa-root").as_deref())?;
-            install::install(&root, force)
+            install::install(&root, opts)
         }
         // Back-compat / convenience: `create-elpa-app "My App" -t wgpu` implies init.
         _ => scaffold::run_init(args),
@@ -81,7 +85,7 @@ fn usage() {
     println!("  create-elpa-app init <name> [--template <type>] [--dir <path>] [--force]");
     println!("  create-elpa-app build");
     println!("  create-elpa-app dev [--port <n>]");
-    println!("  create-elpa-app install [--force]\n");
+    println!("  create-elpa-app install [--dry-run] [--skip-host] [--force]\n");
     println!("Templates:");
     for (k, label) in scaffold::TEMPLATES {
         println!("  {k:<14}{label}");
@@ -90,6 +94,7 @@ fn usage() {
     println!("  init      create a new project (vendors the engine + SDK, builds it once)");
     println!("  build     transpile the TS app → one VM-subset JS bundle + Elpian bytecode");
     println!("  dev       build, then serve the bytecode for the prebuilt Elpa+Flutter wasm host");
-    println!("  install   build that default wasm host (needs the Flutter + wasm toolchain)");
+    println!("  install   one-shot env setup: Rust wasm target, wasm-bindgen, frb codegen,");
+    println!("            system deps, the Flutter SDK, and the wasm host (--dry-run to preview)");
     println!("\nWith no name/template, `init` prompts interactively.");
 }

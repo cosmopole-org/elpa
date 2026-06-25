@@ -19,7 +19,7 @@ cargo build -p create-elpa-app --release
 | `init <name> [-t <template>]` | Scaffold a project (vendors the engine + SDK), then build it once. Prompts interactively if `name`/template are omitted. |
 | `build` | Transpile the TypeScript app → one VM-subset JS bundle (`app.js`) **and** its Elpian bytecode (`app.bc`). |
 | `dev [--port N]` | `build`, then serve the bytecode over HTTP for the prebuilt Elpa + Flutter wasm host. |
-| `install [--force]` | Build that default wasm host once (needs the Flutter + wasm toolchain). |
+| `install [--dry-run] [--skip-host] [--force]` | **One-shot environment setup.** Detects and installs everything missing — the Rust wasm target, `wasm-bindgen`, `flutter_rust_bridge_codegen`, system build deps, and the **Flutter SDK** — then builds the wasm host. Idempotent (skips what's present); `--dry-run` previews the plan. |
 
 ### Templates
 
