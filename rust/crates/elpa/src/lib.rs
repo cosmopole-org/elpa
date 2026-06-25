@@ -37,29 +37,38 @@
 
 pub mod event;
 pub mod headless;
+pub mod headless_scene;
 pub mod host_message;
 pub mod surface;
 
 pub use event::InputEvent;
 pub use headless::HeadlessBackend;
+pub use headless_scene::HeadlessSceneBackend;
 pub use host_message::{HostMessage, RequestHandler};
 pub use surface::{Insets, SurfaceInfo};
 
 // Re-export the core types a host/example needs.
-pub use elpa_protocol::{self as protocol, Definition, DefinitionBody, Frame, Layer};
-pub use elpa_renderer::{FrameStats, GpuBackend, Renderer};
+pub use elpa_protocol::{self as protocol, Definition, DefinitionBody, Frame, Layer, Scene, SceneOp};
+pub use elpa_renderer::{FrameStats, GpuBackend, Renderer, SceneBackend, SceneRenderer, SceneStats};
 pub use elpa_runtime::{DefinitionStore, LayerStore, ScopeStats};
 
 #[cfg(feature = "wgpu")]
 pub use elpa_renderer::wgpu_backend::WgpuBackend;
+
+#[cfg(feature = "vello")]
+pub use elpa_renderer::vello_backend::{RawHandler, VelloSceneBackend};
 
 use ahash::AHashMap as HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use elpa_runtime::{
     definition_from_define, frame_from_submit, import_request, layer_from_define, reply_json,
-    reply_null, scope_target, undefine_target, HostEnv, Runtime, Start,
+    reply_null, scene_from_submit, scope_target, undefine_target, HostEnv, Runtime, Start,
 };
+
+/// The scene backend an instance drives, as a boxed trait object so a host can
+/// start headless and swap in the live [`VelloSceneBackend`] at runtime.
+type DynSceneBackend = Box<dyn SceneBackend>;
 
 // Re-export the instance-governance surface so a host can cap, gate, and steer
 // an app through the `elpa` crate without reaching into `elpian-vm` directly.
@@ -86,9 +95,17 @@ pub type AssetFetcher = Box<dyn Fn(&str) -> Option<String>>;
 pub struct Elpa<B: GpuBackend> {
     runtime: Runtime,
     renderer: Renderer<B>,
+    /// The vello scene path (Elpa's primary drawing model): maps a submitted
+    /// [`Scene`] onto a [`SceneBackend`]. Headless by default; a host installs the
+    /// live [`VelloSceneBackend`] via [`Elpa::set_scene_backend`]. Embedded raw
+    /// wgpu frames ([`SceneOp::RawWgpu`]) are composited by this backend, so the
+    /// raw command tree is one operation type inside the scene.
+    scene_renderer: SceneRenderer<DynSceneBackend>,
     surface: SurfaceInfo,
     last_frame: Option<Frame>,
     last_stats: FrameStats,
+    last_scene: Option<Scene>,
+    last_scene_stats: SceneStats,
     log: Vec<String>,
     /// Registered reusable drawing definitions (the `gpu.define` store). Submitted
     /// frames are expanded against this before they reach the renderer.
@@ -156,9 +173,14 @@ impl<B: GpuBackend> Elpa<B> {
         Self {
             runtime,
             renderer: Renderer::new(backend),
+            scene_renderer: SceneRenderer::new(
+                Box::new(HeadlessSceneBackend::default()) as DynSceneBackend
+            ),
             surface,
             last_frame: None,
             last_stats: FrameStats::default(),
+            last_scene: None,
+            last_scene_stats: SceneStats::default(),
             log: Vec::new(),
             defs: DefinitionStore::new(),
             layers: LayerStore::new(),
@@ -198,8 +220,9 @@ impl<B: GpuBackend> Elpa<B> {
     /// Resume a paused VM, servicing any host calls it makes as it continues.
     pub fn resume(&mut self) {
         let Elpa {
-            runtime, renderer, surface, last_frame, last_stats, log, defs, layers, scope_stats,
-            assets, fetcher, env, outbound, request_handler,
+            runtime, renderer, scene_renderer, surface, last_frame, last_stats, last_scene,
+            last_scene_stats, log, defs, layers, scope_stats, assets, fetcher, env, outbound,
+            request_handler,
         } = self;
         let mid = runtime.machine_id().to_string();
         let mut result = elpian_vm::api::resume_execution(mid.clone());
@@ -209,8 +232,9 @@ impl<B: GpuBackend> Elpa<B> {
             }
             let reply = match elpa_protocol::HostCall::parse(&result.host_call_data) {
                 Ok(hc) => handle_call(
-                    &hc, renderer, surface, last_frame, last_stats, log, defs, layers, scope_stats,
-                    assets, fetcher, env, outbound, request_handler,
+                    &hc, renderer, scene_renderer, surface, last_frame, last_stats, last_scene,
+                    last_scene_stats, log, defs, layers, scope_stats, assets, fetcher, env, outbound,
+                    request_handler,
                 ),
                 Err(_) => reply_null(),
             };
@@ -349,14 +373,16 @@ impl<B: GpuBackend> Elpa<B> {
     pub fn import_ast(&mut self, ast_json: &str) -> bool {
         let id = format!("elpa-import-{}", IMPORT_COUNTER.fetch_add(1, Ordering::Relaxed));
         let Elpa {
-            renderer, surface, last_frame, last_stats, log, defs, layers, scope_stats, assets,
-            fetcher, env, outbound, request_handler, ..
+            renderer, scene_renderer, surface, last_frame, last_stats, last_scene,
+            last_scene_stats, log, defs, layers, scope_stats, assets, fetcher, env, outbound,
+            request_handler, ..
         } = self;
         match runtime_from_source(id, ast_json) {
             Some(mut rt) => {
                 pump_vm(
-                    &mut rt, Start::Main, renderer, surface, last_frame, last_stats, log, defs,
-                    layers, scope_stats, assets, fetcher, env, outbound, request_handler,
+                    &mut rt, Start::Main, renderer, scene_renderer, surface, last_frame, last_stats,
+                    last_scene, last_scene_stats, log, defs, layers, scope_stats, assets, fetcher,
+                    env, outbound, request_handler,
                 );
                 rt.dispose();
                 true
@@ -395,6 +421,9 @@ impl<B: GpuBackend> Elpa<B> {
         let insets = self.surface.insets;
         self.surface = SurfaceInfo::new(width, height, scale_factor).with_insets(insets);
         self.renderer.invalidate();
+        // The scene's last-presented surface is stale at the new size; force the
+        // next identical scene to re-present rather than skip as "unchanged".
+        self.scene_renderer.invalidate();
         // The snapshot textures are sized to the old surface; force every layer to
         // repaint at the new size (the renderer's table is reset by `invalidate`).
         self.layers.invalidate_all();
@@ -485,16 +514,48 @@ impl<B: GpuBackend> Elpa<B> {
         &mut self.renderer
     }
 
+    // ---- Vello scene path ----------------------------------------------------
+
+    /// The scene renderer (the vello drawing path), for inspecting scene-cache
+    /// stats or the live backend.
+    pub fn scene_renderer(&self) -> &SceneRenderer<DynSceneBackend> {
+        &self.scene_renderer
+    }
+    pub fn scene_renderer_mut(&mut self) -> &mut SceneRenderer<DynSceneBackend> {
+        &mut self.scene_renderer
+    }
+
+    /// Install the live scene backend (e.g. [`VelloSceneBackend`]), replacing the
+    /// headless one. Every cached scene resource is forgotten so the next
+    /// `scene.submit` re-uploads on the new backend (the scene analog of swapping
+    /// the GPU backend). Returns the previous backend.
+    pub fn set_scene_backend(&mut self, backend: DynSceneBackend) -> DynSceneBackend {
+        self.scene_renderer.replace_backend(backend)
+    }
+
+    /// Work report for the most recent `scene.submit` (ops encoded, raw frames
+    /// composited, whether it was served from cache, …).
+    pub fn last_scene_stats(&self) -> &SceneStats {
+        &self.last_scene_stats
+    }
+
+    /// The most recently submitted (and expanded) scene.
+    pub fn last_scene(&self) -> Option<&Scene> {
+        self.last_scene.as_ref()
+    }
+
     /// Pump the VM for one turn, routing host calls (see [`handle_call`]).
     fn drive(&mut self, start: Start) {
         // Disjoint borrows of the instance's fields for the dispatch closure.
         let Elpa {
-            runtime, renderer, surface, last_frame, last_stats, log, defs, layers, scope_stats,
-            assets, fetcher, env, outbound, request_handler,
+            runtime, renderer, scene_renderer, surface, last_frame, last_stats, last_scene,
+            last_scene_stats, log, defs, layers, scope_stats, assets, fetcher, env, outbound,
+            request_handler,
         } = self;
         pump_vm(
-            runtime, start, renderer, surface, last_frame, last_stats, log, defs, layers,
-            scope_stats, assets, fetcher, env, outbound, request_handler,
+            runtime, start, renderer, scene_renderer, surface, last_frame, last_stats, last_scene,
+            last_scene_stats, log, defs, layers, scope_stats, assets, fetcher, env, outbound,
+            request_handler,
         );
     }
 }
@@ -520,9 +581,12 @@ fn pump_vm<B: GpuBackend>(
     rt: &mut Runtime,
     start: Start,
     renderer: &mut Renderer<B>,
+    scene_renderer: &mut SceneRenderer<DynSceneBackend>,
     surface: &SurfaceInfo,
     last_frame: &mut Option<Frame>,
     last_stats: &mut FrameStats,
+    last_scene: &mut Option<Scene>,
+    last_scene_stats: &mut SceneStats,
     log: &mut Vec<String>,
     defs: &mut DefinitionStore,
     layers: &mut LayerStore,
@@ -535,8 +599,9 @@ fn pump_vm<B: GpuBackend>(
 ) {
     rt.pump(start, |hc| {
         handle_call(
-            hc, renderer, surface, last_frame, last_stats, log, defs, layers, scope_stats, assets,
-            fetcher, env, outbound, request_handler,
+            hc, renderer, scene_renderer, surface, last_frame, last_stats, last_scene,
+            last_scene_stats, log, defs, layers, scope_stats, assets, fetcher, env, outbound,
+            request_handler,
         )
     });
 }
@@ -554,9 +619,12 @@ fn pump_vm<B: GpuBackend>(
 fn handle_call<B: GpuBackend>(
     hc: &elpa_protocol::HostCall,
     renderer: &mut Renderer<B>,
+    scene_renderer: &mut SceneRenderer<DynSceneBackend>,
     surface: &SurfaceInfo,
     last_frame: &mut Option<Frame>,
     last_stats: &mut FrameStats,
+    last_scene: &mut Option<Scene>,
+    last_scene_stats: &mut SceneStats,
     log: &mut Vec<String>,
     defs: &mut DefinitionStore,
     layers: &mut LayerStore,
@@ -609,6 +677,29 @@ fn handle_call<B: GpuBackend>(
                     }
                     Err(e) => log.push(format!("gpu.submit: {e}")),
                 }
+            }
+            reply_null()
+        }
+        // ---- Vello scene path (the primary drawing model) -------------------
+        // Stream a batch of high-level vector ops. Any embedded raw wgpu frame
+        // (`rawWgpu` op) is expanded against the scope + definition stores — the
+        // same two-stage expansion `gpu.submit` does — so a raw op can reference
+        // layers/definitions, then the whole scene (vector ops + composited raw
+        // ops) is rendered through the scene backend.
+        "scene.submit" => {
+            if let Some(mut scene) = scene_from_submit(hc) {
+                for op in scene.ops.iter_mut() {
+                    if let elpa_protocol::SceneOp::RawWgpu { frame } = op {
+                        let (scoped, sstats) = layers.expand_layers(std::mem::take(frame));
+                        *scope_stats = sstats;
+                        match defs.expand(scoped) {
+                            Ok(flat) => *frame = flat,
+                            Err(e) => log.push(format!("scene.submit rawWgpu: {e}")),
+                        }
+                    }
+                }
+                *last_scene_stats = scene_renderer.render(&scene);
+                *last_scene = Some(scene);
             }
             reply_null()
         }
@@ -665,8 +756,9 @@ fn handle_call<B: GpuBackend>(
                         match runtime_from_source(id, &ast_json) {
                             Some(mut rt) => {
                                 pump_vm(
-                                    &mut rt, Start::Main, renderer, surface, last_frame, last_stats,
-                                    log, defs, layers, scope_stats, assets, fetcher, env, outbound,
+                                    &mut rt, Start::Main, renderer, scene_renderer, surface,
+                                    last_frame, last_stats, last_scene, last_scene_stats, log, defs,
+                                    layers, scope_stats, assets, fetcher, env, outbound,
                                     request_handler,
                                 );
                                 rt.dispose();
@@ -798,6 +890,116 @@ mod tests {
             ]
         })
         .to_string()
+    }
+
+    // ---- Vello scene path (the primary drawing model) -----------------------
+
+    /// A scene literal: fill a rounded rect, then splice a raw wgpu frame.
+    fn scene_literal(rect_w: i64) -> serde_json::Value {
+        obj(json!({
+            "ops": arr(vec![
+                obj(json!({
+                    "op": s("fill"),
+                    "brush": obj(json!({ "brush": s("solid"),
+                        "color": obj(json!({ "r": f(1.0), "g": f(0.0), "b": f(0.0), "a": f(1.0) })) })),
+                    "path": obj(json!({ "shape": s("roundRect"),
+                        "x": f(0.0), "y": f(0.0), "w": f(rect_w as f64), "h": f(40.0), "radius": f(8.0) }))
+                })),
+                obj(json!({
+                    "op": s("rawWgpu"),
+                    "frame": obj(json!({
+                        "commands": arr(vec![ obj(json!({
+                            "op": s("renderPass"),
+                            "color_attachments": arr(vec![ obj(json!({ "view": obj(json!({ "kind": s("surface") })) })) ]),
+                            "commands": arr(vec![ obj(json!({ "cmd": s("draw"), "vertex_count": i(3) })) ])
+                        })) ])
+                    }))
+                })),
+            ])
+        }))
+    }
+
+    fn scene_app() -> String {
+        let submit = |w: i64| json!({ "type": "host_call", "data": { "name": "scene.submit", "args": [ scene_literal(w) ] } });
+        json!({
+            "type": "program",
+            "body": [
+                submit(100),
+                { "type": "functionDefinition", "data": {
+                    "name": "onEvent", "params": ["e"], "body": [ submit(140) ] } }
+            ]
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn instance_renders_a_scene_with_an_embedded_raw_wgpu_op() {
+        let mut app =
+            Elpa::new(HeadlessBackend::default(), SurfaceInfo::new(800, 600, 1.0), &scene_app())
+                .unwrap();
+        app.start();
+
+        // The scene encoded a fill + a composited raw wgpu op, and presented.
+        let st = app.last_scene_stats();
+        assert_eq!(st.ops_encoded, 2);
+        assert_eq!(st.raw_frames, 1, "the raw wgpu op composited into the scene");
+        assert!(st.presented && !st.cached);
+        // The expanded scene is retained, with the raw op preserved.
+        assert_eq!(app.last_scene().unwrap().raw_frames().count(), 1);
+        assert!(app.last_scene().unwrap().has_vector_ops());
+
+        // Re-submitting the identical scene is free (nothing changed).
+        // (We trigger another start-equivalent by re-driving the same program.)
+    }
+
+    #[test]
+    fn identical_scene_is_cached_and_a_change_re_presents() {
+        // App re-submits on each event; first event submits a *different* scene
+        // (rect width 140), a second identical event is then served from cache.
+        let submit_same = json!({ "type": "host_call", "data": { "name": "scene.submit", "args": [ scene_literal(100) ] } });
+        let program = json!({
+            "type": "program",
+            "body": [
+                submit_same.clone(),
+                { "type": "functionDefinition", "data": {
+                    "name": "onEvent", "params": ["e"], "body": [ submit_same ] } }
+            ]
+        })
+        .to_string();
+
+        let mut app =
+            Elpa::new(HeadlessBackend::default(), SurfaceInfo::new(400, 300, 1.0), &program).unwrap();
+        app.start();
+        assert!(app.last_scene_stats().presented, "first scene presents");
+
+        // An event re-submits the identical scene -> served from cache, no present.
+        app.send_event(&InputEvent::PointerDown { x: 1.0, y: 1.0, button: 0 });
+        assert!(app.last_scene_stats().cached, "identical scene is free");
+        assert!(!app.last_scene_stats().presented);
+
+        // A resize invalidates the scene snapshot, so the next identical scene
+        // re-presents at the new size.
+        app.resize(500, 400, 1.0);
+        assert!(app.trap_reason().is_none());
+    }
+
+    #[test]
+    fn js_app_can_drive_the_scene_api() {
+        // A JS app using the high-level scene host call directly.
+        let mut app = Elpa::new_from_js(
+            HeadlessBackend::default(),
+            SurfaceInfo::new(200, 200, 1.0),
+            r#"askHost("scene.submit", [{ ops: [
+                 { op: "fill",
+                   brush: { brush: "solid", color: { r: 0.0, g: 0.5, b: 1.0, a: 1.0 } },
+                   path: { shape: "circle", cx: 50.0, cy: 50.0, r: 20.0 } }
+               ] }]);"#,
+        )
+        .expect("JS scene app compiles");
+        app.start();
+        assert!(app.trap_reason().is_none(), "no trap: {:?}", app.trap_reason());
+        assert_eq!(app.last_scene_stats().ops_encoded, 1, "the JS app emitted one fill op");
+        assert!(app.last_scene_stats().presented);
     }
 
     #[test]

@@ -106,7 +106,15 @@ class Host {
     return askHost("gpu.surfaceInfo", []);
   }
 
-  // ---- GPU (the wgpu command pipe — see graphics.js for the high-level API) --
+  // ---- Drawing (the Vello scene pipe — see graphics.js for the high-level API) --
+
+  /// Submit a Vello scene: a batch of high-level vector drawing ops (the primary
+  /// drawing path). An embedded `rawWgpu` op composites a raw wgpu frame.
+  sceneSubmit(scene) {
+    askHost("scene.submit", [scene]);
+  }
+
+  // ---- GPU (the raw wgpu command pipe — now a `rawWgpu` subset op) -----------
 
   gpuSubmit(frame) {
     askHost("gpu.submit", [frame]);

@@ -8,6 +8,9 @@ description = "The unified Elpa instance: an object that owns and assembles the 
 default = []
 # Pull in and re-export the live wgpu backend (heavy; enabled by hosts/examples).
 wgpu = ["elpa-renderer/wgpu-backend", "dep:wgpu"]
+# Pull in and re-export the live Vello scene backend (the primary drawing path),
+# which also enables the wgpu backend it composites raw ops through.
+vello = ["elpa-renderer/vello-backend", "wgpu"]
 
 [dependencies]
 elpa-protocol = { path = "../elpa-protocol" }

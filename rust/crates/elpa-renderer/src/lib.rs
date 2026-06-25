@@ -26,18 +26,38 @@
 //! cache/partial-render logic is validated with a mock backend and no GPU. The
 //! wgpu implementation (the literal command→API mapping) is the `wgpu-backend`
 //! feature and is the only place that links wgpu.
+//!
+//! ## The vello scene path
+//!
+//! Layered above the command tree is the **scene renderer**
+//! ([`scene_renderer`], [`scene_backend`]): it maps an
+//! [`elpa_protocol::Scene`] — a batch of high-level vector ops — onto a
+//! [`SceneBackend`], with scene-resource caching and a whole-scene "nothing
+//! changed" skip. The same seam pattern applies: the orchestration is tested
+//! with a mock backend, and the real [Vello](https://github.com/linebender/vello)
+//! implementation (the only place that links vello + wgpu) is the `vello-backend`
+//! feature. An embedded raw wgpu frame ([`elpa_protocol::SceneOp::RawWgpu`]) is
+//! composited into the same target through the wgpu [`Renderer`], so direct wgpu
+//! is a subset of the scene vocabulary.
 
 pub mod backend;
 pub mod cache;
 pub mod dirty;
 pub mod manager;
+pub mod scene_backend;
+pub mod scene_renderer;
 pub mod scope;
 
 #[cfg(feature = "wgpu-backend")]
 pub mod wgpu_backend;
 
+#[cfg(feature = "vello-backend")]
+pub mod vello_backend;
+
 pub use backend::GpuBackend;
 pub use cache::{content_hash, PassCache, ResourceCache};
 pub use dirty::DirtyTracker;
 pub use manager::{FrameStats, Renderer};
+pub use scene_backend::SceneBackend;
+pub use scene_renderer::{scene_hash, SceneRenderer, SceneStats};
 pub use scope::LayerTable;

@@ -13,7 +13,7 @@
 //!      └──────────────── continue_execution ◀─────┘   (until done)
 //! ```
 
-use elpa_protocol::{Definition, Frame, HostCall, Layer};
+use elpa_protocol::{Definition, Frame, HostCall, Layer, Scene};
 use elpian_vm::api;
 
 pub mod definitions;
@@ -158,6 +158,39 @@ pub fn frame_from_submit(call: &HostCall) -> Option<Frame> {
     }
 }
 
+/// Parse a `scene.submit` host call's payload into a [`Scene`] — the vello
+/// drawing-op batch the VM streams as Elpa's primary drawing path. Like
+/// [`frame_from_submit`], the VM wraps `askHost` arguments in a JSON array, so
+/// the payload is `[<scene>]`; this unwraps it. Uses SIMD JSON on native,
+/// serde_json on wasm.
+pub fn scene_from_submit(call: &HostCall) -> Option<Scene> {
+    if call.api_name != "scene.submit" {
+        return None;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut buf = call.payload.as_bytes().to_vec();
+        if let Ok(mut scenes) = simd_json::from_slice::<Vec<Scene>>(&mut buf) {
+            if !scenes.is_empty() {
+                return Some(scenes.remove(0));
+            }
+        }
+        let mut buf2 = call.payload.as_bytes().to_vec();
+        simd_json::from_slice::<Scene>(&mut buf2).ok()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        if let Ok(mut scenes) = serde_json::from_str::<Vec<Scene>>(&call.payload) {
+            if !scenes.is_empty() {
+                return Some(scenes.remove(0));
+            }
+        }
+        serde_json::from_str::<Scene>(&call.payload).ok()
+    }
+}
+
 /// Unwrap the single argument of an `askHost` payload. The VM wraps call
 /// arguments in a JSON array (`[arg0, …]`); host APIs here take one argument, so
 /// this returns `arg0` (or the payload itself if it isn't an array).
@@ -270,6 +303,31 @@ mod tests {
         };
         let f = frame_from_submit(&call).unwrap();
         assert!(f.commands.is_empty());
+    }
+
+    #[test]
+    fn scene_from_submit_unwraps_array_and_parses_ops() {
+        let call = HostCall {
+            machine_id: "m".into(),
+            api_name: "scene.submit".into(),
+            payload: r#"[{"ops":[
+                {"op":"fill","brush":{"brush":"solid","color":{"r":1,"g":0,"b":0,"a":1}},
+                 "path":{"shape":"rect","x":0,"y":0,"w":4,"h":4}},
+                {"op":"rawWgpu","frame":{"commands":[]}}
+            ]}]"#
+            .into(),
+        };
+        let s = scene_from_submit(&call).unwrap();
+        assert_eq!(s.ops.len(), 2);
+        assert_eq!(s.raw_frames().count(), 1, "raw wgpu op is preserved as a scene op");
+        assert!(s.has_vector_ops());
+    }
+
+    #[test]
+    fn scene_from_submit_ignores_other_apis() {
+        let call =
+            HostCall { machine_id: "m".into(), api_name: "gpu.submit".into(), payload: "[]".into() };
+        assert!(scene_from_submit(&call).is_none());
     }
 
     #[test]
