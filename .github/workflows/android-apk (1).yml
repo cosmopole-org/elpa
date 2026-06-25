@@ -38,6 +38,13 @@ jobs:
   # --- Android APK build + upload to repo root -------------------------------
   android:
     runs-on: ubuntu-latest
+    # The Cargo workspace lives in `rust/` (not the repo root), so every `run`
+    # step defaults to that directory — otherwise `cargo` can't find `Cargo.toml`.
+    # Steps that need the repo root (the APK build crate, the commit) override or
+    # use absolute paths explicitly.
+    defaults:
+      run:
+        working-directory: rust
     env:
       NDK_VERSION: "26.3.11579264" # NDK r26d
     steps:
@@ -53,7 +60,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: examples/native -> target
+          # The bytecode bins build the `rust/` workspace (target `rust/target`);
+          # the APK build is the standalone `rust/examples/native` crate (its own
+          # `target/`). Cache both. Paths are relative to the repo root.
+          workspaces: |
+            rust
+            rust/examples/native -> target
 
       - name: Set up JDK
         uses: actions/setup-java@v4
@@ -94,7 +106,7 @@ jobs:
             -dname "CN=Elpa, OU=Example, O=Cosmopole, C=US"
 
       - name: Build signed release APK
-        working-directory: examples/native
+        working-directory: rust/examples/native
         env:
           CARGO_APK_RELEASE_KEYSTORE: ${{ github.workspace }}/release.keystore
           CARGO_APK_RELEASE_KEYSTORE_PASSWORD: android
@@ -116,12 +128,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: elpa-android-apk-${{ inputs.app }}
-          path: examples/native/target/release/apk/elpa_native_example.apk
+          path: rust/examples/native/target/release/apk/elpa_native_example.apk
 
-      - name: Commit APK to repository root
+      - name: Commit APK to the rust/ project root
         run: |
-          # Material → elpa.apk (unchanged); Game3D → elpa-game3d.apk, so the two
-          # builds don't clobber each other at the repo root.
+          # Runs in rust/ (the job default), so $DEST lands next to the existing
+          # rust/elpa-*.apk demos. Material → elpa.apk (unchanged); Game3D →
+          # elpa-game3d.apk, etc., so the apps don't clobber each other.
           DEST=elpa.apk
           if [ "${{ inputs.app }}" = "game3d" ]; then DEST=elpa-game3d.apk; fi
           if [ "${{ inputs.app }}" = "liquidglass" ]; then DEST=elpa-liquidglass.apk; fi
