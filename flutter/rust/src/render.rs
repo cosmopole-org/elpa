@@ -142,6 +142,9 @@ impl elpa::GpuBackend for LiveBackend {
     fn surface_format_token(&self) -> String {
         dispatch!(self, b => b.surface_format_token())
     }
+    fn surface_size(&self) -> Option<(u32, u32)> {
+        dispatch!(self, b => b.surface_size())
+    }
 }
 
 /// Build a live wgpu backend over a **native shared texture** (the zero-copy

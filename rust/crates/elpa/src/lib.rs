@@ -691,7 +691,25 @@ fn handle_call<B: GpuBackend>(
             // (wgpu requires an exact match). This replaces the host-side string
             // patching examples used to do on the JS source before compiling,
             // which is impossible once the program ships as prebuilt bytecode.
-            let mut info = surface.to_json();
+            //
+            // Geometry comes from the *live GPU surface* when a backend reports one
+            // (`surface_size`), falling back to the host window otherwise. They
+            // differ whenever the GPU surface is a sub-region of the window — an
+            // inline native widget (`Native3DView`) composited into a larger
+            // Flutter tree renders into a card-sized swapchain / texture, while the
+            // 2D UI lays out against the whole window. An app sizing its depth
+            // target or projection from the window would then mismatch the actual
+            // color attachment, and wgpu rejects the render pass (all attachments
+            // must share dimensions) — so the 3D scene never appears. Reporting the
+            // real surface size keeps the two in agreement. The scale factor and
+            // safe-area insets stay the window's (a backend tracks pixels only).
+            let reported = match renderer.backend().surface_size() {
+                Some((w, h)) => {
+                    SurfaceInfo::new(w, h, surface.scale_factor).with_insets(surface.insets)
+                }
+                None => *surface,
+            };
+            let mut info = reported.to_json();
             if let Some(obj) = info.as_object_mut() {
                 obj.insert(
                     "colorFormat".to_string(),
@@ -990,6 +1008,81 @@ mod tests {
         });
         app.start();
         assert!(app.definitions().contains("net"), "fetched module registered its shape");
+    }
+
+    // ---- gpu.surfaceInfo geometry source -------------------------------------
+
+    /// A no-op [`GpuBackend`] that reports a fixed *live surface* size — standing
+    /// in for a real wgpu backend whose swapchain/imported texture is a sub-region
+    /// of the host window (an inline `Native3DView`). Only `surface_size` matters.
+    struct SizedBackend {
+        size: Option<(u32, u32)>,
+    }
+    impl GpuBackend for SizedBackend {
+        fn create_resource(&mut self, _: &protocol::ResourceDesc) {}
+        fn update_buffer(&mut self, _: &str, _: u64, _: &[u8]) {}
+        fn destroy_resource(&mut self, _: &str) {}
+        fn begin_frame(&mut self) {}
+        fn record_render_pass(&mut self, _: &protocol::RenderPass) {}
+        fn record_compute_pass(&mut self, _: &protocol::ComputePass) {}
+        fn record_encoder_command(&mut self, _: &protocol::EncoderCommand) {}
+        fn end_frame(&mut self, _: &[protocol::Rect]) {}
+        fn surface_size(&self) -> Option<(u32, u32)> {
+            self.size
+        }
+    }
+
+    /// A program that reads `gpu.surfaceInfo` on start and forwards it outbound on
+    /// the `info` channel, so a test can inspect the geometry the app would size
+    /// its render targets (depth texture, projection) from.
+    fn surface_info_probe_program() -> String {
+        json!({
+            "type": "program",
+            "body": [ host_call("host.send", vec![ s("info"), host_call("gpu.surfaceInfo", vec![]) ]) ]
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn surface_info_reports_live_gpu_surface_size_not_window() {
+        // The window the 2D UI lays out against (e.g. a 390x844 @3x phone)…
+        let window = SurfaceInfo::new(1170, 2532, 3.0);
+        // …versus the card-sized swapchain the `Native3DView` renders into.
+        let card = (1074, 720); // ~358x240 logical @3x
+        let mut app =
+            Elpa::new(SizedBackend { size: Some(card) }, window, &surface_info_probe_program())
+                .unwrap();
+        app.start();
+
+        let msgs = app.take_outbound_messages();
+        let info = msgs.iter().find(|m| m.channel == "info").expect("surfaceInfo forwarded");
+        let v: serde_json::Value = serde_json::from_str(&info.payload).unwrap();
+
+        // The depth target / projection the cube builds must track the *surface*,
+        // since wgpu requires the depth attachment to match the color attachment.
+        // Reporting the window here is the bug that left the 3D card blank.
+        assert_eq!(v["width"], card.0, "reports the live surface width, not the window");
+        assert_eq!(v["height"], card.1, "reports the live surface height, not the window");
+        // Aspect follows the surface too (so the cube isn't squished).
+        let aspect = v["aspect"].as_f64().unwrap();
+        assert!((aspect - card.0 as f64 / card.1 as f64).abs() < 1e-3);
+        // The scale factor still comes from the window (a backend tracks pixels).
+        assert_eq!(v["scaleFactor"], 3.0);
+    }
+
+    #[test]
+    fn surface_info_falls_back_to_window_when_backend_has_no_surface() {
+        // A backend that reports no distinct surface (the headless/test default)
+        // keeps `gpu.surfaceInfo` on the host window — unchanged historical path.
+        let window = SurfaceInfo::new(800, 600, 2.0);
+        let mut app =
+            Elpa::new(SizedBackend { size: None }, window, &surface_info_probe_program()).unwrap();
+        app.start();
+        let msgs = app.take_outbound_messages();
+        let info = msgs.iter().find(|m| m.channel == "info").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&info.payload).unwrap();
+        assert_eq!(v["width"], 800);
+        assert_eq!(v["height"], 600);
     }
 
     // ---- Scoping / layer-based rendering -------------------------------------

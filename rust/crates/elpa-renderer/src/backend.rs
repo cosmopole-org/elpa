@@ -58,4 +58,19 @@ pub trait GpuBackend {
     fn surface_format_token(&self) -> String {
         "bgra8unorm".to_string()
     }
+
+    /// The live render surface's size in physical pixels, when the backend draws
+    /// into a real surface/texture (vs. the host window). Apps read this via
+    /// `gpu.surfaceInfo` so they size per-frame render targets — a depth texture,
+    /// an offscreen pass — to the *actual* surface, which wgpu requires to match
+    /// the color attachment exactly. This matters when the GPU surface is a
+    /// sub-region of the window (e.g. an inline native widget / `Native3DView`
+    /// composited into a larger Flutter tree): the window the 2D UI lays out
+    /// against is *not* the swapchain the 3D scene renders into.
+    ///
+    /// `None` (the default) means "no distinct GPU surface" — the headless/test
+    /// backend — so `gpu.surfaceInfo` keeps reporting the host window size.
+    fn surface_size(&self) -> Option<(u32, u32)> {
+        None
+    }
 }
