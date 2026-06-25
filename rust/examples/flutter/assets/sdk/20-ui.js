@@ -37,7 +37,7 @@ class Rect {
 function rectLTWH(l, t, w, h) { return new Rect(l, t, w, h); }
 function rectFromOffsetSize(o, s) { return new Rect(o.dx, o.dy, s.width, s.height); }
 
-// A uniform corner radius (the SDF backend supports one radius per box).
+// A uniform corner radius (one radius per box).
 class Radius { constructor(r) { this.r = r; } }
 function radiusCircular(r) { return new Radius(r); }
 let RADIUS_ZERO = new Radius(0.0);
@@ -151,8 +151,8 @@ function path() { return new Path(); }
 
 // --------------------------------------------------------------- Canvas -------
 // The dart:ui Canvas. Drawing is in *local* coordinates; the save/translate/
-// scale/rotate stack (delegated to the Painter) places it. Clipping is a no-op
-// on the SDF backend (it has no stencil), matching the kit's single-pass model.
+// scale/rotate stack (delegated to the Painter) places it. Each call lowers to a
+// Vello scene op carrying the active transform.
 class Canvas {
     constructor(painter, font) { this.painter = painter; this.font = font; }
     save() { this.painter.save(); }
@@ -160,8 +160,8 @@ class Canvas {
     translate(dx, dy) { this.painter.translate(dx, dy); }
     scale(sx, sy) { this.painter.scale(sx, sy); }
     rotate(t) { this.painter.rotate(t); }
-    // Clipping is a real screen-space rounded-rect intersection on the SDF
-    // backend now (the painter carries the active clip on every instance).
+    // Clipping pushes a real Vello clip layer (a rounded-rect), popped when the
+    // matching save/restore scope unwinds — nested clips intersect naturally.
     clipRect(rect) { this.painter.setClip(rect.cx(), rect.cy(), rect.width / 2.0, rect.height / 2.0, 0.0); }
     clipRRect(rr) { this.painter.setClip(rr.rect.cx(), rr.rect.cy(), rr.rect.width / 2.0, rr.rect.height / 2.0, rr.radius.r); }
     clipOval(rect) { this.painter.setClip(rect.cx(), rect.cy(), rect.width / 2.0, rect.height / 2.0, min(rect.width, rect.height) / 2.0); }
@@ -187,7 +187,7 @@ class Canvas {
         this.painter.circle(center.dx, center.dy, r, paint.color);
     }
     drawOval(rect, paint) {
-        // Approximated by the SDF as a max-radius rounded rect (a true ellipse when
+        // Approximated as a max-radius rounded rect (a true ellipse when
         // square → a circle; otherwise a stadium).
         let r = min(rect.width, rect.height) / 2.0;
         if (paint.style == "stroke") { this.painter.rrect(rect.cx(), rect.cy(), rect.width / 2.0, rect.height / 2.0, r, paint.strokeWidth, 0.0, CLEAR, paint.color); return 0; }
@@ -211,7 +211,7 @@ class Canvas {
     // Text: top-left of the text box at `o`, `cell` the glyph scale.
     drawText(s, o, cell, color) { this.font.paintLeftTop(this.painter, s, o.dx, o.dy, cell, color); }
 
-    // ---- gradient fill (multi-stop, drawn from the one SDF primitive) --------
+    // ---- gradient fill (multi-stop, banded into solid Vello fills) -----------
     fillGradient(rect, radius, g) {
         if (g.kind == "radial") { this.fillRadial(rect, g); return 0; }
         this.fillLinear(rect, radius, g);

@@ -21,10 +21,8 @@ name = "build_bytecode"
 path = "src/bin/build_bytecode.rs"
 
 [dev-dependencies]
-# Drive the JS framework end to end through a real (headless) Elpa instance + VM,
-# and lower the kit's JS to AST so its embedded WGSL can be validated.
+# Drive the JS framework end to end through a real (headless) Elpa instance + VM
+# and assert on the emitted Vello scene. The kit no longer ships WGSL (Vello owns
+# rasterization), so the naga shader-validation dependency is gone.
 elpa = { path = "../../crates/elpa" }
-# Validate the kit's WGSL the same way wgpu does, so shader errors are caught in
-# `cargo test` without a browser/GPU.
-naga = { version = "29", features = ["wgsl-in"] }
 serde_json = { workspace = true }

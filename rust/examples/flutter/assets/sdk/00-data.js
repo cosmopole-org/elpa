@@ -4,11 +4,11 @@
 // `material` kit fuses measure + paint into one Widget pass, this SDK mirrors
 // Flutter's actual architecture, bottom-to-top, each layer a separate module:
 //
-//   00-data       — this file: the WGSL shaders, the fallback stroke font, and
-//                   the constants the raster backend draws with.
-//   10-engine     — the raster backend (Flutter's Skia/CanvasKit analog): a
-//                   `Painter` that emits the 16-float SDF instances, a host
-//                   glyph-atlas `FontEngine`, and the eased-value `Ticker` clock.
+//   00-data       — this file: the vector stroke font and the constants the
+//                   paint backend draws with.
+//   10-engine     — the paint backend (Flutter's Skia/CanvasKit analog): a
+//                   `Painter` that records a Vello scene (vector ops), a
+//                   vector-glyph `FontEngine`, and the eased-value `Ticker` clock.
 //   20-ui         — `dart:ui`: Offset, Size, Rect, Radius, RRect, Color, Paint,
 //                   Gradient, Path, Canvas, PictureRecorder. Canvas calls lower
 //                   onto the Painter.
@@ -33,124 +33,15 @@
 // borderWidth, rotation, feather, fill rgba, border rgba.
 
 // The live surface color-format token. Every render pipeline's color target must
-// match the actual surface format (wgpu requires an exact match); the host
-// reports it via gpu.surfaceInfo and the binding refreshes this global each frame
-// before any pipeline is built, so prebuilt bytecode adapts to whatever surface
-// it is deployed onto. Defaults to bgra8unorm for the headless/test backend.
+// match the actual surface format. Retained as a harmless default for any host
+// that still queries it; the Vello backend owns the surface format itself.
 let SURFACE_FMT = "bgra8unorm";
 
-// ----------------------------------------------------------------- shader -----
-// One pipeline draws the whole frame: a rounded-rect signed-distance field, or —
-// when bcol.x > 1.5 — a glyph quad that samples the font coverage atlas. This is
-// the same primitive Flutter's Skia backend reduces most UI to (rects, rrects,
-// lines-as-capsules, glyph quads), expressed as one instanced SDF draw.
-let SDF_WGSL = "
-struct Globals { viewport: vec2<f32>, pad: vec2<f32> };
-@group(0) @binding(0) var<uniform> g: Globals;
-
-struct In {
-    @location(0) a: vec4<f32>,
-    @location(1) b: vec4<f32>,
-    @location(2) fill: vec4<f32>,
-    @location(3) bcol: vec4<f32>,
-    @location(4) clip: vec4<f32>,
-    @location(5) clip2: vec4<f32>,
-};
-struct Out {
-    @builtin(position) clip_pos: vec4<f32>,
-    @location(0) p: vec2<f32>,
-    @location(1) @interpolate(flat) half: vec2<f32>,
-    @location(2) @interpolate(flat) params: vec2<f32>,
-    @location(3) @interpolate(flat) fill: vec4<f32>,
-    @location(4) @interpolate(flat) bcol: vec4<f32>,
-    @location(5) @interpolate(flat) feather: f32,
-    @location(6) uv: vec2<f32>,
-    @location(7) @interpolate(flat) glyph: f32,
-    @location(8) world: vec2<f32>,
-    @location(9) @interpolate(flat) clipc: vec4<f32>,
-    @location(10) @interpolate(flat) clipp: vec2<f32>,
-};
-
-@group(0) @binding(1) var atlas: texture_2d<f32>;
-@group(0) @binding(2) var samp: sampler;
-
-@vertex
-fn vs(@builtin(vertex_index) vi: u32, in: In) -> Out {
-    var corners = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
-        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0));
-    let isGlyph = in.bcol.x > 1.5;
-    let half = in.a.zw;
-    let local = corners[vi] * half;
-    var rot = 0.0;
-    if (!isGlyph) { rot = in.b.z; }
-    let cr = cos(rot);
-    let sr = sin(rot);
-    let rotated = vec2<f32>(local.x * cr - local.y * sr, local.x * sr + local.y * cr);
-    let world = in.a.xy + rotated;
-    let ndc = vec2<f32>(world.x / g.viewport.x * 2.0 - 1.0, 1.0 - world.y / g.viewport.y * 2.0);
-    var o: Out;
-    o.clip_pos = vec4<f32>(ndc, 0.0, 1.0);
-    o.p = local;
-    o.half = half;
-    o.params = in.b.xy;
-    o.fill = in.fill;
-    o.bcol = in.bcol;
-    o.feather = in.b.w;
-    let cuv = corners[vi] * 0.5 + vec2<f32>(0.5, 0.5);
-    o.uv = mix(in.b.xy, in.b.zw, cuv);
-    o.glyph = select(0.0, 1.0, isGlyph);
-    o.world = world;
-    o.clipc = in.clip;
-    o.clipp = vec2<f32>(in.clip2.x, in.clip2.y);
-    return o;
-}
-
-fn sd_round_box(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
-    let q = abs(p) - b + vec2<f32>(r, r);
-    return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0, 0.0))) - r;
-}
-
-// Flutter authors colours in the sRGB space (e.g. 0x2196F3). The swapchain is an
-// sRGB target, so the GPU applies the linear->sRGB encode on write; we must hand
-// it *linear* values. Decode each channel back to linear here so the encode lands
-// the pixel on the exact sRGB byte the colour asked for — otherwise mid-tones get
-// lifted toward white and the whole UI reads pale/foggy. Blending then also runs
-// in linear space, which is what makes the colours read vivid and alive.
-fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
-    let lo = c / 12.92;
-    let hi = pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
-    return select(hi, lo, c <= vec3<f32>(0.04045));
-}
-
-@fragment
-fn fs(o: Out) -> @location(0) vec4<f32> {
-    let tex = textureSample(atlas, samp, o.uv).r;
-    var outc: vec4<f32>;
-    if (o.glyph > 0.5) {
-        outc = vec4<f32>(o.fill.rgb, o.fill.a * tex);
-    } else {
-        let r = min(o.params.x, min(o.half.x, o.half.y));
-        let d = sd_round_box(o.p, o.half, r);
-        let f = max(o.feather, 0.75);
-        let cov = clamp(0.5 - d / f, 0.0, 1.0);
-        let inner = d + o.params.y;
-        let icov = clamp(0.5 - inner / f, 0.0, 1.0);
-        let col = mix(o.bcol, o.fill, icov);
-        outc = vec4<f32>(col.rgb, col.a * cov);
-    }
-    // Screen-space rounded-rect clip (ClipRect / ClipRRect / scroll viewports).
-    if (o.clipp.y > 0.5) {
-        let cc = vec2<f32>(o.clipc.x, o.clipc.y);
-        let ch = vec2<f32>(o.clipc.z, o.clipc.w);
-        let crad = min(o.clipp.x, min(ch.x, ch.y));
-        let cd = sd_round_box(o.world - cc, ch, crad);
-        let ccov = clamp(0.5 - cd, 0.0, 1.0);
-        outc = vec4<f32>(outc.rgb, outc.a * ccov);
-    }
-    return vec4<f32>(srgb_to_linear(outc.rgb), outc.a);
-}
-";
+// NOTE: this kit now draws through the **Vello scene** path (`scene.submit`) — a
+// batch of high-level vector ops (fills, strokes, clip/blend layers) the host
+// rasterizes with Vello. The old single-pass SDF wgpu shader is gone: rounded
+// rects, capsules and glyph strokes are now real Vello paths, not one instanced
+// SDF draw. (Raw wgpu survives elsewhere as the `rawWgpu` scene op.)
 
 // A vector stroke font: each glyph is line segments [x0,y0,x1,y1] in a 4-wide ×
 // 6-tall box (origin top-left, y down), drawn as overlapping rounded capsules.

@@ -635,8 +635,8 @@ class RenderTransform extends RenderProxyBox {
 }
 
 // ---- RenderClipRect / RenderClipRRect / RenderClipOval ----
-// Clips the child to this box's bounds (a rounded rect on the SDF backend). The
-// painter intersects the active clip; save/restore scope it to the subtree.
+// Clips the child to this box's bounds. The painter pushes a Vello clip layer;
+// save/restore scope it to the subtree (popping it when the subtree is done).
 class RenderClipRRect extends RenderProxyBox {
     constructor(radius) { super(); this.radius = radius; }
     paint(context, off) {
