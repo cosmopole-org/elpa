@@ -9,6 +9,11 @@ default = []
 # The live wgpu backend. Heavy (pulls the full graphics stack); off by default so
 # the caching/partial-render logic builds and tests fast and GPU-free.
 wgpu-backend = ["dep:wgpu", "dep:base64"]
+# The live Vello scene backend: rasterizes the high-level scene ops and
+# composites embedded raw wgpu frames into the same target. Pulls vello (and the
+# wgpu backend it delegates raw ops to); off by default so the scene
+# orchestration builds and tests GPU-free against the mock backend.
+vello-backend = ["dep:vello", "wgpu-backend"]
 
 [dependencies]
 elpa-protocol = { path = "../elpa-protocol" }
@@ -19,6 +24,9 @@ xxhash-rust = { workspace = true }
 bumpalo = { version = "3.16", features = ["collections"] }
 wgpu = { version = "29", optional = true }
 base64 = { version = "0.22", optional = true }
+# Vello provides the high-level 2D scene rasterizer. Pinned to the release that
+# tracks this workspace's wgpu; only compiled under `vello-backend`.
+vello = { version = "0.5", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = "1.10"

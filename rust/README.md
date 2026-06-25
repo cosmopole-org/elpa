@@ -1,15 +1,37 @@
 # Elpa
 
-A **programmable VM around the wgpu API**. You write your app in **JavaScript**;
-Elpa compiles it to an AST and runs it on an embedded Rust VM. The VM drives the
-GPU directly by emitting a **nested JSON tree of wgpu commands**, which Elpa maps
-onto the real wgpu API in **real time** — adding **resource caching** and
-**partial rendering** on top. Targets **web, mobile, and desktop** from one
-codebase.
+A **programmable VM around the [Vello](https://github.com/linebender/vello)
+rendering system**. You write your app in **JavaScript**; Elpa compiles it to an
+AST and runs it on an embedded Rust VM. The VM drives drawing by streaming a
+**batch of high-level vector operations** — a Vello *scene* — to the Rust host,
+which encodes them into a `vello::Scene` and rasterizes them on the GPU through
+wgpu, with **resource caching** and **free unchanged frames** on top. Targets
+**web, mobile, and desktop** from one codebase.
 
-> Elpa is **not** a widget toolkit. No DOM, no Flutter widgets, no Canvas-2D
-> abstraction. It sits at wgpu's level: 2D, 3D, and compute are the same commands
-> with different pipelines/shaders. Full design in **[`PLAN.md`](./PLAN.md)**.
+> Elpa's drawing model is Vello's: fills, strokes, clip/blend layers, gradients,
+> images and glyph runs. **Direct wgpu is a subset** — it survives as a single
+> `rawWgpu` operation that composites an arbitrary wgpu command tree (a custom
+> shader, a 3D scene, a compute effect) into the very same target the vector ops
+> paint. The raw wgpu command tree (resources + render/compute passes) is still a
+> first-class contract beneath the scene. Full design in **[`PLAN.md`](./PLAN.md)**.
+
+## Two layers, one target
+
+```text
+JavaScript ─▶ Elpian AST ─▶ bytecode ─▶ VM (your app logic)
+                                          │ askHost("scene.submit", <vello scene>)
+                                          ▼
+              Scene { resources[], ops[] } ─▶ SceneRenderer ─▶ vello::Scene ─▶ GPU
+                                          │        ▲
+                                          │        └─ op: rawWgpu(Frame) ──┐
+                                          ▼                                ▼
+              (or askHost("gpu.submit", <wgpu command tree>)) ─▶ Renderer (wgpu)
+```
+
+The high-level **scene path** (`scene.submit`) is the primary drawing API; the
+**raw wgpu path** (`gpu.submit`, resource cache + partial rendering) is both a
+standalone contract and the engine behind the `rawWgpu` scene op. Both composite
+into the same surface.
 
 ## How it works (one breath)
 
@@ -64,8 +86,8 @@ for the same triangle running in a winit window on **desktop
 | Crate | Role | Status |
 |-------|------|--------|
 | `elpian-vm` | Ported Elpian AST VM + GPU-focused host-call API; JS front-end with ES6 `class` support | ✅ running |
-| `elpa-protocol` | The wgpu command-tree schema (resources + commands + geometry) | ✅ tested |
-| `elpa-renderer` | Resource cache, partial rendering, `GpuBackend` trait, **live wgpu backend** | ✅ tested · ✅ wgpu 29 compiles |
+| `elpa-protocol` | The schema: the **Vello scene** (`Scene`/`SceneOp`: fills, strokes, clip/blend layers, gradients, images, glyphs, + `rawWgpu`) **and** the wgpu command-tree it embeds (resources + commands + geometry) | ✅ tested |
+| `elpa-renderer` | Scene orchestration (`SceneBackend`/`SceneRenderer`, scene-resource cache + free unchanged frames) + the wgpu resource cache & partial rendering; **live Vello backend** (`vello-backend`) and **live wgpu backend** (`wgpu-backend`) | ✅ tested · ✅ vello 0.5 + wgpu 29 compile |
 | `elpa-runtime` | Host-call pump: drives the VM, parses `gpu.submit` → `Frame` | ✅ tested |
 | `elpa` | **Unified instance**: VM + renderer + backend in one object; definition store + `vm.import` | ✅ tested |
 | `examples/web` | Full-window DPI canvas drawing Elpa frames (wasm) | ✅ compiles (wasm32) |
@@ -75,6 +97,36 @@ for the same triangle running in a winit window on **desktop
 | `examples/flutter` | **A faithful, *layered* port of Flutter in JavaScript** (`assets/sdk/*.js`): unlike `material`'s fused measure/paint, it mirrors Flutter's real architecture bottom-to-top — a **`dart:ui` `Canvas`** (Offset/Size/Rect/RRect/Color/Paint/Gradient/Path) over the SDF raster backend; a **rendering layer** (`BoxConstraints`, `RenderObject`/`RenderBox` with the constraints-down/sizes-up protocol + relayout-boundary caching, `PipelineOwner`, `RenderView`, the real `RenderFlex` algorithm, Stack/Padding/Align/DecoratedBox/Paragraph/Transform/Opacity); a **widgets layer** (`Widget`/`Element`/`BuildOwner` with `updateChild`/`updateChildren` reconciliation, `StatelessWidget`/`StatefulWidget`+`setState`, `RenderObjectElement`, `InheritedWidget`, `ParentDataWidget`); a widget catalog + a small **Material** catalog (`MaterialApp`/`Scaffold`/`AppBar`/`ElevatedButton`/`Icon`/`CustomPaint`); and `WidgetsFlutterBinding`+`runApp` with pointer hit-test routing. Compiled to bytecode (`build_bytecode`); the web/native hosts load it behind `--features flutter` | ✅ tested |
 | `examples/game3d` | **Object-oriented 3D game-making SDK in JavaScript** (`assets/sdk/*.js`): a scene graph (`Object3D`/`Scene`), perspective/orthographic cameras, directional/point lights, primitive + **glTF/GLB** geometry, PBR-ish materials, a forward Blinn-Phong renderer, and a physics layer (AABB/sphere volumes, ray casting, collision). Apps compose a scene graph and register an update callback. Compiled to bytecode (`build_bytecode`); the web/native hosts load it behind `--features game3d` | ✅ tested |
 | `examples/websdk` | **HTML element model + CSS engine in JavaScript** (`assets/sdk/*.js`): the CSS box model, block/inline flow, **flexbox (with multi-line `flex-wrap`)**, grid, positioning, the full `<color>`/`<length>` grammar, borders/radius/shadows/gradients, transforms (incl. `skew`), `text-decoration`, `letter-spacing`, `text-shadow`, **`backdrop-filter: blur()`** (a two-pass frosted-glass composite), and **clock-driven `transition`s** (eased `opacity`/`transform`/`background`+gradients/`border` on state change) over the HTML element catalog as object-oriented class components, painting the whole page through one instanced SDF pipeline. Apps compose a tree of HTML elements styled with CSS, drive their own motion with `animTime`/`tweenValue`, and never touch the GPU. The bundled demo is a full marketing **landing page** (nav with gradient-hover CTA, hero with a live animation, feature grid, a glassmorphism band, FAQ, footer). Compiled to bytecode (`build_bytecode`); the web/native hosts load it behind `--features websdk` | ✅ tested |
+
+## The Vello scene vocabulary
+
+A frame submitted via `scene.submit` is a `Scene { resources[], ops[] }`. The ops
+mirror `vello::Scene` one-to-one:
+
+| Op | Vello call | Notes |
+|----|------------|-------|
+| `fill` | `Scene::fill` | a `path` (rect/rrect/circle/ellipse/line or freeform Bézier `elements`) + a `brush` |
+| `stroke` | `Scene::stroke` | `style` (width/join/cap/miter/dashes) + `brush` |
+| `pushLayer` / `popLayer` | `Scene::push_layer` / `pop_layer` | a clip `path` + `blend` (mix + compose) + `alpha` |
+| `drawImage` | `Scene::draw_image` | a scene-level image resource by id |
+| `drawGlyphs` | `Scene::draw_glyphs` | a `run` (font id, size, positioned glyph indices) + `brush` |
+| `rawWgpu` | — | composite a raw wgpu `Frame` into the same target (the subset op) |
+
+A **brush** is a solid color, a linear/radial/sweep **gradient** (color stops +
+extend), or a scene **image**. Scene-level `resources` (`image` / `font`) are
+keyed by id and uploaded once. The `SceneRenderer` content-hashes the whole
+scene, so an identical re-submit does **zero** GPU work.
+
+The Rust host (`vello-backend` feature) maps each op onto Vello via `kurbo`
+shapes and `peniko` brushes; the `rawWgpu` op runs the wgpu command tree on
+Vello's own device into the shared surface, so a 3D scene or custom shader sits
+in the same frame as the 2D UI. The GPU-free `SceneRenderer` + a mock backend is
+what the default test suite exercises (no GPU needed).
+
+A Flutter-like UI SDK built entirely on these ops — a `dart:ui`-style
+`Canvas`/`Paint`/`Path` painting layer driving a small box-layout widget tree — is
+in `crates/elpa/tests/assets/vello_flutter_demo.js`, driven end-to-end through a
+headless instance in `crates/elpa/tests/vello_sdk.rs`.
 
 ## Reusable drawing definitions + module import
 
