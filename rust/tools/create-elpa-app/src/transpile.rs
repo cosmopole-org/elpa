@@ -315,15 +315,18 @@ impl VisitMut for Shim {
             Expr::Unary(u) if u.op == UnaryOp::Void => {
                 *e = Expr::Lit(Lit::Null(Null { span: DUMMY_SP }));
             }
-            // `obj.length` → len(obj); Math.PI / Math.E constants
+            // `obj.length` → len(obj); Math.PI / Math.E as numeric constants.
+            // (They are member accesses, not calls, so they must become literals
+            // — emitting bare `PI`/`E` would resolve to the VM's *functions*, and
+            // e.g. `Math.PI / 3` would then divide a function value.)
             Expr::Member(m) => {
                 if let MemberProp::Ident(prop) = &m.prop {
                     if prop.sym.as_str() == "length" {
                         *e = call_global("len", vec![(*m.obj).clone()]);
                     } else if let Expr::Ident(ns) = &*m.obj {
                         match (ns.sym.as_str(), prop.sym.as_str()) {
-                            ("Math", "PI") => *e = ident_expr("PI"),
-                            ("Math", "E") => *e = ident_expr("E"),
+                            ("Math", "PI") => *e = num_lit(std::f64::consts::PI),
+                            ("Math", "E") => *e = num_lit(std::f64::consts::E),
                             _ => {}
                         }
                     }

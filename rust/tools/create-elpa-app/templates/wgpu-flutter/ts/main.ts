@@ -11,6 +11,13 @@ import { sceneCtl } from "./scene";
 app.navigator.mount(new HomePage());
 app.start(() => app.navigator.build());
 
+// Keep the host frame pump running so the 3D scene renders every vsync. The
+// Flutter shell only ticks `onFrame` while the app has work scheduled, so a
+// permanent zero-cost interval latches the ticker on (PAUSE stops the cube's
+// rotation inside `render`, not the frame loop). Without this `onFrame` is
+// never called and the scene never renders.
+app.scheduler.setInterval(() => {}, 16);
+
 // ---- host lifecycle hooks (called by the native host) ------------------------
 export function onHostMessage(msg: any): void {
     app.handleHostMessage(msg);
