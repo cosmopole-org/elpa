@@ -1,17 +1,28 @@
-name: Deploy Flutter demo to GitHub Pages
+name: Deploy wgpu+Flutter template demo to GitHub Pages
 
-# Builds the **Flutter** app (the `flutter/` project: Elpa + flutter_rust_bridge +
-# Flutter, whose demo Elpa program is `flutter/assets/app/main.js`) for the web
-# and publishes it to GitHub Pages. The Dart entry point compiles to `main.dart.js`
-# and the Rust bridge crate (`flutter/rust`) is compiled to WebAssembly via
-# flutter_rust_bridge's `build-web`, so the whole app — demo `main.js` and all —
-# runs live in the browser at:
+# Builds the **CLI-creatable `wgpu-flutter` template** (the project
+# `create-elpa-app init -t wgpu-flutter` scaffolds) for the web and publishes it
+# to GitHub Pages — so the template itself is exercised end-to-end in its
+# *deployed* form, not just the bundled `flutter/` demo.
+#
+# Pipeline:
+#   1. Build the `create-elpa-app` CLI from this repo (rust/tools/create-elpa-app).
+#   2. `create-elpa-app init -t wgpu-flutter` scaffolds a self-contained project
+#      into a temp dir (vendors the engine, copies the Flutter shell + SDK, and
+#      builds the TypeScript app → assets/app/main.js).
+#   3. Build that generated project for the web exactly like a normal Flutter web
+#      build: the Dart entry compiles to main.dart.js and the Rust bridge crate
+#      (its `rust/`, path-linked to the vendored `engine/`) is compiled to
+#      WebAssembly via flutter_rust_bridge's `build-web`.
+#
+# The whole app — the wgpu-flutter demo (a 3D Native3DView card + a 2D UI streamed
+# from the Elpian VM) — then runs live in the browser at:
 #   https://<owner>.github.io/<repo>/
 #
-# The platform runner folders (`web/`) and the FRB-generated bindings are NOT
-# committed (see flutter/.gitignore); this workflow regenerates them on every run
-# with `flutter create` + `flutter_rust_bridge_codegen generate`, mirroring the
-# manual setup documented in flutter/README.md.
+# The platform runner folders (`web/`) and the FRB-generated bindings are NOT part
+# of the scaffold; this workflow regenerates them on every run with
+# `flutter create` + `flutter_rust_bridge_codegen generate`, mirroring the manual
+# setup documented in the generated project's README.md.
 #
 # One-time setup in the repo: Settings → Pages → "Build and deployment" →
 # Source = "GitHub Actions". (No branch needs selecting; this workflow deploys.)
@@ -22,7 +33,13 @@ on:
       - main
       - "claude/**"
     paths:
+      # The deployed app is the wgpu-flutter template built end-to-end, so it
+      # depends on the CLI + templates, the vendored engine crates, and the
+      # Flutter shell + SDK it copies from.
       - "flutter/**"
+      - "rust/crates/**"
+      - "rust/tools/create-elpa-app/**"
+      - ".github/ci/wgpu_flutter_web_interaction_test.mjs"
       - ".github/workflows/flutter-web-pages.yml"
   workflow_dispatch:
 
@@ -43,13 +60,16 @@ env:
   # Keep the codegen tool in lock-step with the `flutter_rust_bridge` crate
   # version pinned in flutter/rust/Cargo.lock.
   FRB_VERSION: "2.12.0"
+  # The project create-elpa-app scaffolds. Built outside the repo tree so the
+  # checkout stays clean; APP_NAME is also the Flutter --project-name / pubspec
+  # name. The on-page UI text is template-fixed ("3D CONTROLS", "ABOUT", …), so
+  # the interaction test does not depend on this name.
+  APP_NAME: wgpu_flutter_demo
+  GEN_DIR: ${{ github.workspace }}/../wgpu-flutter-app
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: flutter
     steps:
       - uses: actions/checkout@v4
 
@@ -71,11 +91,26 @@ jobs:
           rustup component add rust-src --toolchain nightly
           rustup target add wasm32-unknown-unknown --toolchain nightly
 
-      # The Flutter Rust bridge crate lives one level down (flutter/rust) and is
-      # excluded from the outer Cargo workspace, so it keeps its own target dir.
+      # Cache the CLI workspace (rust/) — its swc-based transpiler dominates the
+      # CLI build. The generated project lives outside the checkout and does not
+      # exist yet at cache-restore time, so it is not cached here.
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: flutter/rust -> target
+          workspaces: rust
+
+      # --- Scaffold the wgpu-flutter template via the CLI -------------------
+      # Build the CLI and run `init`, which vendors the engine, copies the
+      # Flutter shell + SDK, and bundles the TypeScript app → assets/app/main.js.
+      - name: Scaffold wgpu-flutter project (create-elpa-app)
+        working-directory: rust
+        run: |
+          rm -rf "${GEN_DIR}"
+          cargo run --release -p create-elpa-app -- \
+            init "${APP_NAME}" \
+            --template wgpu-flutter \
+            --dir "${GEN_DIR}" \
+            --elpa-root "${GITHUB_WORKSPACE}" \
+            --force
 
       # FRB's `build-web` drives `wasm-pack` to produce the browser-loadable wasm.
       - name: Install wasm-pack
@@ -87,18 +122,21 @@ jobs:
       - name: Activate ffigen
         run: dart pub global activate ffigen
 
-      # Materialize the web platform runner (gitignored; recreated each run).
+      # Materialize the web platform runner (not part of the scaffold).
       - name: Materialize Flutter web runner
-        run: flutter create . --platforms=web --project-name elpa_app
+        working-directory: ${{ env.GEN_DIR }}
+        run: flutter create . --platforms=web --project-name "${APP_NAME}"
 
       # Generate the Dart bindings (lib/src/rust/**) and rust/src/frb_generated.rs
-      # from the #[frb]-annotated Rust under flutter/rust/src/api.
+      # from the #[frb]-annotated Rust under the project's rust/src/api.
       - name: Generate flutter_rust_bridge bindings
+        working-directory: ${{ env.GEN_DIR }}
         run: flutter_rust_bridge_codegen generate
 
       # The generated glue module is committed out (a build artifact); enable it
-      # now that codegen has produced it. See flutter/rust/src/lib.rs.
+      # now that codegen has produced it. See the project's rust/src/lib.rs.
       - name: Enable generated bridge module
+        working-directory: ${{ env.GEN_DIR }}
         run: |
           sed -i \
             -e 's|^// #\[cfg(feature = "frb")\]$|#[cfg(feature = "frb")]|' \
@@ -119,17 +157,20 @@ jobs:
       # drop `+atomics` yields a self-contained single-threaded module that loads
       # on any static host with no special headers.
       - name: Build Rust bridge for web (wasm, single-threaded)
+        working-directory: ${{ env.GEN_DIR }}
         run: |
           flutter_rust_bridge_codegen build-web --release \
             --wasm-pack-rustflags "-C target-feature=+bulk-memory,+mutable-globals"
 
       - name: Fetch Dart dependencies
+        working-directory: ${{ env.GEN_DIR }}
         run: flutter pub get
 
       # Produces build/web/ (index.html, main.dart.js, the wasm bundle, assets).
       # --base-href makes every asset URL resolve under the project Pages path.
       # The single-threaded wasm needs no special headers, so a plain build works.
       - name: Build Flutter web (release)
+        working-directory: ${{ env.GEN_DIR }}
         run: flutter build web --release --base-href "/${{ github.event.repository.name }}/"
 
       # End-to-end guard: load the built site in real headless Chromium and fail
@@ -137,28 +178,33 @@ jobs:
       # flutter_rust_bridge WorkerPool panic (`#<Memory> could not be cloned` →
       # `RuntimeError: unreachable`) that produced the blank "Elpa failed to
       # start" screen. This proves the single-threaded wasm actually boots in a
-      # browser, on every deploy, instead of trusting that it does.
+      # browser, on every deploy, instead of trusting that it does. The smoke test
+      # is template-agnostic and ships with the scaffold's tools/.
       - name: Smoke-test the web build (headless browser)
-        working-directory: flutter
+        working-directory: ${{ env.GEN_DIR }}
         run: |
           npm install --no-save playwright@1.55.0
           npx playwright install --with-deps chromium
           node tools/web_smoke_test.mjs "/${{ github.event.repository.name }}/"
 
       # End-to-end interaction guard: the smoke test only proves the bridge
-      # doesn't trap at startup. This drives the real demo and fails if the UI
-      # renders but is frozen — tapping "Increment A" must update the counter and
-      # the animation clock must advance. It catches regressions a startup-only
-      # check misses (e.g. a driven-but-undefined lifecycle handler poisoning the
-      # VM, or the bridge's worker pool blowing up on a later turn).
+      # doesn't trap at startup. This drives the real wgpu-flutter demo and fails
+      # if the UI renders but is frozen — the "3D CONTROLS" card must render and
+      # tapping PAUSE must flip the pill to RESUME (a live SDK-driven re-render).
+      # The test lives in the repo (the scaffold's bundled interaction test
+      # targets the flutter/ Telegram demo); copy it next to the project's
+      # node_modules so `import 'playwright'` resolves.
       - name: Interaction-test the web build (headless browser)
-        working-directory: flutter
-        run: node tools/web_interaction_test.mjs "/${{ github.event.repository.name }}/"
+        working-directory: ${{ env.GEN_DIR }}
+        run: |
+          cp "${GITHUB_WORKSPACE}/.github/ci/wgpu_flutter_web_interaction_test.mjs" \
+             tools/wgpu_flutter_web_interaction_test.mjs
+          node tools/wgpu_flutter_web_interaction_test.mjs "/${{ github.event.repository.name }}/"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: flutter/build/web
+          path: ${{ env.GEN_DIR }}/build/web
 
   deploy:
     needs: build
