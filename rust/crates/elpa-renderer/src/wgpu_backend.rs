@@ -894,6 +894,18 @@ impl<'s> GpuBackend for WgpuBackend<'s> {
         }
         .to_string()
     }
+
+    /// The configured render-target size in physical pixels — the swapchain's
+    /// dimensions (web canvas / window) or the imported texture's (the zero-copy
+    /// native-widget path). Apps size their depth target / projection to this so
+    /// they match the surface this backend actually draws into, not the host
+    /// window (see [`GpuBackend::surface_size`]).
+    fn surface_size(&self) -> Option<(u32, u32)> {
+        Some(match &self.target {
+            RenderTarget::Surface { config, .. } => (config.width, config.height),
+            RenderTarget::Texture { width, height, .. } => (*width, *height),
+        })
+    }
 }
 
 impl<'s> WgpuBackend<'s> {

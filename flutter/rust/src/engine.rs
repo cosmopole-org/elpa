@@ -181,16 +181,20 @@ impl ElpaEngine {
         self.drain()
     }
 
-    /// Report a surface resize (physical pixels + device pixel ratio). The app's
-    /// `onResize` re-fits and may re-emit its tree.
+    /// Report a *window* resize (physical pixels + device pixel ratio). The app's
+    /// `onResize` re-fits and may re-emit its 2D tree.
+    ///
+    /// Deliberately does **not** reconfigure the live GPU surface: in this Flutter
+    /// integration the wgpu surface is never the window — it is the card-sized
+    /// `Native3DView` (a web canvas or an imported shared texture), allocated and
+    /// sized by the host provisioner (`elpa_surface_*.dart`). Resizing it to the
+    /// *window* here would mismatch the actual native-view box — making the GPU
+    /// surface and the app's `gpu.surfaceInfo`-derived render targets disagree with
+    /// the canvas/texture (blank or distorted 3D), which is exactly what a mobile
+    /// viewport change (URL-bar show/hide) would trigger every time. When the
+    /// native view's own box changes, the host re-provisions the surface (release +
+    /// re-`registerSurface`), which is the only path that may resize it.
     pub fn resize(&mut self, width: u32, height: u32, scale: f64) -> Vec<OutMessage> {
-        // Reconfigure the live GPU surface first (the swapchain/owned texture must
-        // match the new size before the app re-submits). An imported shared texture
-        // is the host's to re-import — see `WgpuBackend::resize`.
-        #[cfg(feature = "gpu")]
-        if let LiveBackend::Wgpu(b) = self.app.renderer_mut().backend_mut() {
-            b.resize(width.max(1), height.max(1));
-        }
         self.app.resize(width.max(1), height.max(1), scale.max(0.1));
         self.drain()
     }
