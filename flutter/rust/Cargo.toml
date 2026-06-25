@@ -38,6 +38,10 @@ wgpu = { version = "29", optional = true, default-features = false }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"
 wasm-bindgen = "0.2"
+# Drives the web GPU-surface init on the browser event loop (see api::register_surface):
+# the adapter/device acquisition is a JS promise that can only resolve on the event
+# loop, so it must be spawned there rather than awaited inside the FRB call.
+wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = [
     "Window",
     "Document",

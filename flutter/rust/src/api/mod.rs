@@ -179,16 +179,24 @@ pub fn dispose(handle: u64) -> bool {
 /// it dispatches on the build target:
 ///
 /// * **Web** — `canvas_id` is the id of the `<canvas>` Flutter hosts via
-///   `HtmlElementView`. We make a wgpu surface from it and render inline. Adapter
-///   acquisition is a browser promise, so this is `async`.
+///   `HtmlElementView`. Building the wgpu surface needs the browser's async
+///   adapter/device handshake, which only makes progress on the JS **event loop**.
+///   Awaiting it *inside* this call deadlocks on the single-threaded web build:
+///   flutter_rust_bridge runs the call's future on the sync-FFI path, which never
+///   yields back to the loop, so the adapter promise never resolves and the 3D
+///   card stays blank forever (no error — it simply hangs at the first `.await`).
+///   So we **don't** await here: we `spawn_local` the init onto the event loop and
+///   return immediately; the live backend is swapped into the engine once it's
+///   ready, and the next animation frame paints the scene. Returns `true` to mean
+///   "kicked off" (the result is advisory; the app keeps running either way).
 /// * **Native (desktop/mobile)** — `raw_handle` is the OS handle to a shared
 ///   buffer a native texture-registry plugin already registered with Flutter (see
 ///   `render::SharedTextureHandle`); we import it zero-copy. `row_stride` carries
-///   the buffer's byte stride when padded (`0` = tightly packed).
+///   the buffer's byte stride when padded (`0` = tightly packed). Native has real
+///   threads, so building the backend synchronously here is fine.
 ///
-/// `async` rather than `#[frb(sync)]`: building the surface awaits device
-/// acquisition. It is a one-shot setup call (not a per-frame hot path), so the
-/// executor hop is irrelevant; the per-frame `frame`/`pointer` calls stay sync.
+/// Kept `async` (not `#[frb(sync)]`) only to preserve one binding signature across
+/// platforms; the web arm no longer awaits, and the native arm is synchronous.
 #[allow(unused_variables)]
 pub async fn register_surface(
     handle: u64,
@@ -207,17 +215,37 @@ pub async fn register_surface(
             .and_then(|el| el.dyn_into::<web_sys::HtmlCanvasElement>().ok())
         {
             Some(c) => c,
-            None => return false,
+            None => {
+                web_sys::console::error_1(
+                    &format!("elpa: native surface canvas '{canvas_id}' not found in DOM").into(),
+                );
+                return false;
+            }
         };
-        let backend = match crate::render::build_web_backend(canvas, width, height).await {
-            Some(b) => b,
-            None => return false,
-        };
-        with(handle, |e| {
-            e.install_backend(backend);
-            e.has_gpu_backend()
-        })
-        .unwrap_or(false)
+        // Drive the wgpu init on the browser event loop (see the doc comment): the
+        // adapter/device promise can only resolve there, so awaiting it inside this
+        // FRB call would hang the single-threaded web build. spawn_local returns at
+        // once; the backend installs into the engine registry when it's ready.
+        wasm_bindgen_futures::spawn_local(async move {
+            match crate::render::build_web_backend(canvas, width, height).await {
+                Some(backend) => {
+                    let live = with(handle, |e| {
+                        e.install_backend(backend);
+                        e.has_gpu_backend()
+                    })
+                    .unwrap_or(false);
+                    web_sys::console::log_1(
+                        &format!("elpa: wgpu surface registered (live={live}, {width}x{height})")
+                            .into(),
+                    );
+                }
+                None => web_sys::console::error_1(
+                    &"elpa: wgpu backend init failed (no GPU adapter/surface); 3D card stays a placeholder"
+                        .into(),
+                ),
+            }
+        });
+        true
     }
     #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
     {
