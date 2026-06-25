@@ -83,4 +83,23 @@ abstract interface class ElpaBridge {
 
   /// Drain diagnostic log lines.
   Future<List<String>> takeLog(int handle);
+
+  /// Register the platform render surface for [handle] and upgrade the engine to
+  /// a live wgpu backend (so its `Native3DView` shows real GPU pixels). Returns
+  /// whether a GPU backend is now installed.
+  ///
+  /// One call for both worlds (see the Rust `register_surface`):
+  /// * **web** — pass [canvasId], the id of the `<canvas>` hosted by an
+  ///   `HtmlElementView`; [rawHandle]/[rowStride] are ignored.
+  /// * **native** — pass [rawHandle] (the OS handle to a shared buffer a native
+  ///   texture plugin registered with Flutter) and its [rowStride]; [canvasId] is
+  ///   ignored.
+  Future<bool> registerSurface(
+    int handle, {
+    String canvasId,
+    int rawHandle,
+    int rowStride,
+    required int width,
+    required int height,
+  });
 }

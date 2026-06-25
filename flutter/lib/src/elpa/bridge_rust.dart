@@ -103,4 +103,22 @@ class RustElpaBridge implements ElpaBridge {
 
   @override
   Future<List<String>> takeLog(int handle) async => ffi.takeLog(handle: _h(handle));
+
+  @override
+  Future<bool> registerSurface(
+    int handle, {
+    String canvasId = '',
+    int rawHandle = 0,
+    int rowStride = 0,
+    required int width,
+    required int height,
+  }) =>
+      ffi.registerSurface(
+        handle: _h(handle),
+        canvasId: canvasId,
+        rawHandle: rawHandle,
+        rowStride: rowStride,
+        width: width,
+        height: height,
+      );
 }

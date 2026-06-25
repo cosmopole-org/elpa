@@ -85,6 +85,25 @@ class ElpaEngine {
   Future<void> safeArea(double top, double right, double bottom, double left) async =>
       pipe.ingest(await _bridge.safeArea(handle, top, right, bottom, left));
 
+  /// Register this engine's platform render surface and upgrade it to a live wgpu
+  /// backend (so its `Native3DView` paints real GPU pixels). See
+  /// [ElpaBridge.registerSurface]; returns whether a GPU backend is now installed.
+  Future<bool> registerSurface({
+    String canvasId = '',
+    int rawHandle = 0,
+    int rowStride = 0,
+    required int width,
+    required int height,
+  }) =>
+      _bridge.registerSurface(
+        handle,
+        canvasId: canvasId,
+        rawHandle: rawHandle,
+        rowStride: rowStride,
+        width: width,
+        height: height,
+      );
+
   /// Send a structured message into the app on an application channel.
   Future<void> send(String channel, Object? message) => pipe.send(channel, message);
 

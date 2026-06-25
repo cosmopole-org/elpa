@@ -78,6 +78,20 @@ impl<B: GpuBackend> Renderer<B> {
         &mut self.backend
     }
 
+    /// Swap in a different GPU backend, returning the old one. Every cached
+    /// resource and pass is forgotten so the next [`Renderer::render`] re-creates
+    /// all GPU objects on the new backend — the previous backend's device owned
+    /// the old handles, so none of them are valid here. This is how a host
+    /// upgrades a live instance from the headless backend to a real wgpu surface
+    /// once the platform render target becomes available, without rebuilding the
+    /// VM or losing app state.
+    pub fn replace_backend(&mut self, backend: B) -> B {
+        let old = std::mem::replace(&mut self.backend, backend);
+        self.resources = ResourceCache::new();
+        self.invalidate();
+        old
+    }
+
     /// Drop all cached pass recordings so every pass re-records next frame. Used
     /// after a surface resize / format change, where cached offscreen textures
     /// and the prior present are no longer valid. Every registered layer snapshot
