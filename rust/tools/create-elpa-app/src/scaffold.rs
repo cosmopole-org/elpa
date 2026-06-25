@@ -119,6 +119,30 @@ fn edit_file(path: &Path, f: impl FnOnce(String) -> String) -> Result<(), String
     fs::write(path, f(s)).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
+/// Rewrite `package:<from>/` self-imports to `package:<to>/` across every `.dart`
+/// file under `dir`, so the copied Flutter shell builds under the renamed
+/// pubspec package.
+fn rebind_dart_package(dir: &Path, from: &str, to: &str) -> Result<(), String> {
+    if from == to {
+        return Ok(());
+    }
+    let (needle, repl) = (format!("package:{from}/"), format!("package:{to}/"));
+    for entry in fs::read_dir(dir).map_err(|e| format!("read dir {}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| format!("read dir {}: {e}", dir.display()))?;
+        let path = entry.path();
+        let ft = entry.file_type().map_err(|e| format!("stat {}: {e}", path.display()))?;
+        if ft.is_dir() {
+            let name = entry.file_name();
+            if !skip_name(&name.to_string_lossy(), &[]) {
+                rebind_dart_package(&path, from, to)?;
+            }
+        } else if path.extension().map(|e| e == "dart").unwrap_or(false) {
+            edit_file(&path, |s| s.replace(&needle, &repl))?;
+        }
+    }
+    Ok(())
+}
+
 // ---- engine / SDK vendoring -------------------------------------------------
 
 fn vendor_engine(elpa_root: &Path, templates: &Path, dest_engine: &Path, v: &Vars) -> Result<(), String> {
@@ -188,6 +212,13 @@ fn scaffold_flutter(
             .join("\n")
             + "\n"
     })?;
+
+    // The copied Dart sources import the Flutter shell by its own package name
+    // (`package:elpa_app/...`, including the FRB-generated bindings under
+    // `lib/src/rust/`). pubspec was just renamed to `v.snake`, so rebind those
+    // self-imports to the generated package — otherwise the Dart compile fails
+    // with "Couldn't resolve the package 'elpa_app'" for any project name.
+    rebind_dart_package(dest, "elpa_app", &v.snake)?;
 
     // Replace the single bundled `assets/app/main.js` with a multi-file TS app
     // whose build output lands back at that same path the Dart side loads.
