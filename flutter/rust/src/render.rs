@@ -61,37 +61,156 @@ pub struct SurfaceRequest {
     pub scale: f64,
 }
 
-/// Register (or update) the native surface Elpa renders into and hand back the
-/// [`NativeSurface`] descriptor Dart composites.
+/// The opaque, platform-specific handle to a shared GPU buffer that a native
+/// Flutter texture-registry plugin allocated and registered. The plugin hands
+/// this to Rust so the bridge can import the *same* memory into a
+/// [`wgpu::Texture`] — wgpu renders into it, Flutter samples it, one allocation,
+/// zero copies. The numeric value's meaning is per-platform (see [`import`]):
 ///
-/// Without the `gpu` feature this is a no-op returning [`NativeSurface::None`]:
-/// the engine runs headless and the UI comes entirely from the DSL pipe. With
-/// `gpu`, the platform-specific build creates the shared texture, points Elpa's
-/// `WgpuBackend` at it, and returns the id/selector.
-#[allow(unused_variables)]
-pub fn register_surface(req: SurfaceRequest) -> NativeSurface {
+/// * **Android** — pointer to an `AHardwareBuffer` (`*mut AHardwareBuffer as i64`).
+/// * **iOS / macOS** — an `IOSurfaceRef` (`*mut __IOSurface as i64`).
+/// * **Linux** — a DMA-BUF file descriptor (`RawFd as i64`).
+/// * **Windows** — a shared NT `HANDLE` to a D3D12 resource (`isize as i64`).
+#[derive(Debug, Clone, Copy)]
+pub struct SharedTextureHandle {
+    pub raw: i64,
+    /// Bytes per row of the shared allocation, when the platform pads rows (e.g.
+    /// an `AHardwareBuffer` stride); `0` means tightly packed (`width * 4`).
+    pub row_stride: u32,
+}
+
+/// The GPU backend an Elpa engine drives, selected at runtime. An engine always
+/// **boots** on [`LiveBackend::Headless`] so the 2D/DSL path runs with no GPU and
+/// the app is interactive immediately. When the host registers a platform render
+/// surface (a web canvas or a native shared texture) the engine swaps in
+/// [`LiveBackend::Wgpu`] *in place* — the same VM and the same app state, now
+/// painting real pixels into the surface Flutter composites. Keeping the choice
+/// behind one enum (rather than monomorphizing the whole [`elpa::Elpa`] over the
+/// backend) is what lets the upgrade happen after boot, asynchronously, once the
+/// surface size is known from Flutter layout.
+pub enum LiveBackend {
+    /// GPU-free: drives the full VM + caching + partial-render pipeline as no-ops.
+    Headless(elpa::HeadlessBackend),
+    /// A live wgpu backend rendering into the registered surface/texture.
     #[cfg(feature = "gpu")]
-    {
-        // The platform integration lives here in a `gpu` build: import the shared
-        // GPU buffer, build a `wgpu::Texture` view over it, configure the
-        // `WgpuBackend`'s surface to target it, and register the buffer with the
-        // platform texture registry to obtain the Flutter texture id. See the
-        // README's "native widget" section for the per-platform wiring.
-        gpu_impl::register_surface(req)
-    }
-    #[cfg(not(feature = "gpu"))]
-    {
-        NativeSurface::None
+    Wgpu(Box<elpa::WgpuBackend<'static>>),
+}
+
+impl Default for LiveBackend {
+    fn default() -> Self {
+        LiveBackend::Headless(elpa::HeadlessBackend::default())
     }
 }
 
-#[cfg(feature = "gpu")]
-mod gpu_impl {
-    use super::{NativeSurface, SurfaceRequest};
+/// Delegate a [`GpuBackend`] method to whichever variant is live. (`Wgpu` is only
+/// a possible arm under the `gpu` feature.)
+macro_rules! dispatch {
+    ($self:ident, $b:ident => $call:expr) => {
+        match $self {
+            LiveBackend::Headless($b) => $call,
+            #[cfg(feature = "gpu")]
+            LiveBackend::Wgpu($b) => $call,
+        }
+    };
+}
 
-    /// Placeholder for the platform-specific shared-texture wiring. A real `gpu`
-    /// build replaces this with the import/registry calls for the target OS.
-    pub fn register_surface(_req: SurfaceRequest) -> NativeSurface {
-        NativeSurface::None
+impl elpa::GpuBackend for LiveBackend {
+    fn create_resource(&mut self, desc: &elpa::protocol::ResourceDesc) {
+        dispatch!(self, b => b.create_resource(desc))
+    }
+    fn update_buffer(&mut self, id: &str, offset: u64, bytes: &[u8]) {
+        dispatch!(self, b => b.update_buffer(id, offset, bytes))
+    }
+    fn destroy_resource(&mut self, id: &str) {
+        dispatch!(self, b => b.destroy_resource(id))
+    }
+    fn begin_frame(&mut self) {
+        dispatch!(self, b => b.begin_frame())
+    }
+    fn record_render_pass(&mut self, pass: &elpa::protocol::RenderPass) {
+        dispatch!(self, b => b.record_render_pass(pass))
+    }
+    fn record_compute_pass(&mut self, pass: &elpa::protocol::ComputePass) {
+        dispatch!(self, b => b.record_compute_pass(pass))
+    }
+    fn record_encoder_command(&mut self, cmd: &elpa::protocol::EncoderCommand) {
+        dispatch!(self, b => b.record_encoder_command(cmd))
+    }
+    fn end_frame(&mut self, dirty: &[elpa::protocol::Rect]) {
+        dispatch!(self, b => b.end_frame(dirty))
+    }
+    fn surface_format_token(&self) -> String {
+        dispatch!(self, b => b.surface_format_token())
     }
 }
+
+/// Build a live wgpu backend over a **native shared texture** (the zero-copy
+/// Flutter `Texture` path). The platform plugin already allocated the shared
+/// buffer and registered it with Flutter's texture registry; `handle` names that
+/// buffer. We import it into a [`wgpu::Texture`] on a wgpu device and wrap it in a
+/// backend that renders into it every frame. Blocks on device acquisition (native
+/// has real threads, so a synchronous FRB call is fine here).
+///
+/// Returns `None` if the platform import is unavailable (e.g. an unsupported
+/// adapter), in which case the engine stays on its current backend and the 2D UI
+/// keeps running.
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+pub fn build_native_backend(
+    handle: SharedTextureHandle,
+    width: u32,
+    height: u32,
+) -> Option<elpa::WgpuBackend<'static>> {
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    match crate::import::import_shared_texture(handle, format, width, height) {
+        Ok((device, queue, texture)) => Some(elpa::WgpuBackend::from_imported_texture(
+            device, queue, texture, format, width, height,
+        )),
+        Err(e) => {
+            eprintln!("elpa: shared-texture import failed ({e}); keeping 2D-only backend");
+            None
+        }
+    }
+}
+
+/// Build a live wgpu backend over an **HTML canvas** (the web path). Flutter hosts
+/// the canvas as a platform view (`HtmlElementView`); we make a wgpu surface
+/// straight from it and render into it inline with the rest of the page. Async:
+/// the browser exposes adapter/device acquisition only as promises, and on the
+/// app's single-threaded wasm there is no thread to block on, so the caller awaits
+/// this from an async FRB entry point.
+#[cfg(all(feature = "gpu", target_arch = "wasm32"))]
+pub async fn build_web_backend(
+    canvas: web_sys::HtmlCanvasElement,
+    width: u32,
+    height: u32,
+) -> Option<elpa::WgpuBackend<'static>> {
+    let instance = wgpu::util::new_instance_with_webgpu_detection(
+        wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+    )
+    .await;
+    // Build the canvas surface with an explicit (empty) web display handle so both
+    // the WebGPU and the WebGL fallback backends accept it (WebGL rejects a
+    // missing display handle). This mirrors the standalone web example.
+    let surface = {
+        let value: &wasm_bindgen::JsValue = canvas.as_ref();
+        let obj = core::ptr::NonNull::from(value).cast();
+        let raw_window_handle = wgpu::rwh::WebCanvasWindowHandle::new(obj).into();
+        let raw_display_handle = wgpu::rwh::RawDisplayHandle::Web(wgpu::rwh::WebDisplayHandle::new());
+        match unsafe {
+            instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+                raw_display_handle: Some(raw_display_handle),
+                raw_window_handle,
+            })
+        } {
+            Ok(s) => s,
+            Err(e) => {
+                web_sys::console::error_1(&format!("elpa: canvas surface failed: {e}").into());
+                return None;
+            }
+        }
+    };
+    // Tolerate "no GPU adapter" (e.g. a headless browser without WebGL/WebGPU):
+    // fall back to the 2D backend instead of trapping the whole app.
+    elpa::WgpuBackend::try_new_seeded(&instance, surface, width.max(1), height.max(1), None).await
+}
+

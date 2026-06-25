@@ -112,6 +112,19 @@ jobs:
             --elpa-root "${GITHUB_WORKSPACE}" \
             --force
 
+      # Build the bridge with the live wgpu backend so the deployed demo renders
+      # the 3D scene (the `Native3DView` provisions a canvas surface and Elpa's
+      # wgpu pipeline paints into it). Without `gpu` the crate is the 2D-only
+      # headless build and the 3D card stays a placeholder. We flip the bridge
+      # crate's default features here rather than passing a CLI flag so it applies
+      # uniformly to `flutter_rust_bridge_codegen build-web` (which drives
+      # wasm-pack under the hood).
+      - name: Enable the wgpu (gpu) feature for the web build
+        working-directory: ${{ env.GEN_DIR }}
+        run: |
+          sed -i 's|^default = \["frb"\]$|default = ["frb", "gpu"]|' rust/Cargo.toml
+          grep -n '^default' rust/Cargo.toml
+
       # FRB's `build-web` drives `wasm-pack` to produce the browser-loadable wasm.
       - name: Install wasm-pack
         run: cargo install --locked wasm-pack

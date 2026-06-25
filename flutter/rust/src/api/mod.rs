@@ -169,6 +169,80 @@ pub fn dispose(handle: u64) -> bool {
     ENGINES.lock().unwrap().remove(&handle).is_some()
 }
 
+// ---- Native GPU surface (the zero-copy 3D path) ------------------------------
+
+/// Register the platform render surface for engine `handle` and upgrade it from
+/// the headless backend to a live wgpu backend, so the app's `Native3DView` shows
+/// real GPU pixels. Returns whether a GPU backend is now installed.
+///
+/// One stable entry point across platforms (so codegen yields one Dart binding);
+/// it dispatches on the build target:
+///
+/// * **Web** — `canvas_id` is the id of the `<canvas>` Flutter hosts via
+///   `HtmlElementView`. We make a wgpu surface from it and render inline. Adapter
+///   acquisition is a browser promise, so this is `async`.
+/// * **Native (desktop/mobile)** — `raw_handle` is the OS handle to a shared
+///   buffer a native texture-registry plugin already registered with Flutter (see
+///   `render::SharedTextureHandle`); we import it zero-copy. `row_stride` carries
+///   the buffer's byte stride when padded (`0` = tightly packed).
+///
+/// `async` rather than `#[frb(sync)]`: building the surface awaits device
+/// acquisition. It is a one-shot setup call (not a per-frame hot path), so the
+/// executor hop is irrelevant; the per-frame `frame`/`pointer` calls stay sync.
+#[allow(unused_variables)]
+pub async fn register_surface(
+    handle: u64,
+    canvas_id: String,
+    raw_handle: i64,
+    row_stride: u32,
+    width: u32,
+    height: u32,
+) -> bool {
+    #[cfg(all(feature = "gpu", target_arch = "wasm32"))]
+    {
+        use wasm_bindgen::JsCast;
+        let canvas = match web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.get_element_by_id(&canvas_id))
+            .and_then(|el| el.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+        {
+            Some(c) => c,
+            None => return false,
+        };
+        let backend = match crate::render::build_web_backend(canvas, width, height).await {
+            Some(b) => b,
+            None => return false,
+        };
+        with(handle, |e| {
+            e.install_backend(backend);
+            e.has_gpu_backend()
+        })
+        .unwrap_or(false)
+    }
+    #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+    {
+        let sh = crate::render::SharedTextureHandle { raw: raw_handle, row_stride };
+        match crate::render::build_native_backend(sh, width, height) {
+            Some(backend) => with(handle, |e| {
+                e.install_backend(backend);
+                e.has_gpu_backend()
+            })
+            .unwrap_or(false),
+            None => false,
+        }
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        false
+    }
+}
+
+/// Whether engine `handle` currently has a live wgpu backend installed.
+#[frb(sync)]
+pub fn surface_is_live(handle: u64) -> bool {
+    with(handle, |e| e.has_gpu_backend()).unwrap_or(false)
+}
+
 // ---- Driving the app ---------------------------------------------------------
 
 /// Forward a pointer event (logical coordinates); returns emitted UI messages.

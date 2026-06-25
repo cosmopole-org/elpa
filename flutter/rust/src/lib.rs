@@ -28,6 +28,12 @@ pub mod api;
 
 pub mod render;
 
+// Per-OS import of a platform shared buffer into a wgpu texture — the zero-copy
+// native compositing path (`gpu` feature, native only; the web path renders into
+// a canvas surface instead). See `import.rs`.
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+mod import;
+
 // The flutter_rust_bridge codegen writes `src/frb_generated.rs` and references it
 // here. It is intentionally not committed (it is a build artifact regenerated
 // from `api/`); uncomment after running codegen, or let `flutter_rust_bridge_codegen

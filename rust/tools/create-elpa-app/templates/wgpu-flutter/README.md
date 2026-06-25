@@ -32,11 +32,25 @@ path), and the SDK are vendored into this project.
 - This compositing is **zero-copy**: Elpa's renderer writes the texture, Flutter
   samples it inline with the rest of the 2D UI.
 
-The native surface is **live only when the bridge is built with the `gpu` Cargo
-feature** and the platform shared-texture wiring is in place (see
-`rust/src/render.rs::register_surface`). In the default headless build the
-`Native3DView` reserves its space and the 2D UI runs in full — so the app always
-builds and runs; the 3D surface lights up once you opt into `gpu`.
+The native surface is **live when the bridge is built with the `gpu` Cargo
+feature**; without it the crate is the headless 2D-only build, the `Native3DView`
+reserves its space, and the 2D UI runs in full (so the app always builds and runs).
+With `gpu`:
+
+- **Web** — works out of the box. The shell hosts a `<canvas>` as a platform view
+  and Elpa makes a wgpu surface straight from it (`lib/src/elpa/native/`), so the
+  3D scene renders inline with no native code. This is what the GitHub Pages deploy
+  builds (`--features gpu`).
+- **Desktop / mobile** — zero-copy via a small per-OS texture plugin that allocates
+  a shared GPU buffer and registers it with Flutter's texture registry; Rust then
+  imports that buffer into wgpu. The contract and reference plugins live under the
+  Flutter project's `native/` directory, and the Rust import seam is
+  `rust/src/render.rs` + `rust/src/import.rs`. Until a platform's plugin is wired
+  it falls back to the 2D path automatically.
+
+The surface is **self-provisioned**: the app just places a `Native3DView`; the
+shell sizes it, acquires the surface, upgrades the engine to a live wgpu backend,
+and composites the result — no surface bookkeeping in the app.
 
 ## Setup
 

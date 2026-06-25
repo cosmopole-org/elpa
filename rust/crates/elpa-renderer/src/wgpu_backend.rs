@@ -28,12 +28,37 @@ use elpa_protocol::{ComputePass, EncoderCommand, Rect, RenderCommand, RenderPass
 
 use crate::backend::GpuBackend;
 
+/// Where a backend presents each frame. Elpa renders the *same* command tree
+/// either to a windowing-system swapchain ([`RenderTarget::Surface`] — the full
+/// example apps, and the web canvas the Flutter `HtmlElementView` hosts) or
+/// straight into a caller-owned [`wgpu::Texture`] ([`RenderTarget::Texture`] —
+/// the zero-copy Flutter texture path, where the texture is imported from a
+/// platform shared buffer and Flutter samples it inline). Only `begin_frame`,
+/// `end_frame`, `resize`, and surface-view resolution branch on the variant; the
+/// resource cache and command replay are identical.
+enum RenderTarget<'s> {
+    /// A windowing-system swapchain: each frame acquires an image and presents it.
+    Surface { surface: wgpu::Surface<'s>, config: wgpu::SurfaceConfiguration },
+    /// A caller-owned render-target texture: each frame renders into its view and
+    /// submits — no present (the compositor samples the texture directly). `owned`
+    /// records whether this backend created the texture (so a resize can recreate
+    /// it) or merely borrowed an imported one (so a resize is the host's job — it
+    /// re-imports and rebuilds the backend).
+    Texture {
+        texture: wgpu::Texture,
+        view: wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+        owned: bool,
+    },
+}
+
 /// Holds the GPU and every realized resource. Generic over the surface lifetime.
 pub struct WgpuBackend<'s> {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    surface: wgpu::Surface<'s>,
-    config: wgpu::SurfaceConfiguration,
+    target: RenderTarget<'s>,
 
     buffers: HashMap<ResourceId, wgpu::Buffer>,
     textures: HashMap<ResourceId, wgpu::Texture>,
@@ -94,46 +119,25 @@ impl<'s> WgpuBackend<'s> {
         height: u32,
         cache_data: Option<&[u8]>,
     ) -> WgpuBackend<'s> {
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
+        Self::try_new_seeded(instance, surface, width, height, cache_data)
             .await
-            .expect("no compatible GPU adapter");
+            .expect("no compatible GPU adapter/device")
+    }
 
-        // Opt into the pipeline-compilation cache only when the adapter offers it.
-        let mut required_features = wgpu::Features::empty();
-        let has_pipeline_cache = adapter.features().contains(wgpu::Features::PIPELINE_CACHE);
-        if has_pipeline_cache {
-            required_features |= wgpu::Features::PIPELINE_CACHE;
-        }
-
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("elpa-device"),
-                required_features,
-                required_limits: wgpu::Limits::downlevel_webgl2_defaults()
-                    .using_resolution(adapter.limits()),
-                memory_hints: wgpu::MemoryHints::Performance,
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                trace: wgpu::Trace::Off,
-            })
-            .await
-            .expect("failed to create device");
-
-        // Safety: `cache_data`, when present, is opaque blob the caller obtained
-        // from a previous `get_data` on a compatible device; wgpu validates it and
-        // (with `fallback: true`) discards anything stale, so a bad/foreign blob
-        // is safe — it just yields an empty cache.
-        let pipeline_cache = has_pipeline_cache.then(|| unsafe {
-            device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
-                label: Some("elpa-pipeline-cache"),
-                data: cache_data,
-                fallback: true,
-            })
-        });
+    /// Fallible swapchain constructor: returns `None` when no compatible GPU
+    /// adapter/device is available (e.g. a headless browser with no WebGL/WebGPU
+    /// context) instead of panicking, so a host can fall back to a 2D-only path
+    /// rather than crash. [`Self::new`]/[`Self::new_seeded`] are the panicking
+    /// wrappers for callers that require a surface.
+    pub async fn try_new_seeded(
+        instance: &wgpu::Instance,
+        surface: wgpu::Surface<'s>,
+        width: u32,
+        height: u32,
+        cache_data: Option<&[u8]>,
+    ) -> Option<WgpuBackend<'s>> {
+        let (adapter, device, queue, pipeline_cache) =
+            Self::try_acquire_device(instance, Some(&surface), cache_data).await?;
 
         let caps = surface.get_capabilities(&adapter);
         let format = caps
@@ -154,11 +158,154 @@ impl<'s> WgpuBackend<'s> {
         };
         surface.configure(&device, &config);
 
+        Some(Self::assemble(device, queue, RenderTarget::Surface { surface, config }, pipeline_cache))
+    }
+
+    /// Build a backend that renders into a fresh, backend-owned render-target
+    /// texture (no swapchain). Used when there is no window/canvas to present to —
+    /// e.g. the zero-copy Flutter texture path before a platform shared texture is
+    /// imported, or pure offscreen rendering. The texture is created
+    /// `RENDER_ATTACHMENT | COPY_SRC | TEXTURE_BINDING` so it can be sampled,
+    /// blitted, or read back. Take it with [`Self::target_texture`].
+    pub async fn new_offscreen(
+        instance: &wgpu::Instance,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> WgpuBackend<'s> {
+        let (_adapter, device, queue, pipeline_cache) =
+            Self::try_acquire_device(instance, None, None).await.expect("no compatible GPU device");
+        let texture = Self::make_target_texture(&device, format, width, height);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let target = RenderTarget::Texture {
+            texture,
+            view,
+            format,
+            width: width.max(1),
+            height: height.max(1),
+            owned: true,
+        };
+        Self::assemble(device, queue, target, pipeline_cache)
+    }
+
+    /// Build a backend that renders into a **caller-supplied** texture — the
+    /// zero-copy compositing path. The host imports a platform shared buffer
+    /// (Android `AHardwareBuffer`, iOS/macOS `IOSurface`, Linux DMA-BUF, Windows
+    /// DXGI handle) into a [`wgpu::Texture`] on its own `device`/`queue`, then
+    /// hands the three here; Elpa renders every frame into that texture and the
+    /// platform compositor (Flutter's `Texture` widget) samples the same memory
+    /// with no copy. The texture must be created with `RENDER_ATTACHMENT` usage and
+    /// a renderable `format`; the host owns its lifetime and re-imports on resize.
+    pub fn from_imported_texture(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        texture: wgpu::Texture,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> WgpuBackend<'s> {
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let target = RenderTarget::Texture {
+            texture,
+            view,
+            format,
+            width: width.max(1),
+            height: height.max(1),
+            owned: false,
+        };
+        Self::assemble(device, queue, target, None)
+    }
+
+    /// Request an adapter (optionally compatible with `surface`) and a device,
+    /// opting into the driver pipeline-compilation cache when available. Shared by
+    /// every constructor so device setup lives in one place. Returns `None` when
+    /// no adapter/device can be obtained (the caller decides whether that is fatal).
+    async fn try_acquire_device(
+        instance: &wgpu::Instance,
+        compatible_surface: Option<&wgpu::Surface<'_>>,
+        cache_data: Option<&[u8]>,
+    ) -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue, Option<wgpu::PipelineCache>)> {
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface,
+                force_fallback_adapter: false,
+            })
+            .await
+            .ok()?;
+
+        // Opt into the pipeline-compilation cache only when the adapter offers it.
+        let mut required_features = wgpu::Features::empty();
+        let has_pipeline_cache = adapter.features().contains(wgpu::Features::PIPELINE_CACHE);
+        if has_pipeline_cache {
+            required_features |= wgpu::Features::PIPELINE_CACHE;
+        }
+
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("elpa-device"),
+                required_features,
+                required_limits: wgpu::Limits::downlevel_webgl2_defaults()
+                    .using_resolution(adapter.limits()),
+                memory_hints: wgpu::MemoryHints::Performance,
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                trace: wgpu::Trace::Off,
+            })
+            .await
+            .ok()?;
+
+        // Safety: `cache_data`, when present, is an opaque blob the caller obtained
+        // from a previous `get_data` on a compatible device; wgpu validates it and
+        // (with `fallback: true`) discards anything stale, so a bad/foreign blob
+        // is safe — it just yields an empty cache.
+        let pipeline_cache = has_pipeline_cache.then(|| unsafe {
+            device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
+                label: Some("elpa-pipeline-cache"),
+                data: cache_data,
+                fallback: true,
+            })
+        });
+
+        Some((adapter, device, queue, pipeline_cache))
+    }
+
+    /// Create a backend-owned render-target texture (renderable + sampleable +
+    /// copy source), used by [`Self::new_offscreen`] and offscreen resizes.
+    fn make_target_texture(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> wgpu::Texture {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("elpa-target"),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+    }
+
+    /// Initialize the resource caches around an already-built device/queue/target.
+    fn assemble(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        target: RenderTarget<'s>,
+        pipeline_cache: Option<wgpu::PipelineCache>,
+    ) -> WgpuBackend<'s> {
         WgpuBackend {
             device,
             queue,
-            surface,
-            config,
+            target,
             buffers: HashMap::new(),
             textures: HashMap::new(),
             views: HashMap::new(),
@@ -177,9 +324,23 @@ impl<'s> WgpuBackend<'s> {
         }
     }
 
-    /// The surface's configured color format (apps must match it in pipelines).
+    /// The render-target texture, when this backend draws into one (the zero-copy
+    /// / offscreen path). `None` for a swapchain surface. The host uses it to wire
+    /// the texture to the compositor or to read it back.
+    pub fn target_texture(&self) -> Option<&wgpu::Texture> {
+        match &self.target {
+            RenderTarget::Texture { texture, .. } => Some(texture),
+            RenderTarget::Surface { .. } => None,
+        }
+    }
+
+    /// The configured color format apps must match in their pipelines (read by the
+    /// app via `gpu.surfaceInfo`). Works for both a swapchain and a texture target.
     pub fn surface_format(&self) -> wgpu::TextureFormat {
-        self.config.format
+        match &self.target {
+            RenderTarget::Surface { config, .. } => config.format,
+            RenderTarget::Texture { format, .. } => *format,
+        }
     }
 
     /// The driver pipeline cache as an opaque blob, for the host to persist and
@@ -189,26 +350,57 @@ impl<'s> WgpuBackend<'s> {
         self.pipeline_cache.as_ref().and_then(|c| c.get_data())
     }
 
-    /// Reconfigure the surface after a resize.
+    /// Reconfigure the render target after a resize. A swapchain is reconfigured
+    /// in place; a backend-*owned* offscreen texture is recreated at the new size.
+    /// An *imported* (host-owned) texture is left untouched — the host re-imports
+    /// the platform shared buffer at the new size and rebuilds the backend, since
+    /// only it can re-create the shared allocation Flutter composites.
     pub fn resize(&mut self, width: u32, height: u32) {
-        self.config.width = width.max(1);
-        self.config.height = height.max(1);
-        self.surface.configure(&self.device, &self.config);
+        let device = &self.device;
+        match &mut self.target {
+            RenderTarget::Surface { surface, config } => {
+                config.width = width.max(1);
+                config.height = height.max(1);
+                surface.configure(device, config);
+            }
+            RenderTarget::Texture { texture, view, format, width: w, height: h, owned } => {
+                *w = width.max(1);
+                *h = height.max(1);
+                if *owned {
+                    let tex = Self::make_target_texture(device, *format, *w, *h);
+                    *view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+                    *texture = tex;
+                    self.render_bundles.clear();
+                }
+            }
+        }
     }
 
-    /// Acquire the next swapchain texture, treating suboptimal as success.
+    /// Acquire the next swapchain texture, treating suboptimal as success. Only
+    /// meaningful for a [`RenderTarget::Surface`]; a texture target presents none.
     fn acquire(&self) -> Option<wgpu::SurfaceTexture> {
-        match self.surface.get_current_texture() {
+        let surface = match &self.target {
+            RenderTarget::Surface { surface, .. } => surface,
+            RenderTarget::Texture { .. } => return None,
+        };
+        match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
             _ => None,
         }
     }
 
-    /// Resolve a `TargetView` to a concrete `&wgpu::TextureView`.
+    /// Resolve a `TargetView` to a concrete `&wgpu::TextureView`. A
+    /// `TargetView::Surface` resolves to the swapchain image acquired this frame,
+    /// or — for a texture target — to that target's persistent view.
     fn resolve_view<'a>(&'a self, view: &TargetView) -> &'a wgpu::TextureView {
         match view {
-            TargetView::Surface => self.frame_view.as_ref().expect("frame not begun"),
+            TargetView::Surface => match &self.target {
+                RenderTarget::Surface { .. } => {
+                    self.frame_view.as_ref().expect("frame not begun")
+                }
+                RenderTarget::Texture { view, .. } => view,
+            },
             TargetView::Texture { texture } => {
                 self.views.get(texture).unwrap_or_else(|| panic!("unknown texture {texture}"))
             }
@@ -481,27 +673,31 @@ impl<'s> GpuBackend for WgpuBackend<'s> {
     }
 
     fn begin_frame(&mut self) {
-        let frame = match self.acquire() {
-            Some(f) => f,
-            None => {
-                // Surface lost/outdated: reconfigure and try once more.
-                self.surface.configure(&self.device, &self.config);
-                match self.acquire() {
-                    Some(f) => f,
-                    None => {
-                        // Skip this frame; record_* and end_frame are no-ops
-                        // while there is no encoder.
-                        self.encoder = None;
-                        self.frame_texture = None;
-                        self.frame_view = None;
-                        return;
+        // A texture target has a persistent view (resolved in `resolve_view`); it
+        // needs no swapchain acquire, only a fresh encoder.
+        if let RenderTarget::Surface { surface, config } = &self.target {
+            let frame = match self.acquire() {
+                Some(f) => f,
+                None => {
+                    // Surface lost/outdated: reconfigure and try once more.
+                    surface.configure(&self.device, config);
+                    match self.acquire() {
+                        Some(f) => f,
+                        None => {
+                            // Skip this frame; record_* and end_frame are no-ops
+                            // while there is no encoder.
+                            self.encoder = None;
+                            self.frame_texture = None;
+                            self.frame_view = None;
+                            return;
+                        }
                     }
                 }
-            }
-        };
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        self.frame_view = Some(view);
-        self.frame_texture = Some(frame);
+            };
+            let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.frame_view = Some(view);
+            self.frame_texture = Some(frame);
+        }
         self.encoder = Some(
             self.device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("elpa-frame") }),
@@ -689,7 +885,7 @@ impl<'s> GpuBackend for WgpuBackend<'s> {
     /// else falls back to `"bgra8unorm"` (the renderer-wide default).
     fn surface_format_token(&self) -> String {
         use wgpu::TextureFormat as F;
-        match self.config.format {
+        match self.surface_format() {
             F::Bgra8Unorm => "bgra8unorm",
             F::Bgra8UnormSrgb => "bgra8unorm-srgb",
             F::Rgba8Unorm => "rgba8unorm",
@@ -727,7 +923,7 @@ impl<'s> WgpuBackend<'s> {
         let mut sample_count = 1;
         for att in &pass.color_attachments {
             match &att.view {
-                TargetView::Surface => formats.push(self.config.format),
+                TargetView::Surface => formats.push(self.surface_format()),
                 TargetView::Texture { texture } => {
                     let tex = self.textures.get(texture)?;
                     formats.push(tex.format());

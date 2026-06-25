@@ -481,6 +481,8 @@ dependencies = [
  "once_cell",
  "serde",
  "serde_json",
+ "wasm-bindgen",
+ "web-sys",
  "wgpu",
 ]
 

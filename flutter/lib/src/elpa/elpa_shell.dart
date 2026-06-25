@@ -24,6 +24,7 @@ import 'bridge.dart';
 import 'dsl/cache.dart';
 import 'dsl/dsl_node.dart';
 import 'dsl/widget_builder.dart';
+import 'elpa_engine_scope.dart';
 import 'engine.dart';
 
 /// Channel the shell listens on (Dart-side only) for the app to request/stop the
@@ -186,14 +187,18 @@ class _ElpaShellState extends State<ElpaShell> with SingleTickerProviderStateMix
 
     // Listener delivers raw pointer/scroll events to the VM (the low-level event
     // pipe); widget gestures (Button taps) ride the semantic `flutter.event`
-    // channel via [_dispatchEvent]. Both layers coexist.
-    return Listener(
-      onPointerDown: _onPointerDown,
-      onPointerMove: _onPointerMove,
-      onPointerUp: _onPointerUp,
-      onPointerSignal: _onSignal,
-      behavior: HitTestBehavior.translucent,
-      child: content,
+    // channel via [_dispatchEvent]. Both layers coexist. The engine scope lets a
+    // `Native3DView` deep in the tree provision its own GPU surface.
+    return ElpaEngineScope(
+      engine: _engine,
+      child: Listener(
+        onPointerDown: _onPointerDown,
+        onPointerMove: _onPointerMove,
+        onPointerUp: _onPointerUp,
+        onPointerSignal: _onSignal,
+        behavior: HitTestBehavior.translucent,
+        child: content,
+      ),
     );
   }
 

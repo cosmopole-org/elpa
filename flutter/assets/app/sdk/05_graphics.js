@@ -96,12 +96,12 @@ class FrameBuilder {
   surfacePass(color, drawCommands) {
     push(this.commands, {
       op: "renderPass",
-      colorAttachments: [
+      color_attachments: [
         {
           view: { kind: "surface" },
           load: "clear",
           store: true,
-          clearColor: color,
+          clear_color: color,
         },
       ],
       commands: isNull(drawCommands) ? [] : drawCommands,
@@ -195,14 +195,14 @@ class Mesh {
       id: this.id,
       level: "render",
       resources: [
-        { kind: "buffer", id: this.id + ".vb", usage: "vertex", dataF32: this.vertices },
-        { kind: "buffer", id: this.id + ".ib", usage: "index", dataU16: this.indices },
+        { kind: "buffer", id: this.id + ".vb", size: len(this.vertices) * 4, usage: ["VERTEX"], data_f32: this.vertices },
+        { kind: "buffer", id: this.id + ".ib", size: len(this.indices) * 2, usage: ["INDEX"], data_u16: this.indices },
       ],
       commands: [
         { cmd: "setPipeline", pipeline: this.material.pipeline },
         { cmd: "setVertexBuffer", slot: 0, buffer: this.id + ".vb" },
         { cmd: "setIndexBuffer", buffer: this.id + ".ib", format: "uint16" },
-        { cmd: "drawIndexed", indexCount: len(this.indices) },
+        { cmd: "drawIndexed", index_count: len(this.indices) },
       ],
     });
     this._registered = true;

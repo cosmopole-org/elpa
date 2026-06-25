@@ -27,7 +27,9 @@
 //! events flow back on [`channel::EVENT`]. Nothing about the DSL is hard-coded
 //! here: the engine is a transport, and the Dart side owns the vocabulary.
 
-use elpa::{Elpa, HeadlessBackend, InputEvent, SurfaceInfo};
+use elpa::{Elpa, InputEvent, SurfaceInfo};
+
+use crate::render::LiveBackend;
 
 /// Reserved channel names for the Elpa ⇄ Flutter contract. They are plain
 /// strings on the generic pipe; centralizing them keeps the Rust and Dart sides
@@ -51,7 +53,11 @@ pub mod channel {
 /// swaps in a live wgpu backend for the native-widget (zero-copy texture) path;
 /// see `render.rs` and the README for how that surface is sourced from a Flutter
 /// `Texture`.
-pub type Backend = HeadlessBackend;
+///
+/// The backend is the runtime-selectable [`LiveBackend`]: the engine boots on its
+/// headless variant and is upgraded to the wgpu variant in place by
+/// [`ElpaEngine::install_backend`] once the host registers a render surface.
+pub type Backend = LiveBackend;
 
 /// One message leaving the app for the Flutter host (the guest → host leg).
 /// `payload` is raw JSON text — moved, never re-parsed, by the bridge.
@@ -107,6 +113,29 @@ impl ElpaEngine {
         ElpaEngine { app }
     }
 
+    /// Upgrade this running engine from the headless backend to a live wgpu
+    /// backend, in place. Called once the host has built a [`elpa::WgpuBackend`]
+    /// over the platform render surface (a web canvas or a native shared texture).
+    /// The renderer forgets its cached resources so the next submitted frame
+    /// re-creates them on the GPU; the VM and all app state are untouched, so the
+    /// 2D UI keeps running and the 3D scene lights up on the next animation tick.
+    #[cfg(feature = "gpu")]
+    pub fn install_backend(&mut self, backend: elpa::WgpuBackend<'static>) {
+        self.app.renderer_mut().replace_backend(LiveBackend::Wgpu(Box::new(backend)));
+    }
+
+    /// Whether a live wgpu backend is currently installed (vs. the headless one).
+    pub fn has_gpu_backend(&self) -> bool {
+        #[cfg(feature = "gpu")]
+        {
+            matches!(self.app.renderer().backend(), LiveBackend::Wgpu(_))
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            false
+        }
+    }
+
     /// Run the app's top-level program (init + first render) and return the
     /// messages it emitted (typically the initial `flutter.render` tree).
     pub fn start(&mut self) -> Vec<OutMessage> {
@@ -155,6 +184,13 @@ impl ElpaEngine {
     /// Report a surface resize (physical pixels + device pixel ratio). The app's
     /// `onResize` re-fits and may re-emit its tree.
     pub fn resize(&mut self, width: u32, height: u32, scale: f64) -> Vec<OutMessage> {
+        // Reconfigure the live GPU surface first (the swapchain/owned texture must
+        // match the new size before the app re-submits). An imported shared texture
+        // is the host's to re-import — see `WgpuBackend::resize`.
+        #[cfg(feature = "gpu")]
+        if let LiveBackend::Wgpu(b) = self.app.renderer_mut().backend_mut() {
+            b.resize(width.max(1), height.max(1));
+        }
         self.app.resize(width.max(1), height.max(1), scale.max(0.1));
         self.drain()
     }
