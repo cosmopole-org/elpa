@@ -61,6 +61,20 @@ class _WebSurfaceProvisioner implements ElpaSurfaceProvisioner {
     canvas
       ..width = widthPx.clamp(1, 1 << 16)
       ..height = heightPx.clamp(1, 1 << 16);
+
+    // Wait until Flutter has actually attached the platform-view canvas to the
+    // DOM. The wgpu surface is bound on the Rust side by looking the canvas up by
+    // id (`document.getElementById`), which returns null until the
+    // `HtmlElementView` mounts — and on web that attachment lands a few frames
+    // *after* this first post-frame callback. Registering too early made the
+    // lookup fail and the 3D surface was never bound (the card stayed blank with
+    // no retry). Poll the element's own `isConnected` (it is the very element Rust
+    // will find) until it joins the DOM, then register.
+    for (var attempt = 0; attempt < 120 && !canvas.isConnected; attempt++) {
+      await Future<void>.delayed(const Duration(milliseconds: 16));
+    }
+    if (!canvas.isConnected) return false; // never mounted — leave a placeholder
+
     return engine.registerSurface(canvasId: canvas.id, width: widthPx, height: heightPx);
   }
 
