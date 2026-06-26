@@ -72,6 +72,9 @@ class WidgetsBinding {
     // exactly as Flutter's RenderView scales by devicePixelRatio.
     drawFrame() {
         this.readSurface();
+        // Load the real UI font once (no-op after the first attempt); text then
+        // renders as crisp Vello glyph runs instead of vector stroke capsules.
+        this.font.ensureLoaded();
         this._needsFrame = 0.0;
         // Phase 1: rebuild dirty elements (build → reconcile render tree).
         if (this.buildOwner != 0) { this.buildOwner.buildScope(this.rootElement); }
@@ -103,7 +106,10 @@ class WidgetsBinding {
     // renderer skips re-presenting an unchanged frame).
     submit(ops) {
         this.frameN = this.frameN + 1;
-        askHost("scene.submit", [{ resources: [], ops: ops }]);
+        // The font resource is declared once (the renderer keeps it resident); on
+        // every other frame `sceneResources()` returns [], so the heavy font blob
+        // is not re-embedded in — and re-serialized for — each submit.
+        askHost("scene.submit", [{ resources: this.font.sceneResources(), ops: ops }]);
     }
 
     // ---- pointer routing (Flutter's GestureBinding.hitTest + dispatch) -------

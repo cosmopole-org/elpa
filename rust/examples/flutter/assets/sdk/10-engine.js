@@ -106,6 +106,19 @@ class Painter {
     circle(cx, cy, r, col) { this.rrect(cx, cy, r, r, r, 0.0, 0.0, col, CLEAR); }
     ring(cx, cy, r, w, col) { this.rrect(cx, cy, r, r, r, w, 0.0, CLEAR, col); }
 
+    // A run of positioned glyphs from a host font, as a single Vello `drawGlyphs`
+    // op — the fast, crisp text path (one op per run, real outlines), replacing
+    // the per-segment capsule strokes. `glyphs` is `[{id, x}]` in run-local px,
+    // laid out by the host's shaper; the baseline is placed at (x, y) by the op
+    // transform, so each glyph's own y stays 0.
+    glyphsRun(fontId, px, glyphs, x, y, col) {
+        if (len(glyphs) <= 0) { return 0; }
+        if (this.alpha <= 0.0) { return 0; }
+        let xf = this._xform(x, y, 0.0);
+        push(this.out, { op: "drawGlyphs", transform: xf,
+            run: { font: fontId, font_size: px, brush: this._solid(this.xcol(col)), glyphs: glyphs } });
+    }
+
     // A clip becomes a Vello clip layer (`pushLayer` with a clip path); the
     // matching save/restore scope pops it. `cx,cy,hw,hh,r` are local coords.
     setClip(cx, cy, hw, hh, r) {
@@ -121,40 +134,95 @@ class Painter {
 // and lay glyphs out onto the Canvas. (The atlas helpers below are a dormant
 // fallback retained for hosts that provide a coverage atlas.)
 class FontEngine {
-    constructor() { this.atlas = 0; this.atlasUp = 0.0; this.fontVer = 0; }
+    constructor() {
+        this.atlas = 0; this.atlasUp = 0.0; this.fontVer = 0;
+        // ---- native glyph path (the primary one) ----
+        // Real font outlines, rasterised by Vello via a single `drawGlyphs` op per
+        // run, with the host shaping characters into positioned glyph indices.
+        this.native = 0.0;        // 1 once the host font is resident
+        this.tries = 0.0;         // load attempts so far (bounded: see ensureLoaded)
+        this.fontId = "elpa.fl.font";
+        this.fontB64 = 0;
+        this.ascentPP = 0.92;     // per-pixel ascent (× px size = baseline drop)
+        this.descentPP = 0.24;    // per-pixel descent magnitude
+        this.linePP = 1.17;       // per-pixel line height
+        this.shapeCache = {};     // "px|text" -> { glyphs, width }
+        this.shapeN = 0.0;        // cache size (bounded so it can't grow forever)
+        this.resDirty = 0.0;      // the font scene-resource needs (re)sending
+    }
+    // Try to load the host UI font. Safe to call every frame: it stops once the
+    // font is resident (native path) or after a bounded number of attempts (so a
+    // transient first-frame failure still gets retries, but a host with no font
+    // settles on the vector fallback instead of hitting the network forever).
+    ensureLoaded() {
+        if (this.native > 0.5) { return 0; }
+        if (this.tries > 30.0) { return 0; }
+        this.tries = this.tries + 1.0;
+        let r = askHost("text.font", [{ weight: 400 }]);
+        if (isNull(r)) { return 0; }
+        if (!has(r, "ok")) { return 0; }
+        if (!r.ok) { return 0; }
+        this.fontB64 = r.b64;
+        this.ascentPP = r.ascent; this.descentPP = 0.0 - r.descent; this.linePP = r.lineHeight;
+        this.native = 1.0; this.resDirty = 1.0;
+        return 0;
+    }
+    // The scene `font` resources to declare this frame. Returned once (and again
+    // only if a resend is forced); the renderer keeps the font resident, so the
+    // ~200 KB blob is transmitted a single time, not every frame.
+    sceneResources() {
+        if (this.native < 0.5) { return []; }
+        if (this.resDirty < 0.5) { return []; }
+        this.resDirty = 0.0;
+        return [{ kind: "font", id: this.fontId, data_b64: this.fontB64 }];
+    }
+    // Logical px font size from the SDK's `cell` (RenderParagraph sets cell =
+    // fontSize / 6.6, so this recovers the original fontSize).
+    pxOf(cell) { return cell * 6.6; }
+    // Shape (and cache) a string at a px size into { glyphs:[{id,x}], width }.
+    shape(s, px) {
+        let key = concat(concat(str(px), "|"), s);
+        if (has(this.shapeCache, key)) { return this.shapeCache[key]; }
+        let r = askHost("text.shape", [{ text: s, size: px, weight: 400 }]);
+        let out = { glyphs: [], width: 0.0 };
+        if (!isNull(r)) { if (has(r, "ok")) { if (r.ok) { out = { glyphs: r.glyphs, width: r.width }; } } }
+        // Bound the cache: animated text (clocks, counters) would otherwise grow it
+        // without limit. A flush just re-shapes on demand.
+        if (this.shapeN > 1024.0) { this.shapeCache = {}; this.shapeN = 0.0; }
+        this.shapeCache[key] = out; this.shapeN = this.shapeN + 1.0;
+        return out;
+    }
     textScale(cell) { if (this.atlas == 0) { return cell * 0.2; } return cell * 6.6 / this.atlas.pxSize; }
     glyphMap() { return this.atlas.regular; }
-    // Proportional text width from the atlas advances (monospace estimate before
-    // the atlas loads). `cell` is the glyph scale (cap-height-ish in px / 6).
+    // Proportional text width. Native → real shaped advances; else atlas advances;
+    // else a monospace estimate. `cell` is the glyph scale (px / 6.6).
     textW(s, cell) {
+        if (this.native > 0.5) { return this.shape(s, this.pxOf(cell)).width; }
         if (this.atlas == 0) { return len(s) * 5.0 * cell; }
         let g = this.atlas.regular; let sc = this.textScale(cell); let w = 0.0;
         for (let i = 0; i < len(s); i++) { let ch = charAt(s, i); if (has(g, ch)) { w = w + g[ch].adv * sc; } }
         return w;
     }
-    // Approximate line height for a glyph cell.
-    lineH(cell) { if (this.atlas == 0) { return cell * 8.0; } return (this.atlas.ascent + this.atlas.descent) * this.textScale(cell) * 1.3; }
-    // Lay glyphs out from the atlas with the top-left of the text box at (x,y).
+    // Line height for a glyph cell.
+    lineH(cell) {
+        if (this.native > 0.5) { return this.linePP * this.pxOf(cell); }
+        if (this.atlas == 0) { return cell * 8.0; }
+        return (this.atlas.ascent + this.atlas.descent) * this.textScale(cell) * 1.3;
+    }
+    // Lay text out with the top-left of the text box at (x,y). Native path emits
+    // one `drawGlyphs` op (the baseline is placed at top + ascent); otherwise it
+    // falls back to the vector stroke font.
     paintLeftTop(painter, s, x, y, cell, col) {
-        if (this.atlas == 0) { this.paintCapsules(painter, s, x, y, cell, col); return 0; }
-        let g = this.glyphMap(); let sc = this.textScale(cell);
-        let aw = this.atlas.width; let ah = this.atlas.height; let n = len(s);
-        let penX = x;
-        let baseline = y + this.atlas.ascent * sc;
-        for (let i = 0; i < n; i++) {
-            let ch = charAt(s, i);
-            if (has(g, ch)) {
-                let gg = g[ch];
-                if (gg.w > 0.0) {
-                    let gw = gg.w * sc; let gh = gg.h * sc;
-                    let glx = penX + gg.bx * sc;
-                    let gtop = baseline - (gg.by + gg.h) * sc;
-                    painter.glyph(glx + gw / 2.0, gtop + gh / 2.0, gw / 2.0, gh / 2.0,
-                        gg.x / aw, gg.y / ah, (gg.x + gg.w) / aw, (gg.y + gg.h) / ah, col);
-                }
-                penX = penX + gg.adv * sc;
+        if (this.native > 0.5) {
+            let px = this.pxOf(cell);
+            let sh = this.shape(s, px);
+            if (len(sh.glyphs) > 0) {
+                let baseline = y + this.ascentPP * px;
+                painter.glyphsRun(this.fontId, px, sh.glyphs, x, baseline, col);
             }
+            return 0;
         }
+        this.paintCapsules(painter, s, x, y, cell, col);
     }
     // Fallback stroke-font rasteriser (top-left origin at (x,y)).
     paintCapsules(painter, s, x, y, cell, col) {

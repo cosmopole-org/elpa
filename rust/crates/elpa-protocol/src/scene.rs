@@ -312,6 +312,10 @@ pub enum Compose {
 pub struct Glyph {
     pub id: u32,
     pub x: f32,
+    /// Pen y within the run (defaults to `0.0`: a single horizontal baseline, with
+    /// the baseline itself placed by the run's transform). Omittable so a shaper
+    /// can emit just `{id, x}` for the common one-line case.
+    #[serde(default)]
     pub y: f32,
 }
 
