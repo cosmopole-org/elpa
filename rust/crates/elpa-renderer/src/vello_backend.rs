@@ -35,13 +35,47 @@ use elpa_protocol::{
 use crate::scene_backend::SceneBackend;
 
 /// A host hook that composites a raw wgpu [`Frame`](elpa_protocol::Frame) into
-/// the shared target. It receives the live device/queue and the surface texture
-/// view Vello is rendering into, so the embedder can run the command tree on the
-/// same device (e.g. by driving an [`elpa_renderer::Renderer`](crate::Renderer)
+/// the shared target. It receives the live device/queue and the offscreen target
+/// texture view Vello is rendering into, so the embedder can run the command tree
+/// on the same device (e.g. by driving an [`elpa_renderer::Renderer`](crate::Renderer)
 /// whose `WgpuBackend` wraps this device/view).
 pub type RawHandler = Box<
     dyn FnMut(&elpa_protocol::Frame, &wgpu::Device, &wgpu::Queue, &wgpu::TextureView, (u32, u32)),
 >;
+
+/// Fullscreen-triangle blit: sample the offscreen Vello target and write it to
+/// the swapchain. Vello rasterizes into a `STORAGE_BINDING` texture (which a
+/// swapchain image often can't be — notably on Android), so the scene is rendered
+/// offscreen and copied here through an ordinary render pass the surface *can*
+/// accept (`RENDER_ATTACHMENT` only).
+const BLIT_WGSL: &str = r#"
+@group(0) @binding(0) var src_tex: texture_2d<f32>;
+@group(0) @binding(1) var src_smp: sampler;
+
+struct VsOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
+    var out: VsOut;
+    let x = f32((vi << 1u) & 2u);
+    let y = f32(vi & 2u);
+    out.uv = vec2<f32>(x, y);
+    out.pos = vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    return textureSample(src_tex, src_smp, in.uv);
+}
+"#;
+
+/// The offscreen texture Vello rasterizes into (`Rgba8Unorm` + `STORAGE_BINDING`,
+/// as `render_to_texture` requires) before it is blitted to the surface.
+const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// A live Vello scene backend bound to a wgpu surface.
 pub struct VelloSceneBackend {
@@ -58,6 +92,14 @@ pub struct VelloSceneBackend {
     /// Optional compositing hook for [`SceneOp::RawWgpu`] ops.
     raw_handler: Option<RawHandler>,
     base_color: PColor,
+    /// Offscreen target Vello renders into, then blitted to the surface.
+    target_view: wgpu::TextureView,
+    /// The blit pipeline + its sampler/layout and the (target-bound) bind group,
+    /// rebuilt when the target is recreated on resize.
+    blit_pipeline: wgpu::RenderPipeline,
+    blit_layout: wgpu::BindGroupLayout,
+    blit_sampler: wgpu::Sampler,
+    blit_bind_group: wgpu::BindGroup,
 }
 
 impl VelloSceneBackend {
@@ -77,6 +119,74 @@ impl VelloSceneBackend {
                 pipeline_cache: None,
             },
         )?;
+
+        // The offscreen Vello target + the blit pipeline that copies it to the
+        // surface (whose color attachment is the surface's own format).
+        let target_view = Self::make_target(&device, config.width.max(1), config.height.max(1));
+        let blit_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("elpa-vello-blit-sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("elpa-vello-blit-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("elpa-vello-blit"),
+            source: wgpu::ShaderSource::Wgsl(BLIT_WGSL.into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("elpa-vello-blit-pl"),
+            bind_group_layouts: &[&blit_layout],
+            push_constant_ranges: &[],
+        });
+        let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("elpa-vello-blit-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            multiview: None,
+            cache: None,
+        });
+        let blit_bind_group =
+            Self::make_blit_bind_group(&device, &blit_layout, &target_view, &blit_sampler);
+
         Ok(Self {
             device,
             queue,
@@ -88,6 +198,53 @@ impl VelloSceneBackend {
             fonts: ahash::AHashMap::new(),
             raw_handler: None,
             base_color: PColor::from_rgba8(0, 0, 0, 255),
+            target_view,
+            blit_pipeline,
+            blit_layout,
+            blit_sampler,
+            blit_bind_group,
+        })
+    }
+
+    /// Create the offscreen `Rgba8Unorm` target Vello renders into. It carries
+    /// `STORAGE_BINDING` (required by `render_to_texture`), `TEXTURE_BINDING` (so
+    /// the blit can sample it) and `RENDER_ATTACHMENT` (so a `rawWgpu` op can
+    /// composite into it before the blit).
+    fn make_target(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("elpa-vello-target"),
+            size: wgpu::Extent3d { width: width.max(1), height: height.max(1), depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: TARGET_FORMAT,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        texture.create_view(&wgpu::TextureViewDescriptor::default())
+    }
+
+    fn make_blit_bind_group(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        target_view: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("elpa-vello-blit-bg"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(target_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
         })
     }
 
@@ -98,10 +255,11 @@ impl VelloSceneBackend {
     /// separate wgpu compositor — the [`crate::Renderer`] / [`crate::wgpu_backend`]
     /// path is unused, the [`SceneOp::RawWgpu`] subset op aside).
     ///
-    /// The surface is configured `Rgba8Unorm` with `STORAGE_BINDING` because the
-    /// scene is rasterized straight onto the surface texture via
-    /// [`vello::Renderer::render_to_texture`], which requires exactly that format
-    /// and usage.
+    /// Vello rasterizes into an offscreen `Rgba8Unorm` + `STORAGE_BINDING` target
+    /// (what `render_to_texture` requires) and the result is blitted to this
+    /// surface, so the surface itself only needs `RENDER_ATTACHMENT` — which every
+    /// platform's swapchain supports, unlike `STORAGE_BINDING` (commonly rejected
+    /// on Android).
     pub async fn from_window(
         target: impl Into<wgpu::SurfaceTarget<'static>>,
         width: u32,
@@ -132,14 +290,24 @@ impl VelloSceneBackend {
             )
             .await
             .map_err(|e| e.to_string())?;
+        let caps = surface.get_capabilities(&adapter);
+        // The blit samples a linear `Rgba8Unorm` target and writes it verbatim,
+        // so prefer a non-sRGB surface format to avoid a double gamma encode;
+        // fall back to whatever the surface offers first.
+        let format = caps
+            .formats
+            .iter()
+            .copied()
+            .find(|f| !f.is_srgb())
+            .unwrap_or_else(|| caps.formats[0]);
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::STORAGE_BINDING,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
             width: width.max(1),
             height: height.max(1),
             present_mode: wgpu::PresentMode::AutoVsync,
             desired_maximum_frame_latency: 2,
-            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            alpha_mode: caps.alpha_modes.first().copied().unwrap_or(wgpu::CompositeAlphaMode::Auto),
             view_formats: vec![],
         };
         surface.configure(&device, &config);
@@ -225,43 +393,66 @@ impl SceneBackend for VelloSceneBackend {
             }
             SceneOp::DrawGlyphs { transform, run } => self.draw_glyph_run(*transform, run),
             SceneOp::RawWgpu { frame } => {
-                // The subset op: composite the raw command tree into the same
-                // surface via the host hook, on Vello's own device/queue.
+                // The subset op: composite the raw command tree into the offscreen
+                // Vello target via the host hook, on Vello's own device/queue, so
+                // it lands in the same image the vector ops paint (and is blitted to
+                // the surface together with them in `present_scene`).
                 if let Some(handler) = self.raw_handler.as_mut() {
-                    if let Ok(tex) = self.surface.get_current_texture() {
-                        let view = tex.texture.create_view(&Default::default());
-                        handler(
-                            frame,
-                            &self.device,
-                            &self.queue,
-                            &view,
-                            (self.config.width, self.config.height),
-                        );
-                        tex.present();
-                    }
+                    handler(
+                        frame,
+                        &self.device,
+                        &self.queue,
+                        &self.target_view,
+                        (self.config.width, self.config.height),
+                    );
                 }
             }
         }
     }
 
     fn present_scene(&mut self, _dirty: &[Rect]) {
-        let Ok(surface_texture) = self.surface.get_current_texture() else {
-            return;
-        };
         let params = vello::RenderParams {
             base_color: self.base_color,
             width: self.config.width,
             height: self.config.height,
             antialiasing_method: AaConfig::Area,
         };
-        // Render the encoded scene straight onto the surface texture.
-        let _ = self.renderer.render_to_texture(
-            &self.device,
-            &self.queue,
-            &self.scene,
-            &surface_texture.texture.create_view(&Default::default()),
-            &params,
-        );
+        // 1. Rasterize the scene into the offscreen storage target.
+        if self
+            .renderer
+            .render_to_texture(&self.device, &self.queue, &self.scene, &self.target_view, &params)
+            .is_err()
+        {
+            return;
+        }
+        // 2. Blit it to the swapchain (the surface only needs RENDER_ATTACHMENT).
+        let Ok(surface_texture) = self.surface.get_current_texture() else {
+            return;
+        };
+        let view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("elpa-vello-blit") });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("elpa-vello-blit"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.blit_pipeline);
+            pass.set_bind_group(0, &self.blit_bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
         surface_texture.present();
     }
 
@@ -269,6 +460,15 @@ impl SceneBackend for VelloSceneBackend {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
         self.surface.configure(&self.device, &self.config);
+        // The offscreen target tracks the surface size; rebuild it and the blit
+        // bind group that points at it.
+        self.target_view = Self::make_target(&self.device, self.config.width, self.config.height);
+        self.blit_bind_group = Self::make_blit_bind_group(
+            &self.device,
+            &self.blit_layout,
+            &self.target_view,
+            &self.blit_sampler,
+        );
     }
 
     fn surface_format_token(&self) -> String {
