@@ -29,7 +29,9 @@ websdk = []
 # Embed the Flutter SDK demo (a faithful, layered Flutter port — dart:ui Canvas,
 # RenderObject/RenderBox layout, Widget/Element reconciliation — from the
 # `elpa-flutter` kit) instead. Build with `trunk build --features flutter`.
-flutter = []
+# The kit draws through the Vello scene path, so this pulls in (and installs) the
+# live `VelloSceneBackend`, which rasterizes on WebGPU (no WebGL fallback).
+flutter = ["elpa/vello"]
 
 [dependencies]
 elpa = { path = "../../crates/elpa", features = ["wgpu"] }

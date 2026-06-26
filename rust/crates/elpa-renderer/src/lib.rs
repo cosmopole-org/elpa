@@ -54,6 +54,15 @@ pub mod wgpu_backend;
 #[cfg(feature = "vello-backend")]
 pub mod vello_backend;
 
+/// Vello's own re-exported `wgpu`. Vello pins a specific wgpu release that is
+/// *not* the version a host links directly, so the two are distinct crates in the
+/// dependency graph. A host that needs to name a wgpu type for the Vello path —
+/// e.g. building a [`vello_backend::VelloSceneBackend`] from a canvas /
+/// window `SurfaceTarget` — must use *this* wgpu, not its own, or the types will
+/// not match.
+#[cfg(feature = "vello-backend")]
+pub use vello::wgpu as vello_wgpu;
+
 pub use backend::GpuBackend;
 pub use cache::{content_hash, PassCache, ResourceCache};
 pub use dirty::DirtyTracker;
