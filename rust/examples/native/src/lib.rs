@@ -19,7 +19,16 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use elpa::{Elpa, Insets, InputEvent, NetProvider, NetRequest, NetResponse, SurfaceInfo, WgpuBackend};
+use elpa::{Elpa, Insets, InputEvent, NetProvider, NetRequest, NetResponse, SurfaceInfo};
+// The Flutter SDK draws exclusively through the Vello scene path (`scene.submit`),
+// so its host stands a no-op [`HeadlessBackend`] in for the unused wgpu
+// `gpu.submit` pipeline and installs the live [`VelloSceneBackend`] (which owns
+// the window surface) to actually present. Every other app drives the wgpu
+// pipeline, so they bind a live [`WgpuBackend`] to the window surface.
+#[cfg(not(feature = "flutter"))]
+use elpa::WgpuBackend;
+#[cfg(feature = "flutter")]
+use elpa::{HeadlessBackend, SceneBackend, VelloSceneBackend};
 
 /// Blocking HTTP for desktop, so an Elpa app can download a font by URL
 /// (`useFont(url)`) through the host's `NetProvider` — Elpa's host-call model is
@@ -43,8 +52,14 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
-/// A live app instance over a window-backed wgpu surface (`'static`, since the
-/// surface is built from an `Arc<Window>` we keep alive alongside it).
+/// A live app instance. For the Flutter SDK the GPU work happens in the live
+/// [`VelloSceneBackend`], so the instance's wgpu `B` is the no-op
+/// [`HeadlessBackend`]; every other app renders through a window-backed
+/// [`WgpuBackend`] (`'static`, since the surface is built from an `Arc<Window>`
+/// we keep alive alongside it).
+#[cfg(feature = "flutter")]
+type App = Elpa<HeadlessBackend>;
+#[cfg(not(feature = "flutter"))]
 type App = Elpa<WgpuBackend<'static>>;
 
 const TARGET_FRAME_TIME: Duration = Duration::from_nanos(16_666_667);
@@ -185,22 +200,46 @@ impl ElpaApp {
         let (w, h) = (size.width.max(1), size.height.max(1));
         let scale = window.scale_factor();
 
-        // wgpu surface straight from the window. An `Arc<Window>` yields a
-        // `Surface<'static>`, and the window carries the display handle the
-        // native backends (DX12/Vulkan/GL) need, so the bare instance is fine.
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let surface = instance
-            .create_surface(window.clone())
-            .expect("create surface from window");
-        let backend = pollster::block_on(WgpuBackend::new(&instance, surface, w, h));
-
         // Seed the first frame with the current safe-area insets so the UI lays
         // out clear of the status / navigation bars from the very first paint
         // (no flash of content drawn under the status bar on Android).
         let surface_info = SurfaceInfo::new(w, h, scale).with_insets(safe_area_insets(w, h));
-        let mut app = Elpa::new_from_bytecode(backend, surface_info, APP_BYTECODE.to_vec())
-            .expect("app bytecode loads");
+
+        // The Flutter SDK paints entirely through the Vello scene path
+        // (`scene.submit`), so the instance's wgpu `B` is a no-op HeadlessBackend
+        // and the live VelloSceneBackend — built on the window surface — does the
+        // drawing. Without it, `scene.submit` would feed the default *headless*
+        // scene backend and nothing would reach the screen (a black window).
+        #[cfg(feature = "flutter")]
+        let mut app = {
+            let mut app =
+                Elpa::new_from_bytecode(HeadlessBackend::default(), surface_info, APP_BYTECODE.to_vec())
+                    .expect("app bytecode loads");
+            let scene_backend = pollster::block_on(VelloSceneBackend::from_window(
+                window.clone(),
+                w,
+                h,
+            ))
+            .expect("create vello scene backend");
+            app.set_scene_backend(Box::new(scene_backend));
+            app
+        };
+        // Every other app renders through the wgpu `gpu.submit` pipeline, drawn by
+        // a live WgpuBackend bound to the window surface. An `Arc<Window>` yields a
+        // `Surface<'static>`, and the window carries the display handle the native
+        // backends (DX12/Vulkan/GL) need, so the bare instance is fine.
+        #[cfg(not(feature = "flutter"))]
+        let mut app = {
+            let instance = wgpu::Instance::new(
+                wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+            );
+            let surface = instance
+                .create_surface(window.clone())
+                .expect("create surface from window");
+            let backend = pollster::block_on(WgpuBackend::new(&instance, surface, w, h));
+            Elpa::new_from_bytecode(backend, surface_info, APP_BYTECODE.to_vec())
+                .expect("app bytecode loads")
+        };
         // Grant network + a blocking fetcher so the app can download a font by URL
         // at runtime (the gallery's `f` key calls `useFont(...)`).
         {
@@ -259,6 +298,11 @@ impl ApplicationHandler for ElpaApp {
             WindowEvent::Resized(size) => {
                 let (w, h) = (size.width.max(1), size.height.max(1));
                 let mut app = state.app.borrow_mut();
+                // Reconfigure the surface that actually presents: the Vello scene
+                // surface for the Flutter SDK, the wgpu swapchain otherwise.
+                #[cfg(feature = "flutter")]
+                app.scene_renderer_mut().backend_mut().resize(w, h);
+                #[cfg(not(feature = "flutter"))]
                 app.renderer_mut().backend_mut().resize(w, h); // reconfigure swapchain
                 app.resize(w, h, state.window.scale_factor()); // SurfaceInfo + app onResize
                 // A resize is also when the reserved system-bar regions change

@@ -52,6 +52,12 @@ pub trait SceneBackend {
         }
     }
 
+    /// Reconfigure the live render surface to a new physical size (a swapchain
+    /// resize). The default is a no-op — a headless/offscreen backend has no
+    /// resizable surface; the live Vello backend reconfigures its surface so the
+    /// next present matches the window.
+    fn resize(&mut self, _width: u32, _height: u32) {}
+
     /// The surface's color-format token (e.g. `"rgba8unorm"`), reported to the
     /// app via `gpu.surfaceInfo` so it can match render targets to the surface.
     fn surface_format_token(&self) -> String {
@@ -85,6 +91,9 @@ impl SceneBackend for Box<dyn SceneBackend> {
     }
     fn present_scene(&mut self, dirty: &[Rect]) {
         (**self).present_scene(dirty)
+    }
+    fn resize(&mut self, width: u32, height: u32) {
+        (**self).resize(width, height)
     }
     fn surface_format_token(&self) -> String {
         (**self).surface_format_token()
