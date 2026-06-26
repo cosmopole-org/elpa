@@ -67,3 +67,46 @@ fn atlas_source_path_and_url() {
     assert_eq!(ur["source"], serde_json::json!("url:https://x/f.ttf"));
     println!("URL source={:?}", ur["source"]);
 }
+
+#[test]
+fn text_font_returns_bytes_and_metrics() {
+    let mut env = env_with_default_font();
+    let call = HostCall { machine_id: "m".into(), api_name: "text.font".into(), payload: r#"[{}]"#.into() };
+    let v: serde_json::Value = serde_json::from_str(&env.service(&call).unwrap()).unwrap();
+    assert_eq!(v["ok"], serde_json::json!(true));
+    // Real TTF bytes were handed back for the SDK's scene `font` resource.
+    assert!(v["b64"].as_str().unwrap().len() > 1000, "font bytes returned");
+    // Per-pixel vertical metrics (ascent positive, descent negative).
+    assert!(v["ascent"].as_f64().unwrap() > 0.0);
+    assert!(v["descent"].as_f64().unwrap() < 0.0);
+    assert!(v["lineHeight"].as_f64().unwrap() > 0.0);
+}
+
+#[test]
+fn text_shape_lays_out_positioned_glyphs() {
+    let mut env = env_with_default_font();
+    let call = HostCall {
+        machine_id: "m".into(),
+        api_name: "text.shape".into(),
+        payload: r#"[{"text":"AV","size":32}]"#.into(),
+    };
+    let v: serde_json::Value = serde_json::from_str(&env.service(&call).unwrap()).unwrap();
+    assert_eq!(v["ok"], serde_json::json!(true));
+    let glyphs = v["glyphs"].as_array().unwrap();
+    assert_eq!(glyphs.len(), 2, "one glyph per character");
+    // First glyph sits at the pen origin; the second is advanced past the first.
+    assert_eq!(glyphs[0]["x"].as_f64().unwrap(), 0.0);
+    assert!(glyphs[1]["x"].as_f64().unwrap() > 0.0, "second glyph advanced");
+    // Real glyph ids (non-zero for letters present in the font).
+    assert!(glyphs[0]["id"].as_u64().unwrap() > 0);
+    // Total run width is past the last glyph's pen position.
+    assert!(v["width"].as_f64().unwrap() > glyphs[1]["x"].as_f64().unwrap());
+}
+
+#[test]
+fn text_shape_without_font_reports_error() {
+    let mut env = HostEnv::default(); // no network, no font
+    let call = HostCall { machine_id: "m".into(), api_name: "text.shape".into(), payload: r#"[{"text":"hi","size":16}]"#.into() };
+    let v: serde_json::Value = serde_json::from_str(&env.service(&call).unwrap()).unwrap();
+    assert_eq!(v["ok"], serde_json::json!(false), "no font → error reply, SDK falls back to vector text");
+}

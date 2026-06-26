@@ -23,6 +23,14 @@ use elpa_protocol::{Rect, Scene, SceneOp, SceneResource};
 use crate::cache::content_hash;
 use crate::scene_backend::SceneBackend;
 
+/// A resident scene resource: its content hash (for the upload-once cache) plus
+/// the descriptor itself, kept so it can be re-uploaded onto a fresh backend when
+/// the host swaps one in (headless → live Vello).
+struct Resident {
+    hash: u64,
+    desc: SceneResource,
+}
+
 /// Per-frame work report for the scene path. The steady-state goal for a static
 /// UI is `resources_uploaded == 0 && !presented` with `cached == true`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -42,8 +50,15 @@ pub struct SceneStats {
 /// with a mock and no GPU; the `vello-backend` feature supplies the real one.
 pub struct SceneRenderer<B: SceneBackend> {
     backend: B,
-    /// Content hash per live scene resource id (image/font), for upload caching.
-    resources: ahash::AHashMap<String, u64>,
+    /// Resident scene resources (image/font) keyed by id: content hash for
+    /// upload caching plus the descriptor for re-upload after a backend swap.
+    ///
+    /// Resources are **sticky**: a resource is uploaded once and kept resident
+    /// until its content changes — it is *not* evicted just because a later scene
+    /// omits it. This is what lets the app transmit a large blob (a UI font is
+    /// ~200 KB of base64) a single time instead of re-embedding it in every
+    /// `scene.submit`, which the VM would otherwise re-serialize each frame.
+    resources: ahash::AHashMap<String, Resident>,
     /// Hash of the last *presented* scene, for the "nothing changed" skip.
     last_scene: Option<u64>,
 }
@@ -60,12 +75,18 @@ impl<B: SceneBackend> SceneRenderer<B> {
         &mut self.backend
     }
 
-    /// Swap in a different scene backend, forgetting every cached resource and
-    /// the last-scene hash so the next [`SceneRenderer::render`] re-uploads and
-    /// re-presents on the new backend. Mirrors [`Renderer::replace_backend`].
+    /// Swap in a different scene backend, **re-uploading** every resident
+    /// resource onto it and forcing a re-present. The previous backend's device
+    /// owned the old GPU handles, so the new backend starts empty; because scene
+    /// resources are sticky (the app sends a font once, not every frame), the
+    /// renderer must restore them itself rather than wait for the app to re-embed
+    /// them. This is how a host upgrades a live instance from the headless backend
+    /// to a real Vello surface without the app losing its font/images.
     pub fn replace_backend(&mut self, backend: B) -> B {
         let old = std::mem::replace(&mut self.backend, backend);
-        self.resources.clear();
+        for res in self.resources.values() {
+            self.backend.ensure_resource(&res.desc);
+        }
         self.invalidate();
         old
     }
@@ -88,9 +109,11 @@ impl<B: SceneBackend> SceneRenderer<B> {
             return stats;
         }
 
-        // 2. Resource reconciliation: upload new/changed resources, drop vanished.
+        // 2. Resource reconciliation: upload new/changed resources. Resources are
+        //    sticky (kept resident across frames), so a scene that omits one it
+        //    uploaded earlier keeps using it — no per-frame re-transmit of large
+        //    font/image blobs.
         stats.resources_uploaded = self.sync_resources(&scene.resources);
-        stats.resources_dropped = self.evict_dead(&scene.resources);
 
         // 3. Encode + present the scene.
         self.backend.begin_scene();
@@ -111,31 +134,32 @@ impl<B: SceneBackend> SceneRenderer<B> {
     }
 
     /// Upload resources whose content hash is new or changed; returns the count
-    /// that hit the backend.
+    /// that hit the backend. Unchanged resources are already resident (sticky), so
+    /// re-declaring one costs nothing.
     fn sync_resources(&mut self, resources: &[SceneResource]) -> usize {
         let mut uploaded = 0;
         for res in resources {
             let h = content_hash(res);
             let id = res.id();
-            if self.resources.get(id) != Some(&h) {
+            if self.resources.get(id).map(|r| r.hash) != Some(h) {
                 self.backend.ensure_resource(res);
-                self.resources.insert(id.clone(), h);
+                self.resources.insert(id.clone(), Resident { hash: h, desc: res.clone() });
                 uploaded += 1;
             }
         }
         uploaded
     }
 
-    /// Drop cached resources not present in this scene; returns the count dropped.
-    fn evict_dead(&mut self, resources: &[SceneResource]) -> usize {
-        let live: ahash::AHashSet<&str> = resources.iter().map(|r| r.id().as_str()).collect();
-        let dead: Vec<String> =
-            self.resources.keys().filter(|id| !live.contains(id.as_str())).cloned().collect();
-        for id in &dead {
+    /// Explicitly drop a resident resource (the app no longer needs it). Sticky
+    /// residency means resources are never evicted automatically, so a host/app
+    /// that churns through many one-shot images can release them by id.
+    pub fn drop_resource(&mut self, id: &str) -> bool {
+        if self.resources.remove(id).is_some() {
             self.backend.drop_resource(id);
-            self.resources.remove(id);
+            true
+        } else {
+            false
         }
-        dead.len()
     }
 }
 
@@ -267,12 +291,20 @@ mod tests {
     }
 
     #[test]
-    fn vanished_resource_is_dropped() {
+    fn resources_are_sticky_across_frames() {
         let mut r = SceneRenderer::new(MockScene::default());
-        r.render(&Scene { resources: vec![font("AA==")], ops: vec![red_rect()] });
-        // Next scene drops the font (no longer referenced as a resource).
-        let s = r.render(&Scene { ops: vec![red_rect()], ..Default::default() });
-        assert_eq!(s.resources_dropped, 1);
+        // Frame 1 uploads the font once.
+        let s = r.render(&Scene { resources: vec![font("AA==")], ops: vec![red_rect()] });
+        assert_eq!(s.resources_uploaded, 1);
+        // A later scene that omits the font keeps using the resident copy — it is
+        // *not* dropped, and a different op still presents without re-uploading.
+        let s = r.render(&Scene { ops: vec![red_rect(), red_rect()], ..Default::default() });
+        assert_eq!(s.resources_uploaded, 0, "no re-upload");
+        assert_eq!(s.resources_dropped, 0, "sticky: the font stays resident");
+        assert_eq!(r.backend().resources_dropped, 0, "the backend was never asked to drop it");
+        // It can still be released explicitly.
+        assert!(r.drop_resource("f"));
+        assert_eq!(r.backend().resources_dropped, 1);
     }
 
     #[test]

@@ -414,6 +414,12 @@ pub struct HostEnv {
     /// provider simply has no default atlas and callers fall back to their own
     /// vector text — the call still never traps.
     default_font: Option<(Vec<u8>, Vec<u8>)>,
+    /// Parsed (regular, bold) fonts for the native glyph path (`text.font` /
+    /// `text.shape`), built lazily from [`default_font`] the first time the SDK
+    /// shapes a run. Vello rasterises real glyph outlines from the *same* font
+    /// bytes, so the glyph indices fontdue returns here index the very outlines
+    /// the renderer draws — no atlas, one `drawGlyphs` op per text run.
+    glyph_fonts: Option<(fontdue::Font, fontdue::Font)>,
     /// The async media engine (image/animated-GIF decode → RGBA frames), started
     /// lazily on the first `media.*` call. `media_fetcher` holds the host-supplied
     /// binary fetcher until then; on native the engine moves it onto a worker
@@ -445,7 +451,7 @@ impl Default for HostEnv {
 
 impl HostEnv {
     pub fn new(fs: Box<dyn FileStore>, net: Box<dyn NetProvider>) -> Self {
-        HostEnv { toggles: EnvToggles::default(), fs, net, clock_ms: 0, rng_state: 0x9E3779B97F4A7C15, atlas_cache: BTreeMap::new(), default_font: None, media: None, media_fetcher: None, tasks: crate::workers::TaskPool::default() }
+        HostEnv { toggles: EnvToggles::default(), fs, net, clock_ms: 0, rng_state: 0x9E3779B97F4A7C15, atlas_cache: BTreeMap::new(), default_font: None, glyph_fonts: None, media: None, media_fetcher: None, tasks: crate::workers::TaskPool::default() }
     }
 
     pub fn toggles(&self) -> EnvToggles {
@@ -685,6 +691,15 @@ impl HostEnv {
     /// where each glyph is `{ x, y, w, h, bx (left bearing), by (bottom vs
     /// baseline, y-up), adv (advance) }` in atlas pixels.
     fn service_text(&mut self, call: &HostCall) -> String {
+        // The native glyph path: hand the SDK the raw font bytes (`text.font`) to
+        // register as a scene resource once, and shape runs into positioned glyph
+        // indices (`text.shape`) the renderer draws with a single Vello `drawGlyphs`
+        // op. `text.atlas` (below) is the older coverage-atlas path.
+        match call.api_name.as_str() {
+            "text.font" => return self.service_text_font(call),
+            "text.shape" => return self.service_text_shape(call),
+            _ => {}
+        }
         let arg = first_arg(&call.payload).unwrap_or(Value::Null);
         let px = arg
             .get("size")
@@ -729,6 +744,98 @@ impl HostEnv {
             self.atlas_cache.insert(cache_key, reply.clone());
         }
         reply
+    }
+
+    /// Lazily parse the default (regular, bold) fonts for the native glyph path.
+    /// Returns `None` when no font is available (no network / download failed), so
+    /// the SDK can fall back to its own vector text. The fonts are parsed once and
+    /// reused for every `text.shape` / `text.font` call.
+    fn glyph_fonts(&mut self) -> Option<&(fontdue::Font, fontdue::Font)> {
+        if self.glyph_fonts.is_none() {
+            use fontdue::{Font, FontSettings};
+            let (reg, bold) = self.default_font_bytes()?;
+            let r = Font::from_bytes(reg.as_slice(), FontSettings::default()).ok()?;
+            let b = Font::from_bytes(bold.as_slice(), FontSettings::default()).ok()?;
+            self.glyph_fonts = Some((r, b));
+        }
+        self.glyph_fonts.as_ref()
+    }
+
+    /// `text.font` — hand the SDK the raw bytes of the UI font (so it can register
+    /// a scene-level `font` resource **once**) plus the per-em vertical metrics.
+    ///
+    /// Arg: `{ weight? }` (`weight >= 600` or `"bold"` selects the bold face).
+    /// Reply: `{ ok, b64 (raw TTF), unitsPerEm, ascent, descent, lineHeight }`
+    /// where the metrics are *per pixel* (multiply by the font size in px). The
+    /// returned bytes are the exact bytes Vello rasterises, so the glyph indices
+    /// `text.shape` returns address the right outlines.
+    fn service_text_font(&mut self, call: &HostCall) -> String {
+        use base64::Engine;
+        let arg = first_arg(&call.payload).unwrap_or(Value::Null);
+        let bold = wants_bold(&arg);
+        let Some((reg, boldb)) = self.default_font_bytes() else {
+            return err_reply("no font available (default font download failed — wire a network provider)");
+        };
+        let bytes = if bold { boldb } else { reg };
+        use fontdue::{Font, FontSettings};
+        let Ok(font) = Font::from_bytes(bytes.as_slice(), FontSettings::default()) else {
+            return err_reply("font parse failed");
+        };
+        // Metrics at 1px → per-pixel factors the SDK scales by the font size.
+        let lm = font.horizontal_line_metrics(1.0).unwrap_or(fontdue::LineMetrics {
+            ascent: 0.9,
+            descent: -0.2,
+            line_gap: 0.0,
+            new_line_size: 1.2,
+        });
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        json!({
+            "ok": true,
+            "b64": b64,
+            "ascent": lm.ascent,
+            "descent": lm.descent,
+            "lineHeight": lm.new_line_size,
+        })
+        .to_string()
+    }
+
+    /// `text.shape` — lay a string out into positioned glyph indices for one
+    /// `drawGlyphs` op. Pen advance comes from the real font metrics, so the run
+    /// is correctly spaced (proportional, not the monospace capsule estimate).
+    ///
+    /// Arg: `{ text, size, weight? }`. Reply: `{ ok, glyphs:[{id,x}], width,
+    /// ascent, descent, lineHeight }` — `x` and `width`/metrics in px at `size`.
+    fn service_text_shape(&mut self, call: &HostCall) -> String {
+        let arg = first_arg(&call.payload).unwrap_or(Value::Null);
+        let text = obj_str(&arg, "text");
+        let px = arg.get("size").and_then(|v| v.as_f64()).unwrap_or(16.0).clamp(1.0, 512.0) as f32;
+        let bold = wants_bold(&arg);
+        let Some((reg, boldf)) = self.glyph_fonts() else {
+            return err_reply("no font available");
+        };
+        let font = if bold { boldf } else { reg };
+        let mut glyphs: Vec<Value> = Vec::with_capacity(text.chars().count());
+        let mut pen = 0.0f32;
+        for ch in text.chars() {
+            let gid = font.lookup_glyph_index(ch);
+            glyphs.push(json!({ "id": gid, "x": pen }));
+            pen += font.metrics_indexed(gid, px).advance_width;
+        }
+        let lm = font.horizontal_line_metrics(px).unwrap_or(fontdue::LineMetrics {
+            ascent: px * 0.9,
+            descent: -px * 0.2,
+            line_gap: 0.0,
+            new_line_size: px * 1.2,
+        });
+        json!({
+            "ok": true,
+            "glyphs": glyphs,
+            "width": pen,
+            "ascent": lm.ascent,
+            "descent": lm.descent,
+            "lineHeight": lm.new_line_size,
+        })
+        .to_string()
     }
 
     /// Resolve the (regular, bold) font bytes for `text.atlas`, honouring a
@@ -932,6 +1039,16 @@ fn first_arg(payload: &str) -> Option<Value> {
 
 fn str_field(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(|x| x.as_str()).map(|s| s.to_string())
+}
+
+/// Whether a `text.*` arg asks for the bold face: `weight` as a number `>= 600`
+/// or the string `"bold"`.
+fn wants_bold(v: &Value) -> bool {
+    match v.get("weight") {
+        Some(Value::Number(n)) => n.as_f64().map(|w| w >= 600.0).unwrap_or(false),
+        Some(Value::String(s)) => s.eq_ignore_ascii_case("bold"),
+        _ => false,
+    }
 }
 
 /// A required string field, defaulting to empty.
