@@ -91,16 +91,64 @@ impl VelloSceneBackend {
         })
     }
 
+    /// Build a live backend that **owns** a wgpu surface created from a window /
+    /// canvas `target`, acquiring its own adapter + device/queue on Vello's wgpu.
+    /// This is the standalone, full-window scene path: a host paints its entire UI
+    /// through `scene.submit` and this backend presents it to the window (no
+    /// separate wgpu compositor — the [`crate::Renderer`] / [`crate::wgpu_backend`]
+    /// path is unused, the [`SceneOp::RawWgpu`] subset op aside).
+    ///
+    /// The surface is configured `Rgba8Unorm` with `STORAGE_BINDING` because the
+    /// scene is rasterized straight onto the surface texture via
+    /// [`vello::Renderer::render_to_texture`], which requires exactly that format
+    /// and usage.
+    pub async fn from_window(
+        target: impl Into<wgpu::SurfaceTarget<'static>>,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, String> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let surface = instance.create_surface(target).map_err(|e| e.to_string())?;
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .ok_or_else(|| "no compatible GPU adapter for the Vello surface".to_string())?;
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("elpa-vello-device"),
+                    required_features: wgpu::Features::empty(),
+                    // Vello's compute pipeline reaches past the conservative
+                    // default limits (large storage buffers), so grant whatever
+                    // the adapter actually supports.
+                    required_limits: adapter.limits(),
+                    memory_hints: wgpu::MemoryHints::default(),
+                },
+                None,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::STORAGE_BINDING,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            width: width.max(1),
+            height: height.max(1),
+            present_mode: wgpu::PresentMode::AutoVsync,
+            desired_maximum_frame_latency: 2,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            view_formats: vec![],
+        };
+        surface.configure(&device, &config);
+        Self::new(device, queue, surface, config).map_err(|e| e.to_string())
+    }
+
     /// Install the hook that composites raw wgpu frames into the shared target.
     pub fn set_raw_handler(&mut self, handler: RawHandler) {
         self.raw_handler = Some(handler);
-    }
-
-    /// Reconfigure the surface on resize.
-    pub fn resize(&mut self, width: u32, height: u32) {
-        self.config.width = width.max(1);
-        self.config.height = height.max(1);
-        self.surface.configure(&self.device, &self.config);
     }
 
     fn image(&self, id: &str) -> Option<peniko::Image> {
@@ -215,6 +263,12 @@ impl SceneBackend for VelloSceneBackend {
             &params,
         );
         surface_texture.present();
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        self.config.width = width.max(1);
+        self.config.height = height.max(1);
+        self.surface.configure(&self.device, &self.config);
     }
 
     fn surface_format_token(&self) -> String {
