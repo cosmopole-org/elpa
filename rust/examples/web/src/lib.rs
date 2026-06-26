@@ -13,7 +13,15 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use elpa::{Elpa, InputEvent, NetProvider, NetRequest, NetResponse, SurfaceInfo, WgpuBackend};
+use elpa::{Elpa, InputEvent, NetProvider, NetRequest, NetResponse, SurfaceInfo};
+// The Flutter SDK paints exclusively through the Vello scene path (`scene.submit`),
+// so its build runs the wgpu `B` as a no-op `HeadlessBackend` and installs a live
+// `VelloSceneBackend` on the canvas (WebGPU). Every other app draws through the
+// `gpu.submit` SDF pipeline on a live `WgpuBackend`.
+#[cfg(not(feature = "flutter"))]
+use elpa::WgpuBackend;
+#[cfg(feature = "flutter")]
+use elpa::{HeadlessBackend, VelloSceneBackend};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
@@ -43,8 +51,13 @@ fn xhr_get_bytes(method: &str, url: &str) -> Result<Vec<u8>, String> {
     Ok(text.chars().map(|c| (c as u32 & 0xFF) as u8).collect())
 }
 
-/// A live app instance with a canvas-backed wgpu surface (`'static`).
+/// A live app instance with a canvas-backed surface (`'static`). The Flutter SDK
+/// presents through the Vello scene backend, so its wgpu `B` is a no-op
+/// `HeadlessBackend`; every other app presents through the live `WgpuBackend`.
+#[cfg(not(feature = "flutter"))]
 type App = Elpa<WgpuBackend<'static>>;
+#[cfg(feature = "flutter")]
+type App = Elpa<HeadlessBackend>;
 
 /// The app bytecode embedded in this build, **precompiled to VM bytecode at
 /// build time** by the owning crate's `build_bytecode` tool and loaded straight
@@ -113,60 +126,83 @@ async fn run() {
     canvas.set_width(w);
     canvas.set_height(h);
 
-    // 2. wgpu surface straight from the canvas.
+    // 2 + 3. Build the surface-backed Elpa instance.
     //
-    // Pick the backend with a *real* WebGPU probe. The sync `Instance::new`
-    // can only check that `navigator.gpu` exists, so it commits to a
-    // WebGPU-only context whenever the property is present — even on browsers
-    // that expose it without a working adapter (Chrome on Linux, headless
-    // Chrome). In that case `request_adapter` returns nothing and the WebGL
-    // fallback (enabled via the crate's `webgl` feature) is never reached.
+    // The app's JS→AST→bytecode compile happens at **build/deploy time** (the
+    // owning crate's `build_bytecode` tool, run in CI before the Pages build),
+    // and the resulting bytecode is embedded here and loaded straight into the
+    // VM with `new_from_bytecode` — no front-end runs in the browser.
+    let surface_info = SurfaceInfo::new(w, h, dpr);
+
+    // The Flutter SDK draws entirely through the Vello scene path
+    // (`scene.submit`): there is no `gpu.submit`, so the wgpu `B` is a no-op
+    // `HeadlessBackend` and the live `VelloSceneBackend` — built on the canvas
+    // surface — does the drawing. Without it, `scene.submit` would feed the
+    // default *headless* scene backend and nothing would reach the canvas (a
+    // blank page). Vello rasterizes through wgpu **compute**, so it needs WebGPU
+    // (no WebGL fallback); `from_window` requests a `Backends::PRIMARY`
+    // (BROWSER_WEBGPU on the web) adapter and errors if the browser has none.
+    #[cfg(feature = "flutter")]
+    let mut app = {
+        let mut app =
+            Elpa::new_from_bytecode(HeadlessBackend::default(), surface_info, APP_BYTECODE.to_vec())
+                .expect("app bytecode loads");
+        // Name the `SurfaceTarget` through Vello's *own* wgpu (a different crate
+        // version than this example's direct `wgpu` dep), so the type matches
+        // `from_window`'s bound.
+        let scene_backend = VelloSceneBackend::from_window(
+            elpa::vello_wgpu::SurfaceTarget::Canvas(canvas.clone()),
+            w,
+            h,
+        )
+        .await
+        .expect("create vello scene backend (WebGPU required)");
+        app.set_scene_backend(Box::new(scene_backend));
+        app
+    };
+
+    // Every other app presents through the live `WgpuBackend` on a canvas wgpu
+    // surface. Pick the backend with a *real* WebGPU probe: the sync
+    // `Instance::new` can only check that `navigator.gpu` exists, so it commits
+    // to a WebGPU-only context whenever the property is present — even on
+    // browsers that expose it without a working adapter (Chrome on Linux,
+    // headless Chrome). In that case `request_adapter` returns nothing and the
+    // WebGL fallback (enabled via the crate's `webgl` feature) is never reached.
     // The async helper requests an adapter up front and, when WebGPU can't
     // provide one, drops `BROWSER_WEBGPU` so wgpu uses the WebGL backend.
-    let instance = wgpu::util::new_instance_with_webgpu_detection(
-        wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
-    )
-    .await;
-    // Build the canvas surface with an explicit (empty) web display handle.
-    // The high-level `create_surface(SurfaceTarget::Canvas)` passes *no* display
-    // handle, which the WebGPU context tolerates but the WebGL (wgpu-core)
-    // backend rejects with `MissingDisplayHandle` — so the moment we fall back
-    // to WebGL, canvas surface creation fails. The WebGPU context ignores the
-    // display handle, so supplying `RawDisplayHandle::Web` here is correct for
-    // both backends. The `&canvas` JsValue must stay alive across this call;
-    // it does (the surface copies it internally and `canvas` outlives us here).
-    let surface = {
-        let value: &wasm_bindgen::JsValue = &canvas;
-        let obj = core::ptr::NonNull::from(value).cast();
-        let raw_window_handle = wgpu::rwh::WebCanvasWindowHandle::new(obj).into();
-        let raw_display_handle =
-            wgpu::rwh::RawDisplayHandle::Web(wgpu::rwh::WebDisplayHandle::new());
-        unsafe {
-            instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: Some(raw_display_handle),
-                raw_window_handle,
-            })
-        }
-        .expect("create surface from canvas")
+    #[cfg(not(feature = "flutter"))]
+    let mut app = {
+        let instance = wgpu::util::new_instance_with_webgpu_detection(
+            wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+        )
+        .await;
+        // Build the canvas surface with an explicit (empty) web display handle.
+        // The high-level `create_surface(SurfaceTarget::Canvas)` passes *no*
+        // display handle, which the WebGPU context tolerates but the WebGL
+        // (wgpu-core) backend rejects with `MissingDisplayHandle` — so the moment
+        // we fall back to WebGL, canvas surface creation fails. The WebGPU context
+        // ignores the display handle, so supplying `RawDisplayHandle::Web` here is
+        // correct for both backends. The `&canvas` JsValue must stay alive across
+        // this call; it does (the surface copies it internally and `canvas`
+        // outlives us here).
+        let surface = {
+            let value: &wasm_bindgen::JsValue = &canvas;
+            let obj = core::ptr::NonNull::from(value).cast();
+            let raw_window_handle = wgpu::rwh::WebCanvasWindowHandle::new(obj).into();
+            let raw_display_handle =
+                wgpu::rwh::RawDisplayHandle::Web(wgpu::rwh::WebDisplayHandle::new());
+            unsafe {
+                instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+                    raw_display_handle: Some(raw_display_handle),
+                    raw_window_handle,
+                })
+            }
+            .expect("create surface from canvas")
+        };
+        let backend = WgpuBackend::new(&instance, surface, w, h).await;
+        Elpa::new_from_bytecode(backend, surface_info, APP_BYTECODE.to_vec())
+            .expect("app bytecode loads")
     };
-    let backend = WgpuBackend::new(&instance, surface, w, h).await;
-
-    // 3. Assemble the Elpa instance over the live backend + the UI-kit app.
-    //
-    // The app is the **Material Design 3 widget gallery**, written in
-    // **JavaScript**: a Flutter-style widget SDK linked ahead of an app
-    // (`GALLERY_JS`) that composes a widget tree and calls `runApp`. Its
-    // JS→AST→bytecode compile happens at **build/deploy time** (the
-    // `elpa-material` `build_bytecode` tool, run in CI before the Pages build),
-    // and the resulting bytecode is embedded here and loaded straight into the
-    // VM with `new_from_bytecode` — no front-end runs in the browser. The SDK's
-    // component runtime owns layout, animation, and `gpu.submit`, and reads the
-    // surface's actual color format from `gpu.surfaceInfo`, so its pipeline
-    // target matches the surface exactly (the browser surface may be `*-srgb`,
-    // which wgpu requires the pipeline to match) without any source patching.
-    let surface_info = SurfaceInfo::new(w, h, dpr);
-    let mut app = Elpa::new_from_bytecode(backend, surface_info, APP_BYTECODE.to_vec())
-        .expect("app bytecode loads");
     // Grant network + a synchronous binary fetcher so the app can download a font
     // by URL at runtime (the gallery's `f` key calls `useFont(...)`).
     {
@@ -226,6 +262,11 @@ fn install_resize(
         canvas.set_width(w);
         canvas.set_height(h);
         let mut app = app.borrow_mut();
+        // Reconfigure the surface that actually presents: the Vello scene surface
+        // for the Flutter SDK, the wgpu swapchain otherwise.
+        #[cfg(feature = "flutter")]
+        app.scene_renderer_mut().backend_mut().resize(w, h);
+        #[cfg(not(feature = "flutter"))]
         app.renderer_mut().backend_mut().resize(w, h); // reconfigure swapchain
         app.resize(w, h, dpr); // update SurfaceInfo + invoke app `onResize`
     });

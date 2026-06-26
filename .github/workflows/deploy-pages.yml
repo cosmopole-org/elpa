@@ -1,8 +1,14 @@
-name: Deploy web example to GitHub Pages
+name: Deploy Flutter SDK demo to GitHub Pages
 
-# Builds the wasm web example (examples/web) with Trunk and publishes it to
-# GitHub Pages on every push, so the latest commit is testable live at
+# Builds the wasm web example (rust/examples/web) carrying the **Flutter SDK demo**
+# (rust/examples/flutter) with Trunk and publishes it to GitHub Pages on every
+# push, so the latest commit is testable live at
 #   https://<owner>.github.io/<repo>/
+#
+# The Flutter kit draws through the Vello scene path (`scene.submit`), which
+# rasterizes on the GPU via wgpu **compute** — so the page requires a
+# **WebGPU**-capable browser (Chrome/Edge, or Safari/Firefox with WebGPU enabled);
+# there is no WebGL fallback for the scene path.
 #
 # One-time setup in the repo: Settings → Pages → "Build and deployment" →
 # Source = "GitHub Actions". (No branch needs selecting; this workflow deploys.)
@@ -40,61 +46,32 @@ jobs:
       # has its own target dir).
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: examples/web -> target
+          workspaces: rust/examples/web -> target
 
       - name: Install Trunk
         run: cargo install --locked trunk
 
-      # Compile each app's JavaScript to VM bytecode *now*, at deploy time, into
-      # examples/*/assets/*.bc. The web example embeds that bytecode
-      # (include_bytes!) and loads it with Elpa::new_from_bytecode, so the browser
-      # never runs the JS/AST front-end — the compiler phase has already happened
-      # here in the build. All apps are compiled; the web crate embeds whichever
-      # its feature selects.
-      - name: Compile apps to bytecode
-        run: |
-          cargo run -p elpa-material --bin build_bytecode
-          cargo run -p elpa-game3d --bin build_bytecode
-          cargo run -p elpa-liquidglass --bin build_bytecode
-          cargo run -p elpa-websdk --bin build_bytecode
-          cargo run -p elpa-flutter --bin build_bytecode
+      # Compile the Flutter demo's JavaScript to VM bytecode *now*, at deploy time,
+      # into rust/examples/flutter/assets/demo.bc. The web example embeds that
+      # bytecode (include_bytes!) and loads it with Elpa::new_from_bytecode, so the
+      # browser never runs the JS/AST front-end — the compiler phase has already
+      # happened here in the build.
+      - name: Compile the Flutter SDK demo to bytecode
+        working-directory: rust
+        run: cargo run -p elpa-flutter --bin build_bytecode
 
-      # Six apps share one Pages site: the Liquid Glass **calculator** at the
-      # site root (`--features calculator`), the Liquid Glass UI kit demo under
-      # `/glass/`, the Game3D engine demo under `/game3d/`, the Material gallery
-      # under `/material/`, the Web SDK showcase under `/websdk/`, and the Flutter
-      # SDK demo under `/flutter/`, each with the matching `--public-url` so its
-      # asset URLs resolve. Build the root first (it writes the default `dist/`),
-      # then the others into their own subdirs; each subsequent build only manages
-      # its own dist, so they coexist in one upload.
-      - name: Build web example (Liquid Glass calculator, site root)
-        working-directory: examples/web
-        run: trunk build --release --features calculator --public-url "/${{ github.event.repository.name }}/"
-
-      - name: Build web example (Liquid Glass UI kit, /glass/)
-        working-directory: examples/web
-        run: trunk build --release --features liquidglass --public-url "/${{ github.event.repository.name }}/glass/" --dist dist/glass
-
-      - name: Build web example (Game3D, /game3d/)
-        working-directory: examples/web
-        run: trunk build --release --features game3d --public-url "/${{ github.event.repository.name }}/game3d/" --dist dist/game3d
-
-      - name: Build web example (Material, /material/)
-        working-directory: examples/web
-        run: trunk build --release --public-url "/${{ github.event.repository.name }}/material/" --dist dist/material
-
-      - name: Build web example (Web SDK, /websdk/)
-        working-directory: examples/web
-        run: trunk build --release --features websdk --public-url "/${{ github.event.repository.name }}/websdk/" --dist dist/websdk
-
-      - name: Build web example (Flutter, /flutter/)
-        working-directory: examples/web
-        run: trunk build --release --features flutter --public-url "/${{ github.event.repository.name }}/flutter/" --dist dist/flutter
+      # Build the web example with the Flutter SDK demo at the site root, with the
+      # matching `--public-url` so its asset URLs resolve. The `flutter` feature
+      # embeds the Flutter bytecode and installs the live Vello scene backend
+      # (WebGPU) that rasterizes the kit's `scene.submit` ops.
+      - name: Build web example (Flutter SDK demo, site root)
+        working-directory: rust/examples/web
+        run: trunk build --release --features flutter --public-url "/${{ github.event.repository.name }}/"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: examples/web/dist
+          path: rust/examples/web/dist
 
   deploy:
     needs: build

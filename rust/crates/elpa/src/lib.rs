@@ -57,6 +57,10 @@ pub use elpa_renderer::wgpu_backend::WgpuBackend;
 
 #[cfg(feature = "vello")]
 pub use elpa_renderer::vello_backend::{RawHandler, VelloSceneBackend};
+// Vello's pinned wgpu (a different crate version than a host links directly), so a
+// host can name the `SurfaceTarget` type `VelloSceneBackend::from_window` expects.
+#[cfg(feature = "vello")]
+pub use elpa_renderer::vello_wgpu;
 
 use ahash::AHashMap as HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
