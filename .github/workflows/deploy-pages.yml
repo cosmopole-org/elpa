@@ -63,10 +63,13 @@ jobs:
       # Build the web example with the Flutter SDK demo at the site root, with the
       # matching `--public-url` so its asset URLs resolve. The `flutter` feature
       # embeds the Flutter bytecode and installs the live Vello scene backend
-      # (WebGPU) that rasterizes the kit's `scene.submit` ops.
+      # (WebGPU) that rasterizes the kit's `scene.submit` ops. `--no-default-features`
+      # drops the host wgpu so only Vello's own wgpu is linked: two wgpu versions
+      # both emitting web-sys WebGPU bindings break wasm-bindgen with duplicate
+      # string enums.
       - name: Build web example (Flutter SDK demo, site root)
         working-directory: rust/examples/web
-        run: trunk build --release --features flutter --public-url "/${{ github.event.repository.name }}/"
+        run: trunk build --release --no-default-features --features flutter --public-url "/${{ github.event.repository.name }}/"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
