@@ -257,6 +257,30 @@ impl ElpaApp {
         }
         app.start(); // run top-level program (init + first frame)
 
+        // Diagnostics for the Vello scene path: did the first frame actually
+        // produce and present a scene, and did the app report any host errors?
+        // Surfaced to logcat (`adb logcat | grep -i elpa`) so a blank screen is
+        // traceable instead of silent.
+        #[cfg(feature = "flutter")]
+        {
+            let s = app.last_scene_stats();
+            log::info!(
+                "elpa flutter: surface {}x{} scale {} — first scene ops={} presented={} cached={}",
+                w,
+                h,
+                scale,
+                s.ops_encoded,
+                s.presented,
+                s.cached
+            );
+            for line in app.take_log() {
+                log::warn!("elpa flutter app log: {line}");
+            }
+            if let Some(reason) = app.trap_reason() {
+                log::error!("elpa flutter: VM trapped during start: {reason}");
+            }
+        }
+
         self.state = Some(State {
             window,
             app: Rc::new(RefCell::new(app)),
