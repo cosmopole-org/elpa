@@ -265,7 +265,15 @@ impl VelloSceneBackend {
         width: u32,
         height: u32,
     ) -> Result<Self, String> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        // Restrict to the primary, compute-capable backends (Vulkan / Metal /
+        // DX12). Vello rasterizes through compute shaders, which wgpu's GL backend
+        // does not support — and on Android `Backends::all()` also enumerates GLES,
+        // so leaving GL in risks selecting an adapter on which every
+        // `render_to_texture` fails (a blank screen). PRIMARY is Vulkan on Android.
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::PRIMARY,
+            ..Default::default()
+        });
         let surface = instance.create_surface(target).map_err(|e| e.to_string())?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -310,8 +318,18 @@ impl VelloSceneBackend {
             alpha_mode: caps.alpha_modes.first().copied().unwrap_or(wgpu::CompositeAlphaMode::Auto),
             view_formats: vec![],
         };
+        log::info!(
+            "elpa vello: adapter={:?} backend={:?} surface_format={:?} size={}x{}",
+            adapter.get_info().name,
+            adapter.get_info().backend,
+            config.format,
+            config.width,
+            config.height
+        );
         surface.configure(&device, &config);
-        Self::new(device, queue, surface, config).map_err(|e| e.to_string())
+        Self::new(device, queue, surface, config)
+            .inspect_err(|e| log::error!("elpa vello: renderer init failed: {e}"))
+            .map_err(|e| e.to_string())
     }
 
     /// Install the hook that composites raw wgpu frames into the shared target.
@@ -418,16 +436,23 @@ impl SceneBackend for VelloSceneBackend {
             antialiasing_method: AaConfig::Area,
         };
         // 1. Rasterize the scene into the offscreen storage target.
-        if self
-            .renderer
-            .render_to_texture(&self.device, &self.queue, &self.scene, &self.target_view, &params)
-            .is_err()
-        {
+        if let Err(e) = self.renderer.render_to_texture(
+            &self.device,
+            &self.queue,
+            &self.scene,
+            &self.target_view,
+            &params,
+        ) {
+            log::error!("elpa vello: render_to_texture failed: {e}");
             return;
         }
         // 2. Blit it to the swapchain (the surface only needs RENDER_ATTACHMENT).
-        let Ok(surface_texture) = self.surface.get_current_texture() else {
-            return;
+        let surface_texture = match self.surface.get_current_texture() {
+            Ok(t) => t,
+            Err(e) => {
+                log::error!("elpa vello: acquire surface texture failed: {e}");
+                return;
+            }
         };
         let view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self

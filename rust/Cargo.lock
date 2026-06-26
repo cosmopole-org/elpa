@@ -637,6 +637,7 @@ dependencies = [
  "base64",
  "bumpalo",
  "elpa-protocol",
+ "log",
  "pollster",
  "rayon",
  "serde",
