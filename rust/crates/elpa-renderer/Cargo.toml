@@ -9,11 +9,15 @@ default = []
 # The live wgpu backend. Heavy (pulls the full graphics stack); off by default so
 # the caching/partial-render logic builds and tests fast and GPU-free.
 wgpu-backend = ["dep:wgpu", "dep:base64"]
-# The live Vello scene backend: rasterizes the high-level scene ops and
-# composites embedded raw wgpu frames into the same target. Pulls vello (and the
-# wgpu backend it delegates raw ops to); off by default so the scene
-# orchestration builds and tests GPU-free against the mock backend.
-vello-backend = ["dep:vello", "dep:log", "wgpu-backend"]
+# The live Vello scene backend: rasterizes the high-level scene ops to a wgpu
+# surface using Vello's *own* (separately versioned) wgpu. It does **not** pull
+# the `wgpu-backend`: that links a second, host-versioned wgpu, which on wasm
+# makes two crates emit the web-sys WebGPU bindings and breaks wasm-bindgen with
+# duplicate string enums. The embedded-raw-wgpu (`SceneOp::RawWgpu`) compositing
+# path runs through a host-supplied `RawHandler` on Vello's device, so it needs no
+# host wgpu here; a host that uses it enables `wgpu-backend` itself. Off by default
+# so the scene orchestration builds and tests GPU-free against the mock backend.
+vello-backend = ["dep:vello", "dep:log", "dep:base64"]
 
 [dependencies]
 elpa-protocol = { path = "../elpa-protocol" }

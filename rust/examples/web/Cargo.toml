@@ -9,7 +9,17 @@ publish = false
 crate-type = ["cdylib"]
 
 [features]
-default = []
+# The default build (Material gallery) and every app *except* Flutter draw
+# through the wgpu `gpu.submit` SDF pipeline, so they link the live wgpu backend;
+# `webgl` (on by default) pulls it. The Flutter SDK draws through the Vello scene
+# path instead and must be built WITHOUT the host wgpu
+# (`trunk build --no-default-features --features flutter`) so only Vello's own
+# wgpu is linked — two wgpu versions both emitting web-sys WebGPU bindings make
+# wasm-bindgen fail with "duplicate string enums".
+default = ["webgl"]
+# The live wgpu backend (the SDF `gpu.submit` path) on a canvas WebGL/WebGPU
+# surface. Every app but Flutter needs it; Flutter omits it.
+webgl = ["dep:wgpu", "elpa/wgpu"]
 # Embed the Game3D engine demo (a lit, animated 3D scene from the object-oriented
 # `elpa-game3d` SDK) instead of the Material gallery. Build with
 # `trunk build --features game3d`.
@@ -34,12 +44,14 @@ websdk = []
 flutter = ["elpa/vello"]
 
 [dependencies]
-elpa = { path = "../../crates/elpa", features = ["wgpu"] }
+elpa = { path = "../../crates/elpa", default-features = false }
 # The Material Design 3 framework + app, shipped as JavaScript; this crate links
 # them with `elpa_material::program()` and builds an Elpa instance with
 # `new_from_js`. The interactive app it carries is what the page renders.
 elpa-material = { path = "../material" }
-wgpu = { version = "29", features = ["webgl"] }
+# The host wgpu, pulled only by the `webgl` feature (every app but Flutter); the
+# Flutter build links Vello's own wgpu instead. See the `[features]` note.
+wgpu = { version = "29", features = ["webgl"], optional = true }
 serde_json = "1.0"
 
 wasm-bindgen = "0.2"
